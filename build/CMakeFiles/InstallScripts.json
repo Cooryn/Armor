@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/coryn/Train/Armor/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -2,17 +2,23 @@
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 
+// ==========================================
+// 提取特定颜色区域 (恢复为你最初的 BGR 比例判断方法)
+// ==========================================
 cv::Mat extractColor(const cv::Mat &src, EnemyColor color)
 {
     cv::Mat channels[3];
     cv::split(src, channels);
     cv::Mat mask;
+
     if (color == EnemyColor::RED)
     {
+        // 红方提取 (基于你最初的逻辑)
         mask = (channels[2] > channels[1] * 1.2) & (channels[2] > channels[0] * 1.2) & (channels[2] > 135);
     }
     else
     {
+        // 蓝方提取 (基于同样的逻辑扩展)
         mask = (channels[0] > channels[1] * 1.2) & (channels[0] > channels[2] * 1.2) & (channels[0] > 135);
     }
     return mask;
@@ -73,15 +79,16 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
             float left_angle = left.size.width > left.size.height ? left.angle : left.angle - 90.0f;
             float right_angle = right.size.width > right.size.height ? right.angle : right.angle - 90.0f;
 
-            if (std::abs(left_angle - right_angle) > 15.0f)
+            // --- 几何约束 ---
+            if (std::abs(left_angle - right_angle) > 25.0f)
                 continue;
-            if (std::max(left_length, right_length) / std::min(left_length, right_length) > 1.8f)
+            if (std::max(left_length, right_length) / std::min(left_length, right_length) > 2.2f)
                 continue;
-            if (std::abs(left.center.y - right.center.y) > avg_length * 0.8f)
+            if (std::abs(left.center.y - right.center.y) > avg_length * 1.2f)
                 continue;
 
             float aspect_ratio = cv::norm(left.center - right.center) / avg_length;
-            if (aspect_ratio < 1.0f || aspect_ratio > 4.5f)
+            if (aspect_ratio < 0.8f || aspect_ratio > 4.5f)
                 continue;
 
             Armor armor;

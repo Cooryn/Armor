@@ -14,6 +14,17 @@ file(GLOB SOURCES "src/*.cpp")
 # 生成可执行文件
 add_executable(rm_vision ${SOURCES})
 
+# ==========================================
+# 【核心修改点】：设置可执行文件的输出路径
+# ==========================================
+# CMAKE_CURRENT_SOURCE_DIR 就是包含这个 CMakeLists.txt 的根目录
+# 我们强制所有的构建配置 (Debug, Release 等) 都输出到根目录
+set_target_properties(rm_vision PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
 # 包含头文件目录
 target_include_directories(rm_vision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
