@@ -8,24 +8,23 @@
 #include "lightbar_detector.hpp"
 #include "solver.hpp"
 
-// ... (printHelp 函数保持不变) ...
 void printHelp(const char *prog_name)
 {
     std::cout << "====================================================\n"
               << "用法: " << prog_name << " [运行模式] [目标颜色]\n\n"
               << "参数说明:\n"
               << "  [运行模式] : 可选 'image' 或 'video' (默认: image)\n"
-              << "  [目标颜色] : 可选 'red' 或 'blue' (默认: blue)\n\n"
+              << "  [目标颜色] : 可选 'red' 或 'blue' (默认: red)\n\n"
               << "====================================================\n";
 }
 
 int main(int argc, char **argv)
 {
     // ==========================================
-    // 1. 命令行参数解析 (保持不变)
+    // 1. 命令行参数解析
     // ==========================================
     std::string run_mode = "image";
-    EnemyColor target_color = EnemyColor::RED; // 默认红色
+    EnemyColor target_color = EnemyColor::RED;
 
     if (argc >= 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))
     {
@@ -50,11 +49,21 @@ int main(int argc, char **argv)
     }
 
     // ==========================================
-    // 2. 动态路径配置 & 初始化输入流 (保持不变)
+    // 2. 动态路径配置 (严格适配考核标准)
     // ==========================================
     std::string input_path = (run_mode == "video") ? "./assets/video/video_1.avi" : "./assets/image/image_1.jpg";
-    std::string output_path = (run_mode == "video") ? "./results/video/video_1.mp4" : "./results/image/image_1.jpg";
-    std::filesystem::create_directories(std::filesystem::path(output_path).parent_path());
+
+    // 提取文件名 (如 "image_1" 或 "video_1")
+    std::string stem = std::filesystem::path(input_path).stem().string();
+    std::string out_dir = "./results/";
+    std::filesystem::create_directories(out_dir);
+
+    // 强制按考核要求设置后缀：图片必须是 .png，视频是 .mp4
+    std::string ext = (run_mode == "video") ? ".mp4" : ".png";
+
+    // 定义双路输出路径
+    std::string raw_output_path = out_dir + stem + "_raw" + ext; // 对应档次1、2
+    std::string final_output_path = out_dir + stem + ext;        // 对应档次3、4
 
     std::unique_ptr<InputStream> stream;
     if (run_mode == "video")
@@ -65,47 +74,44 @@ int main(int argc, char **argv)
     cv::Mat original_frame;
     if (!stream->getFrame(original_frame))
     {
-        std::cerr << "[错误] 无法读取视频/图片数据，请检查路径！" << std::endl;
+        std::cerr << "[错误] 无法读取数据，请检查路径！" << std::endl;
         return -1;
     }
 
-    cv::VideoWriter video_writer;
+    // ==========================================
+    // 3. 双路视频录制器初始化
+    // ==========================================
+    cv::VideoWriter writer_raw, writer_final;
     if (run_mode == "video")
     {
-        // 【核心修复】：将 'a','v','c','1' 替换为最兼容的 'm','p','4','v'
-        video_writer.open(output_path, cv::VideoWriter::fourcc('m', 'p', '4', 'v'), 30.0, original_frame.size(), true);
+        int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
+        writer_raw.open(raw_output_path, fourcc, 30.0, original_frame.size(), true);
+        writer_final.open(final_output_path, fourcc, 30.0, original_frame.size(), true);
 
-        if (!video_writer.isOpened())
+        if (!writer_raw.isOpened() || !writer_final.isOpened())
         {
-            std::cerr << "[致命错误] OpenCV 无法创建视频，请检查是否缺少 ffmpeg 支持，或将后缀改为 .avi！" << std::endl;
+            std::cerr << "[致命错误] 无法创建视频输出流！" << std::endl;
         }
         else
         {
-            std::cout << "[信息] 视频录制已就绪：" << output_path << std::endl;
+            std::cout << "[信息] 双路视频录制已就绪：\n  -> " << raw_output_path << "\n  -> " << final_output_path << std::endl;
         }
     }
 
     // ==========================================
-    // 3. PnP 解算器初始化 (保持不变)
+    // 4. PnP 解算器初始化
     // ==========================================
     cv::Mat camera_matrix = (cv::Mat_<double>(3, 3) << 1286.307, 0, 645.344, 0, 1288.140, 483.616, 0, 0, 1);
     cv::Mat distort_coeffs = (cv::Mat_<double>(1, 5) << -0.4756, 0.2183, 0.00049, -0.00034, 0);
     Solver pnp_solver(camera_matrix, distort_coeffs);
 
     // ==========================================
-    // 4. 【核心升级】：参数持久化与控制台
+    // 5. 参数持久化与控制台
     // ==========================================
     cv::namedWindow("Debug Panel", cv::WINDOW_AUTOSIZE);
-
-    // 设定“出厂默认值”
-    int color_th = 20;
-    int gray_th = 80;
-    int min_area = 10;
-    int min_angle = 55;
-
+    int color_th = 20, gray_th = 80, min_area = 10, min_angle = 55;
     std::string config_file = "./assets/config.yaml";
 
-    // 【新增 A：开局读取配置】
     cv::FileStorage fs_read(config_file, cv::FileStorage::READ);
     if (fs_read.isOpened())
     {
@@ -114,82 +120,88 @@ int main(int argc, char **argv)
         fs_read["min_area"] >> min_area;
         fs_read["min_angle"] >> min_angle;
         fs_read.release();
-        std::cout << "[信息] 已成功加载本地配置 config.yaml！" << std::endl;
-    }
-    else
-    {
-        std::cout << "[信息] 未找到配置文件，将使用默认参数。" << std::endl;
     }
 
-    // 绑定滑动条
     cv::createTrackbar("Color Diff", "Debug Panel", &color_th, 100);
     cv::createTrackbar("Gray Thresh", "Debug Panel", &gray_th, 255);
     cv::createTrackbar("Min Area", "Debug Panel", &min_area, 200);
     cv::createTrackbar("Min Angle", "Debug Panel", &min_angle, 90);
 
     // ==========================================
-    // 5. 视觉处理主循环
+    // 6. 视觉处理主循环
     // ==========================================
     do
     {
         cv::Mat current_frame = original_frame.clone();
 
+        // 提取与检测
         cv::Mat mask = extractColor(current_frame, target_color, color_th, gray_th);
         auto contours = extractContours(mask);
         auto lightBars = filterLightBars(contours, 1.5, (double)min_area);
         auto lightRects = getValidLightRects(lightBars, (float)min_angle);
         auto armors = matchArmors(lightRects);
 
-        cv::imshow("Mask Preview", mask);
-        cv::Mat result = drawArmors(current_frame, armors);
+        // --- 核心修改：双路渲染 ---
+        // 渲染路线 1：Raw (仅含 2D 装甲板检测，用于交付档次 1 / 2)
+        cv::Mat raw_result = drawArmors(current_frame, armors);
 
-        for (auto &armor : armors)
+        // 渲染路线 2：Final (在 Raw 的基础上克隆，追加 3D 姿态文本，用于交付档次 3 / 4)
+        cv::Mat final_result = raw_result.clone();
+
+        int text_y_offset = 30;
+
+        for (size_t i = 0; i < armors.size(); i++)
         {
+            auto &armor = armors[i];
             if (pnp_solver.solve(armor))
             {
-                pnp_solver.drawAxis(result, armor);
-                cv::putText(result, cv::format("Z: %.2fm Yaw: %.1f deg", armor.tvec.at<double>(2), armor.yaw),
-                            cv::Point(armor.vertices[0].x - 10, armor.vertices[0].y - 15),
-                            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255), 2);
+                double tx = armor.tvec.at<double>(0), ty = armor.tvec.at<double>(1), tz = armor.tvec.at<double>(2);
+                double rx = armor.rvec.at<double>(0), ry = armor.rvec.at<double>(1), rz = armor.rvec.at<double>(2);
+
+                std::string tvec_str = cv::format("tvec:  x %6.2f  y %6.2f  z %6.2f", tx, ty, tz);
+                std::string rvec_str = cv::format("rvec:  x %6.2f  y %6.2f  z %6.2f", rx, ry, rz);
+
+                cv::putText(final_result, tvec_str, cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 255, 255), 2);
+                text_y_offset += 30;
+                cv::putText(final_result, rvec_str, cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 255, 255), 2);
+                text_y_offset += 40;
             }
         }
 
-        // --- E. 输出呈现 ---
-        cv::imshow("RoboMaster Vision System - Final", result);
+        // --- 输出呈现 ---
+        cv::imshow("RoboMaster Vision - Raw (2D)", raw_result);
+        cv::imshow("RoboMaster Vision - Final (3D)", final_result);
 
-        // 如果是视频模式，不断把每一帧写入文件
+        // 双路视频写入处理
         if (run_mode == "video")
         {
-            if (video_writer.isOpened())
-            {
-                video_writer.write(result);
-            }
+            if (writer_raw.isOpened())
+                writer_raw.write(raw_result);
+            if (writer_final.isOpened())
+                writer_final.write(final_result);
             if (!stream->getFrame(original_frame))
-                break; // 视频放完则结束
+                break;
         }
 
-        // 【核心修复】：加入 S 键保存功能
+        // --- 快捷键与双路图片保存逻辑 ---
         char key = (char)cv::waitKey(30);
         if (key == 27)
-            break; // 按 ESC 退出
+            break;
 
         if (key == 's' || key == 'S')
         {
-            // 当你调出了完美的参数，按下 'S' 键手动保存！
-            std::filesystem::path out_file(output_path);
-            std::string stem = out_file.stem().string();
-            std::string ext = out_file.extension().string();
-            std::string dir = out_file.parent_path().string();
-
-            cv::imwrite(dir + "/" + stem + "_mask" + ext, mask);
-            cv::imwrite(output_path, result);
-            std::cout << "[成功] 已将完美调参结果保存至：" << output_path << std::endl;
+            // 严格以 .png 格式导出双图
+            cv::imwrite(raw_output_path, raw_result);
+            cv::imwrite(final_output_path, final_result);
+            std::cout << "\n[考核交付就绪] 已成功导出：" << std::endl;
+            std::cout << "  ✓ " << raw_output_path << std::endl;
+            std::cout << "  ✓ " << final_output_path << std::endl;
         }
 
     } while (true);
 
     // ==========================================
-    // 6. 【新增 B：剧终保存配置】
+    // 7. 剧终保存配置
     // ==========================================
     cv::FileStorage fs_write(config_file, cv::FileStorage::WRITE);
     if (fs_write.isOpened())
@@ -199,11 +211,12 @@ int main(int argc, char **argv)
         fs_write << "min_area" << min_area;
         fs_write << "min_angle" << min_angle;
         fs_write.release();
-        std::cout << "[信息] 参数已自动固化保存至 " << config_file << "，下次启动将自动生效！" << std::endl;
     }
 
-    if (video_writer.isOpened())
-        video_writer.release();
+    if (writer_raw.isOpened())
+        writer_raw.release();
+    if (writer_final.isOpened())
+        writer_final.release();
     cv::destroyAllWindows();
     return 0;
 }
