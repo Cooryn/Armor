@@ -19,10 +19,6 @@ void printHelp(const char *prog_name)
               << "  [运行模式] : 'image' 或 'video' (默认: image)\n"
               << "  [目标颜色] : 'red' 或 'blue' (默认: red)\n"
               << "  [文件名]   : 例如 'image_1.jpg' 或 'video_2.avi'\n"
-              << "               (程序会自动在 ./assets 对应目录下寻找)\n\n"
-              << "示例:\n"
-              << "  " << prog_name << " image red image_1.jpg\n"
-              << "  " << prog_name << " video blue video_2.avi\n"
               << "====================================================\n";
 }
 
@@ -150,7 +146,7 @@ int main(int argc, char **argv)
                          0.000000, 1714.616882, 546.930868,
                          0.000000, 0.000000, 1.000000);
         distort_coeffs = (cv::Mat_<double>(1, 5) << -0.119922, -0.078593, 0.007511, -0.028028, 0.000000);
-        std::cout << "[视觉引擎] 已识别为第二组相机，加载 video_2 内参矩阵。" << std::endl;
+        std::cout << "加载 video_2 内参矩阵。" << std::endl;
     }
     else
     {
@@ -159,7 +155,7 @@ int main(int argc, char **argv)
                          0, 1288.1400736562441, 483.6163720308021,
                          0, 0, 1);
         distort_coeffs = (cv::Mat_<double>(1, 5) << -0.47562935060124745, 0.21831745829617311, 0.0004957613589406044, -0.00034617769548693592, 0);
-        std::cout << "[视觉引擎] 已识别为第一组相机，加载 video_1 内参矩阵。" << std::endl;
+        std::cout << "加载 video_1 内参矩阵。" << std::endl;
     }
 
     Solver pnp_solver(camera_matrix, distort_coeffs);
