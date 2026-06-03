@@ -4,6 +4,7 @@
 #include <string>
 #include <memory>
 #include <algorithm>
+#include <fstream>
 #include "input_stream.hpp"
 #include "lightbar_detector.hpp"
 #include "solver.hpp"
@@ -128,6 +129,17 @@ int main(int argc, char **argv)
     cv::createTrackbar("Min Angle", "Debug Panel", &min_angle, 90);
 
     // ==========================================
+    // (新增) 交付 5：数据日志记录初始化
+    // ==========================================
+    std::string csv_path = "./results/pose_data.csv";
+    std::ofstream csv_file(csv_path);
+    if (csv_file.is_open())
+    {
+        csv_file << "Frame,X,Y,Z,Yaw\n";
+    }
+    int frame_count = 0; // 记录当前是第几帧
+
+    // ==========================================
     // 6. 视觉处理主循环
     // ==========================================
     do
@@ -165,6 +177,12 @@ int main(int argc, char **argv)
                 text_y_offset += 30;
                 cv::putText(final_result, rvec_str, cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 255, 255), 2);
                 text_y_offset += 40;
+                if (csv_file.is_open() && run_mode == "video")
+                {
+                    csv_file << frame_count << ","
+                             << tx << "," << ty << "," << tz << ","
+                             << armor.yaw << "\n";
+                }
             }
         }
 
@@ -198,6 +216,7 @@ int main(int argc, char **argv)
             std::cout << "  ✓ " << final_output_path << std::endl;
         }
 
+        frame_count++;
     } while (true);
 
     // ==========================================
@@ -212,7 +231,8 @@ int main(int argc, char **argv)
         fs_write << "min_angle" << min_angle;
         fs_write.release();
     }
-
+    if (csv_file.is_open())
+        csv_file.close();
     if (writer_raw.isOpened())
         writer_raw.release();
     if (writer_final.isOpened())
