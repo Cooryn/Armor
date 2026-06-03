@@ -24,7 +24,7 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color)
     if (color == EnemyColor::RED)
     {
         // 提取红色：R(2) 大于 G(1) 和 B(0)
-        mask = (channels[2] > channels[1] * 1.05) & (channels[2] > channels[0] * 1.05) & (channels[2] > 130);
+        mask = (channels[2] > channels[1] * 1.2) & (channels[2] > channels[0] * 1.2) & (channels[2] > 135);
     }
     else
     {
