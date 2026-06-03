@@ -8,31 +8,35 @@
 
 cv::Mat extractColor(const cv::Mat &src, EnemyColor color)
 {
-    // 1. 安全校验：防止传入空图或灰度图导致 cv::split 崩溃
     if (src.empty() || src.channels() < 3)
-    {
         return cv::Mat::zeros(src.size(), CV_8UC1);
-    }
 
-    // 2. 安全分离通道：使用 vector 动态接收，杜绝越界
     std::vector<cv::Mat> channels;
     cv::split(src, channels);
+    cv::Mat color_mask;
 
-    cv::Mat mask;
-
-    // 3. 根据目标颜色进行提取
     if (color == EnemyColor::RED)
     {
-        // 提取红色：R(2) 大于 G(1) 和 B(0)
-        mask = (channels[2] > channels[1] * 1.2) & (channels[2] > channels[0] * 1.2) & (channels[2] > 135);
+        // 红方：R 比 B 大 20，且 R 比 G 大 20，且 R 本身足够亮(>80)
+        cv::Mat r_sub_b, r_sub_g;
+        cv::subtract(channels[2], channels[0], r_sub_b);
+        cv::subtract(channels[2], channels[1], r_sub_g);
+        color_mask = (r_sub_b > 20) & (r_sub_g > 20) & (channels[2] > 80);
     }
     else
     {
-        // 提取蓝色：B(0) 大于 G(1) 和 R(2)
-        mask = (channels[0] > channels[1] * 1.05) & (channels[0] > channels[2] * 1.05) & (channels[0] > 130);
+        // 蓝方：B 比 R 大 20，且 B 比 G 大 20，且 B 本身足够亮(>80)
+        cv::Mat b_sub_r, b_sub_g;
+        cv::subtract(channels[0], channels[2], b_sub_r);
+        cv::subtract(channels[0], channels[1], b_sub_g);
+        color_mask = (b_sub_r > 20) & (b_sub_g > 20) & (channels[0] > 80);
     }
 
-    return mask;
+    // 【关键】：只用一次 5x5 的闭运算，把灯条中间发白导致的空洞填满，不加任何会切碎灯条的开运算！
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
+    cv::morphologyEx(color_mask, color_mask, cv::MORPH_CLOSE, kernel);
+
+    return color_mask;
 }
 
 std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask)
@@ -136,13 +140,23 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
         return armors;
 
     std::vector<cv::RotatedRect> sortedBars = lightBars;
+    // 按 X 坐标从左到右排序
     std::sort(sortedBars.begin(), sortedBars.end(), [](const cv::RotatedRect &a, const cv::RotatedRect &b)
               { return a.center.x < b.center.x; });
 
+    // 【新增】：记录灯条是否已经被匹配过了
+    std::vector<bool> used(sortedBars.size(), false);
+
     for (size_t i = 0; i < sortedBars.size() - 1; i++)
     {
+        if (used[i])
+            continue; // 如果左灯条已经名花有主，跳过
+
         for (size_t j = i + 1; j < sortedBars.size(); j++)
         {
+            if (used[j])
+                continue; // 如果右灯条已经名花有主，跳过
+
             const auto &left = sortedBars[i];
             const auto &right = sortedBars[j];
 
@@ -152,18 +166,19 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
             float left_angle = left.size.width > left.size.height ? left.angle : left.angle - 90.0f;
             float right_angle = right.size.width > right.size.height ? right.angle : right.angle - 90.0f;
 
-            // 适当放宽了几何条件以保证组队成功率
-            if (std::abs(left_angle - right_angle) > 35.0f)
+            // 几何条件 (因为这台步兵倾斜不大，我们可以稍微收紧一点防误判)
+            if (std::abs(left_angle - right_angle) > 25.0f)
                 continue;
             if (std::max(left_length, right_length) / std::min(left_length, right_length) > 2.5f)
                 continue;
-            if (std::abs(left.center.y - right.center.y) > avg_length * 2.0f)
+            if (std::abs(left.center.y - right.center.y) > avg_length * 1.5f)
                 continue;
 
             float aspect_ratio = cv::norm(left.center - right.center) / avg_length;
-            if (aspect_ratio < 0.8f || aspect_ratio > 5.0f)
+            if (aspect_ratio < 1.0f || aspect_ratio > 4.5f)
                 continue;
 
+            // 匹配成功！
             Armor armor;
             armor.left_light = left;
             armor.right_light = right;
@@ -183,6 +198,10 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
             armor.vertices[3] = (left_pts[2] + left_pts[3]) / 2.0f;
 
             armors.push_back(armor);
+
+            // 【新增】：标记这两个灯条已被使用，不许再跟别人配对！
+            used[i] = true;
+            used[j] = true;
             break;
         }
     }

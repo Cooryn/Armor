@@ -82,8 +82,8 @@ int main(int argc, char **argv)
     // ==========================================
     // 2. 动态路径配置
     // ==========================================
-    std::string input_path = (run_mode == "video") ? "./assets/video/video_1.avi" : "./assets/image/image_0.jpg";
-    std::string output_path = (run_mode == "video") ? "./results/video/video_1.mp4" : "./results/image/image_0.jpg";
+    std::string input_path = (run_mode == "video") ? "./assets/video/video_1.avi" : "./assets/image/image_1.jpg";
+    std::string output_path = (run_mode == "video") ? "./results/video/video_1.mp4" : "./results/image/image_1.jpg";
 
     // 自动创建输出文件夹
     std::filesystem::path out_dir = std::filesystem::path(output_path).parent_path();
