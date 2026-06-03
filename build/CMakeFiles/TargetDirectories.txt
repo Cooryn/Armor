@@ -1,3 +1,0 @@
-/home/coryn/Train/Armor/build/CMakeFiles/rm_vision.dir
-/home/coryn/Train/Armor/build/CMakeFiles/edit_cache.dir
-/home/coryn/Train/Armor/build/CMakeFiles/rebuild_cache.dir
