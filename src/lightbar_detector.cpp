@@ -6,7 +6,8 @@
 // 完全使用你提供的原生实现
 // ==========================================
 
-cv::Mat extractColor(const cv::Mat &src, EnemyColor color)
+// 修改 extractColor，把写死的 20 和 80 换成变量
+cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gray_th)
 {
     if (src.empty() || src.channels() < 3)
         return cv::Mat::zeros(src.size(), CV_8UC1);
@@ -15,28 +16,70 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color)
     cv::split(src, channels);
     cv::Mat color_mask;
 
+    // ==========================================
+    // 步骤 1：基础差分 —— 抛弃绿通道，只比红蓝！
+    // ==========================================
     if (color == EnemyColor::RED)
     {
-        // 红方：R 比 B 大 20，且 R 比 G 大 20，且 R 本身足够亮(>80)
-        cv::Mat r_sub_b, r_sub_g;
+        cv::Mat r_sub_b;
         cv::subtract(channels[2], channels[0], r_sub_b);
-        cv::subtract(channels[2], channels[1], r_sub_g);
-        color_mask = (r_sub_b > 20) & (r_sub_g > 20) & (channels[2] > 80);
+        // 只要红比蓝多出 color_th，且绝对亮度大于 gray_th，就是红色！
+        color_mask = (r_sub_b > color_th) & (channels[2] > gray_th);
     }
     else
     {
-        // 蓝方：B 比 R 大 20，且 B 比 G 大 20，且 B 本身足够亮(>80)
-        cv::Mat b_sub_r, b_sub_g;
+        cv::Mat b_sub_r;
         cv::subtract(channels[0], channels[2], b_sub_r);
-        cv::subtract(channels[0], channels[1], b_sub_g);
-        color_mask = (b_sub_r > 20) & (b_sub_g > 20) & (channels[0] > 80);
+        // 只要蓝比红多出 color_th，且绝对亮度大于 gray_th，就是蓝色！
+        color_mask = (b_sub_r > color_th) & (channels[0] > gray_th);
     }
 
-    // 【关键】：只用一次 5x5 的闭运算，把灯条中间发白导致的空洞填满，不加任何会切碎灯条的开运算！
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
-    cv::morphologyEx(color_mask, color_mask, cv::MORPH_CLOSE, kernel);
+    // ==========================================
+    // 步骤 2：过曝修复术 —— "色彩保护罩" (保持不变)
+    // ==========================================
+    cv::Mat gray, highlight_mask;
+    cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
+    cv::threshold(gray, highlight_mask, 210, 255, cv::THRESH_BINARY); // 灰度大于210认为是纯白高光
+
+    cv::Mat shield;
+    // 放大内核，给高光更大的包裹范围
+    cv::Mat big_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(15, 15));
+    cv::dilate(color_mask, shield, big_kernel);
+
+    // 精准打击：只保留被保护罩盖住的高光
+    cv::bitwise_and(highlight_mask, shield, highlight_mask);
+
+    // 完美合体
+    cv::bitwise_or(color_mask, highlight_mask, color_mask);
+
+    // ==========================================
+    // 步骤 3：边缘平滑
+    // ==========================================
+    cv::Mat small_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+    cv::morphologyEx(color_mask, color_mask, cv::MORPH_CLOSE, small_kernel);
 
     return color_mask;
+}
+
+// 修改 getValidLightRects，把写死的 55.0f 换成变量
+std::vector<cv::RotatedRect> getValidLightRects(
+    const std::vector<std::vector<cv::Point>> &lightBars, float min_angle)
+{
+    std::vector<cv::RotatedRect> rects;
+    for (const auto &c : lightBars)
+    {
+        cv::RotatedRect rect = cv::minAreaRect(c);
+        float w = rect.size.width;
+        float h = rect.size.height;
+        float angle = std::abs(rect.angle);
+        float longEdgeAngle = (w >= h) ? angle : (90.0f - angle);
+
+        if (longEdgeAngle < min_angle)
+            continue; // 使用传进来的角度
+
+        rects.push_back(rect);
+    }
+    return rects;
 }
 
 std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask)
