@@ -53,6 +53,9 @@ def plot_pose_data(csv_file_path, output_image_path):
     print(f"数据可视化图表已成功保存至: {output_image_path}")
 
 if __name__ == '__main__':
+    csv_path = './results/pose_data_1.csv'
+    out_path = './results/exp_result_raw_1.png'
+    plot_pose_data(csv_path, out_path)
     csv_path = './results/pose_data_2.csv'
     out_path = './results/exp_result_raw_2.png'
     plot_pose_data(csv_path, out_path)

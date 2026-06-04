@@ -186,9 +186,9 @@ int main(int argc, char **argv)
                 double tx = armors[i].tvec.at<double>(0), ty = armors[i].tvec.at<double>(1), tz = armors[i].tvec.at<double>(2);
                 double rx = armors[i].rvec.at<double>(0), ry = armors[i].rvec.at<double>(1), rz = armors[i].rvec.at<double>(2);
 
-                cv::putText(final_result, cv::format("tvec:  x %6.2f  y %6.2f  z %6.2f", tx, ty, tz), cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 255, 255), 2);
+                cv::putText(final_result, cv::format("tvec:  x %6.2f  y %6.2f  z %6.2f", tx, ty, tz), cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 255), 2);
                 text_y_offset += 30;
-                cv::putText(final_result, cv::format("rvec:  x %6.2f  y %6.2f  z %6.2f", rx, ry, rz), cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 255, 255), 2);
+                cv::putText(final_result, cv::format("rvec:  x %6.2f  y %6.2f  z %6.2f", rx, ry, rz), cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 255), 2);
                 text_y_offset += 40;
 
                 if (csv_file.is_open() && run_mode == "video")
