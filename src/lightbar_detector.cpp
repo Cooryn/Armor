@@ -2,11 +2,6 @@
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 
-// ==========================================
-// 完全使用你提供的原生实现
-// ==========================================
-
-// 修改 extractColor，把写死的 20 和 80 换成变量
 cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gray_th)
 {
     if (src.empty() || src.channels() < 3)
@@ -61,7 +56,6 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
     return color_mask;
 }
 
-// 修改 getValidLightRects，把写死的 55.0f 换成变量
 std::vector<cv::RotatedRect> getValidLightRects(
     const std::vector<std::vector<cv::Point>> &lightBars, float min_angle)
 {
