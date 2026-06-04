@@ -105,6 +105,7 @@ int main(int argc, char **argv)
     if (run_mode == "video")
     {
         int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+
         writer_raw.open(raw_output_path, fourcc, 30.0, original_frame.size(), true);
         writer_final.open(final_output_path, fourcc, 30.0, original_frame.size(), true);
 
@@ -224,6 +225,32 @@ int main(int argc, char **argv)
         writer_final.release();
     if (csv_file.is_open())
         csv_file.close();
+
+    if (run_mode == "video")
+    {
+        // 拼凑目标 MP4 文件名
+        std::string raw_mp4 = out_dir + stem + "_raw.mp4";
+        std::string final_mp4 = out_dir + stem + ".mp4";
+
+        // 构建终端命令：ffmpeg -y -i input.avi -c:v libx264 output.mp4
+        // -y 表示覆盖同名文件，-loglevel quiet 表示静默执行不刷屏
+        std::string cmd_raw = "ffmpeg -y -i " + raw_output_path + " -c:v libx264 " + raw_mp4 + " -loglevel quiet";
+        std::string cmd_final = "ffmpeg -y -i " + final_output_path + " -c:v libx264 " + final_mp4 + " -loglevel quiet";
+
+        // 调用系统终端执行转码
+        int ret1 = system(cmd_raw.c_str());
+        int ret2 = system(cmd_final.c_str());
+
+        if (ret1 == 0 && ret2 == 0)
+        {
+            std::remove(raw_output_path.c_str());
+            std::remove(final_output_path.c_str());
+        }
+        else
+        {
+            std::cerr << "[转码警告] MP4 生成失败，请检查是否已安装 ffmpeg (sudo apt install ffmpeg)。" << std::endl;
+        }
+    }
 
     if (run_mode == "video")
     {
