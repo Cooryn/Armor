@@ -169,6 +169,16 @@ int main(int argc, char **argv)
         cv::Mat final_result = raw_result.clone();
 
         int text_y_offset = 30;
+
+        // ==========================================
+        // 🚀 最优目标筛选器 (Target Selector)
+        // ==========================================
+        double min_z = 9999.0;
+        int best_armor_idx = -1;
+
+        double best_tx = 0, best_ty = 0, best_tz = 0, best_yaw = 0;
+
+        // 仅此一个循环：遍历、算 PnP、画字、并找出最近的装甲板
         for (size_t i = 0; i < armors.size(); i++)
         {
             if (pnp_solver.solve(armors[i]))
@@ -176,25 +186,37 @@ int main(int argc, char **argv)
                 double tx = armors[i].tvec.at<double>(0), ty = armors[i].tvec.at<double>(1), tz = armors[i].tvec.at<double>(2);
                 double rx = armors[i].rvec.at<double>(0), ry = armors[i].rvec.at<double>(1), rz = armors[i].rvec.at<double>(2);
 
-                cv::putText(final_result, cv::format("tvec:  x %6.2f  y %6.2f  z %6.2f", tx, ty, tz), cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 255), 2);
-                text_y_offset += 30;
-                cv::putText(final_result, cv::format("rvec:  x %6.2f  y %6.2f  z %6.2f", rx, ry, rz), cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 255), 2);
+                cv::putText(final_result, cv::format("tvec:  x %6.2f  y %6.2f  z %6.2f", tx, ty, tz), cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 0.95, cv::Scalar(0, 255, 255), 2);
                 text_y_offset += 40;
+                cv::putText(final_result, cv::format("rvec:  x %6.2f  y %6.2f  z %6.2f", rx, ry, rz), cv::Point(20, text_y_offset), cv::FONT_HERSHEY_SIMPLEX, 0.95, cv::Scalar(0, 255, 255), 2);
+                text_y_offset += 55;
 
-                if (csv_file.is_open() && run_mode == "video")
+                if (tz < min_z)
                 {
-                    csv_file << frame_count << "," << tx << "," << ty << "," << tz << "," << armors[i].yaw << "\n";
+                    min_z = tz;
+                    best_armor_idx = i;
+                    best_tx = tx;
+                    best_ty = ty;
+                    best_tz = tz;
+                    best_yaw = armors[i].yaw;
                 }
             }
         }
 
-        // --- 结果展示与保存 ---
+        // 循环结束，只把唯一的最优目标写进 CSV！
+        if (csv_file.is_open() && run_mode == "video" && best_armor_idx != -1)
+        {
+            csv_file << frame_count << "," << best_tx << "," << best_ty << "," << best_tz << "," << best_yaw << "\n";
+        }
+
+        // ==========================================
+        // 接下来直接展示与保存，没有任何多余的废话！
+        // ==========================================
         cv::imshow("Raw Detection", raw_result);
         cv::imshow("Final PnP", final_result);
 
         if (run_mode == "image")
         {
-            // 如果是图片模式，处理完直接严格保存并等待键盘输入退出
             cv::imwrite(raw_output_path, raw_result);
             cv::imwrite(final_output_path, final_result);
             std::cout << "[成功] 图片已导出至 " << out_dir << std::endl;
@@ -204,7 +226,6 @@ int main(int argc, char **argv)
         }
         else
         {
-            // 如果是视频模式，写入流中，并允许中途按 ESC 退出
             writer_raw.write(raw_result);
             writer_final.write(final_result);
             if (cv::waitKey(1) == 27)
@@ -213,7 +234,7 @@ int main(int argc, char **argv)
                 break;
             }
             if (!stream->getFrame(original_frame))
-                break; // 视频结束
+                break;
             frame_count++;
         }
 
