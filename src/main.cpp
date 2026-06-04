@@ -75,18 +75,9 @@ int main(int argc, char **argv)
     std::cout << "[信息] 成功加载文件: " << input_path << " | 模式: " << run_mode << " | 目标: " << (target_color == EnemyColor::RED ? "红方" : "蓝方") << std::endl;
 
     // ==========================================
-    // 2. 读取 YAML 配置与初始化
+    // 2. 配置初始化
     // ==========================================
-    int color_th = 20, gray_th = 80, min_area = 10, min_angle = 55;
-    cv::FileStorage fs_read("./assets/config.yaml", cv::FileStorage::READ);
-    if (fs_read.isOpened())
-    {
-        fs_read["color_th"] >> color_th;
-        fs_read["gray_th"] >> gray_th;
-        fs_read["min_area"] >> min_area;
-        fs_read["min_angle"] >> min_angle;
-        fs_read.release();
-    }
+    int color_th = 70, gray_th = 250, min_area = 40, min_angle = 55;
 
     // 创建输出目录
     std::string stem = fs::path(input_path).stem().string();
@@ -146,7 +137,6 @@ int main(int argc, char **argv)
                          0.000000, 1714.616882, 546.930868,
                          0.000000, 0.000000, 1.000000);
         distort_coeffs = (cv::Mat_<double>(1, 5) << -0.119922, -0.078593, 0.007511, -0.028028, 0.000000);
-        std::cout << "加载 video_2 内参矩阵。" << std::endl;
     }
     else
     {
@@ -155,7 +145,6 @@ int main(int argc, char **argv)
                          0, 1288.1400736562441, 483.6163720308021,
                          0, 0, 1);
         distort_coeffs = (cv::Mat_<double>(1, 5) << -0.47562935060124745, 0.21831745829617311, 0.0004957613589406044, -0.00034617769548693592, 0);
-        std::cout << "加载 video_1 内参矩阵。" << std::endl;
     }
 
     Solver pnp_solver(camera_matrix, distort_coeffs);

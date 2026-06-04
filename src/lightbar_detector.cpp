@@ -187,7 +187,7 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
     std::sort(sortedBars.begin(), sortedBars.end(), [](const cv::RotatedRect &a, const cv::RotatedRect &b)
               { return a.center.x < b.center.x; });
 
-    // 【新增】：记录灯条是否已经被匹配过了
+    // 记录灯条是否已经被匹配过了 (非常优秀的逻辑，保留！)
     std::vector<bool> used(sortedBars.size(), false);
 
     for (size_t i = 0; i < sortedBars.size() - 1; i++)
@@ -203,25 +203,39 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
             const auto &left = sortedBars[i];
             const auto &right = sortedBars[j];
 
+            // 提取物理长度和真实倾斜角 (保留你极其精准的处理逻辑)
             float left_length = std::max(left.size.width, left.size.height);
             float right_length = std::max(right.size.width, right.size.height);
             float avg_length = (left_length + right_length) / 2.0f;
             float left_angle = left.size.width > left.size.height ? left.angle : left.angle - 90.0f;
             float right_angle = right.size.width > right.size.height ? right.angle : right.angle - 90.0f;
 
-            // 几何条件 (因为这台步兵倾斜不大，我们可以稍微收紧一点防误判)
-            if (std::abs(left_angle - right_angle) > 25.0f)
-                continue;
-            if (std::max(left_length, right_length) / std::min(left_length, right_length) > 2.5f)
-                continue;
-            if (std::abs(left.center.y - right.center.y) > avg_length * 1.5f)
+            // ==========================================
+            // 🚀 核心升级：四大严苛物理几何防线
+            // ==========================================
+
+            // --- 防线 A：角度平行约束 (收紧至 8 度) ---
+            float angle_diff = std::abs(left_angle - right_angle);
+            // 注：RotatedRect 角度有 180 度跳变的可能，加上 abs(diff - 180) 的防误杀逻辑
+            if (angle_diff > 8.0f && std::abs(angle_diff - 180.0f) > 8.0f)
                 continue;
 
+            // --- 防线 B：长度比例约束 (收紧至 1.5 倍) ---
+            if (std::max(left_length, right_length) / std::min(left_length, right_length) > 1.5f)
+                continue;
+
+            // --- 防线 C：Y 轴高度差约束 (收紧至平均长度的 0.8 倍) ---
+            if (std::abs(left.center.y - right.center.y) > avg_length * 0.8f)
+                continue;
+
+            // --- 防线 D：物理长宽比约束 (卡死在 1.2 到 4.5 之间) ---
             float aspect_ratio = cv::norm(left.center - right.center) / avg_length;
-            if (aspect_ratio < 1.0f || aspect_ratio > 4.5f)
+            if (aspect_ratio < 1.2f || aspect_ratio > 4.5f)
                 continue;
 
-            // 匹配成功！
+            // ==========================================
+            // 匹配成功！(保留你原有的装甲板组装逻辑)
+            // ==========================================
             Armor armor;
             armor.left_light = left;
             armor.right_light = right;
@@ -242,10 +256,10 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
 
             armors.push_back(armor);
 
-            // 【新增】：标记这两个灯条已被使用，不许再跟别人配对！
+            // 标记这两个灯条已被使用，不许再跟别人配对！
             used[i] = true;
             used[j] = true;
-            break;
+            break; // 找到右灯条后直接跳出内层循环，让左灯条 i 进入下一个
         }
     }
     return armors;
