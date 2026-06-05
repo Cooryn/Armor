@@ -39,9 +39,9 @@ def plot_yaw_data(csv_file_path, output_image_path):
 if __name__ == '__main__':
 
     csv_path_1 = './results/pose_data_1.csv'
-    out_path_1 = './results/exp_result_improve_1.png' # 🚀 改为 improve_1
+    out_path_1 = './results/exp_result_raw_1.png' # 🚀 改为 improve_1
     plot_yaw_data(csv_path_1, out_path_1)
 
     csv_path_2 = './results/pose_data_2.csv'
-    out_path_2 = './results/exp_result_improve_2.png' # 🚀 改为 improve_2
+    out_path_2 = './results/exp_result_raw_2.png' # 🚀 改为 improve_2
     plot_yaw_data(csv_path_2, out_path_2)

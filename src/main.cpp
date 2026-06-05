@@ -181,7 +181,7 @@ int main(int argc, char **argv)
         // 仅此一个循环：遍历、算 PnP、画字、并找出最近的装甲板
         for (size_t i = 0; i < armors.size(); i++)
         {
-            if (pnp_solver.solve(armors[i], true))
+            if (pnp_solver.solve(armors[i]))
             {
                 double tx = armors[i].tvec.at<double>(0), ty = armors[i].tvec.at<double>(1), tz = armors[i].tvec.at<double>(2);
                 double rx = armors[i].rvec.at<double>(0), ry = armors[i].rvec.at<double>(1), rz = armors[i].rvec.at<double>(2);
