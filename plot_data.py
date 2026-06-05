@@ -18,7 +18,7 @@ def plot_yaw_data(csv_file_path, output_image_path):
     plt.plot(data['Frame'], data['Yaw'], color='purple', label='Yaw Angle', linewidth=1.5)
     
     # 设置图表标题和坐标轴标签
-    plt.title('Armor Yaw Angle over Frames (Delivery 5)', fontsize=16)
+    plt.title('Armor Yaw Angle over Frames', fontsize=16)
     plt.xlabel('Frames', fontsize=12)
     plt.ylabel('Yaw Angle (Degrees)', fontsize=12)
     
