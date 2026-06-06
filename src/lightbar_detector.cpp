@@ -26,7 +26,7 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
 
     cv::Mat gray, highlight_mask;
     cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
-    cv::threshold(gray, highlight_mask, 210, 255, cv::THRESH_BINARY); // 灰度大于210认为是纯白高光
+    cv::threshold(gray, highlight_mask, 210, 255, cv::THRESH_BINARY);
 
     cv::Mat shield;
     cv::Mat big_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(15, 15));
@@ -55,7 +55,7 @@ std::vector<cv::RotatedRect> getValidLightRects(
         float longEdgeAngle = (w >= h) ? angle : (90.0f - angle);
 
         if (longEdgeAngle < min_angle)
-            continue; // 使用传进来的角度
+            continue;
 
         rects.push_back(rect);
     }
@@ -117,11 +117,6 @@ cv::Mat drawLightBarRects(const cv::Mat &src, const std::vector<std::vector<cv::
     return out;
 }
 
-// ==========================================
-// 桥接与后端匹配逻辑 (衔接 PnP)
-// ==========================================
-
-// 将你过滤后的 contours 转为匹配需要的 RotatedRect，并把你在 drawLightBarRects 里的角度过滤搬过来，避免错配水平灯条
 std::vector<cv::RotatedRect> getValidLightRects(const std::vector<std::vector<cv::Point>> &lightBars)
 {
     std::vector<cv::RotatedRect> rects;
@@ -133,7 +128,6 @@ std::vector<cv::RotatedRect> getValidLightRects(const std::vector<std::vector<cv
         float angle = std::abs(rect.angle);
         float longEdgeAngle = (w >= h) ? angle : (90.0f - angle);
 
-        // 保留你原本对角度的严格限制 (<75度不要)
         if (longEdgeAngle < 55.0f)
             continue;
 
@@ -149,59 +143,46 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
         return armors;
 
     std::vector<cv::RotatedRect> sortedBars = lightBars;
-    // 按 X 坐标从左到右排序
+
     std::sort(sortedBars.begin(), sortedBars.end(), [](const cv::RotatedRect &a, const cv::RotatedRect &b)
               { return a.center.x < b.center.x; });
 
-    // 记录灯条是否已经被匹配过了 (非常优秀的逻辑，保留！)
     std::vector<bool> used(sortedBars.size(), false);
 
     for (size_t i = 0; i < sortedBars.size() - 1; i++)
     {
         if (used[i])
-            continue; // 如果左灯条已经名花有主，跳过
+            continue;
 
         for (size_t j = i + 1; j < sortedBars.size(); j++)
         {
             if (used[j])
-                continue; // 如果右灯条已经名花有主，跳过
+                continue;
 
             const auto &left = sortedBars[i];
             const auto &right = sortedBars[j];
 
-            // 提取物理长度和真实倾斜角 (保留你极其精准的处理逻辑)
             float left_length = std::max(left.size.width, left.size.height);
             float right_length = std::max(right.size.width, right.size.height);
             float avg_length = (left_length + right_length) / 2.0f;
             float left_angle = left.size.width > left.size.height ? left.angle : left.angle - 90.0f;
             float right_angle = right.size.width > right.size.height ? right.angle : right.angle - 90.0f;
 
-            // ==========================================
-            // 🚀 核心升级：四大严苛物理几何防线
-            // ==========================================
 
-            // --- 防线 A：角度平行约束 (收紧至 8 度) ---
             float angle_diff = std::abs(left_angle - right_angle);
-            // 注：RotatedRect 角度有 180 度跳变的可能，加上 abs(diff - 180) 的防误杀逻辑
             if (angle_diff > 8.0f && std::abs(angle_diff - 180.0f) > 8.0f)
                 continue;
 
-            // --- 防线 B：长度比例约束 (收紧至 1.5 倍) ---
             if (std::max(left_length, right_length) / std::min(left_length, right_length) > 1.5f)
                 continue;
 
-            // --- 防线 C：Y 轴高度差约束 (收紧至平均长度的 0.8 倍) ---
             if (std::abs(left.center.y - right.center.y) > avg_length * 0.8f)
                 continue;
 
-            // --- 防线 D：物理长宽比约束 (卡死在 1.2 到 4.5 之间) ---
             float aspect_ratio = cv::norm(left.center - right.center) / avg_length;
             if (aspect_ratio < 1.2f || aspect_ratio > 4.5f)
                 continue;
 
-            // ==========================================
-            // 匹配成功！(保留你原有的装甲板组装逻辑)
-            // ==========================================
             Armor armor;
             armor.left_light = left;
             armor.right_light = right;
@@ -211,13 +192,11 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
             left.points(left_pts);
             right.points(right_pts);
 
-            // 按 y 坐标从小到大排序 (0,1 是顶部, 2,3 是底部)
             std::sort(left_pts, left_pts + 4, [](const cv::Point2f &a, const cv::Point2f &b)
                       { return a.y < b.y; });
             std::sort(right_pts, right_pts + 4, [](const cv::Point2f &a, const cv::Point2f &b)
                       { return a.y < b.y; });
 
-            // 🚀 【核心修复】严格对齐 solver.cpp 的 3D 点序：左上 -> 左下 -> 右下 -> 右上
             armor.vertices[0] = (left_pts[0] + left_pts[1]) / 2.0f;   // 0: 左上 (Top-Left)
             armor.vertices[1] = (left_pts[2] + left_pts[3]) / 2.0f;   // 1: 左下 (Bottom-Left)
             armor.vertices[2] = (right_pts[2] + right_pts[3]) / 2.0f; // 2: 右下 (Bottom-Right)
@@ -225,10 +204,9 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
 
             armors.push_back(armor);
 
-            // 标记这两个灯条已被使用，不许再跟别人配对！
             used[i] = true;
             used[j] = true;
-            break; // 找到右灯条后直接跳出内层循环，让左灯条 i 进入下一个
+            break;
         }
     }
     return armors;
