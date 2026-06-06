@@ -11,45 +11,31 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
     cv::split(src, channels);
     cv::Mat color_mask;
 
-    // ==========================================
-    // 步骤 1：基础差分 —— 抛弃绿通道，只比红蓝！
-    // ==========================================
     if (color == EnemyColor::RED)
     {
         cv::Mat r_sub_b;
         cv::subtract(channels[2], channels[0], r_sub_b);
-        // 只要红比蓝多出 color_th，且绝对亮度大于 gray_th，就是红色！
         color_mask = (r_sub_b > color_th) & (channels[2] > gray_th);
     }
     else
     {
         cv::Mat b_sub_r;
         cv::subtract(channels[0], channels[2], b_sub_r);
-        // 只要蓝比红多出 color_th，且绝对亮度大于 gray_th，就是蓝色！
         color_mask = (b_sub_r > color_th) & (channels[0] > gray_th);
     }
 
-    // ==========================================
-    // 步骤 2：过曝修复术 —— "色彩保护罩" (保持不变)
-    // ==========================================
     cv::Mat gray, highlight_mask;
     cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
     cv::threshold(gray, highlight_mask, 210, 255, cv::THRESH_BINARY); // 灰度大于210认为是纯白高光
 
     cv::Mat shield;
-    // 放大内核，给高光更大的包裹范围
     cv::Mat big_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(15, 15));
     cv::dilate(color_mask, shield, big_kernel);
 
-    // 精准打击：只保留被保护罩盖住的高光
     cv::bitwise_and(highlight_mask, shield, highlight_mask);
 
-    // 完美合体
     cv::bitwise_or(color_mask, highlight_mask, color_mask);
 
-    // ==========================================
-    // 步骤 3：边缘平滑
-    // ==========================================
     cv::Mat small_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
     cv::morphologyEx(color_mask, color_mask, cv::MORPH_CLOSE, small_kernel);
 
@@ -82,20 +68,6 @@ std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask)
     cv::Mat maskCopy = mask.clone();
     cv::findContours(maskCopy, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
     return contours;
-}
-
-cv::Mat applyMaskToImage(const cv::Mat &src, const cv::Mat &mask)
-{
-    cv::Mat result;
-    cv::bitwise_and(src, src, result, mask);
-    return result;
-}
-
-cv::Mat drawAllContours(const cv::Mat &src, const std::vector<std::vector<cv::Point>> &contours)
-{
-    cv::Mat out = src.clone();
-    cv::drawContours(out, contours, -1, cv::Scalar(0, 255, 0), 2);
-    return out;
 }
 
 std::vector<std::vector<cv::Point>> filterLightBars(const std::vector<std::vector<cv::Point>> &contours, double minAspectRatio, double minArea)
@@ -238,15 +210,18 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
             cv::Point2f left_pts[4], right_pts[4];
             left.points(left_pts);
             right.points(right_pts);
+
+            // 按 y 坐标从小到大排序 (0,1 是顶部, 2,3 是底部)
             std::sort(left_pts, left_pts + 4, [](const cv::Point2f &a, const cv::Point2f &b)
                       { return a.y < b.y; });
             std::sort(right_pts, right_pts + 4, [](const cv::Point2f &a, const cv::Point2f &b)
                       { return a.y < b.y; });
 
-            armor.vertices[0] = (left_pts[0] + left_pts[1]) / 2.0f;
-            armor.vertices[1] = (right_pts[0] + right_pts[1]) / 2.0f;
-            armor.vertices[2] = (right_pts[2] + right_pts[3]) / 2.0f;
-            armor.vertices[3] = (left_pts[2] + left_pts[3]) / 2.0f;
+            // 🚀 【核心修复】严格对齐 solver.cpp 的 3D 点序：左上 -> 左下 -> 右下 -> 右上
+            armor.vertices[0] = (left_pts[0] + left_pts[1]) / 2.0f;   // 0: 左上 (Top-Left)
+            armor.vertices[1] = (left_pts[2] + left_pts[3]) / 2.0f;   // 1: 左下 (Bottom-Left)
+            armor.vertices[2] = (right_pts[2] + right_pts[3]) / 2.0f; // 2: 右下 (Bottom-Right)
+            armor.vertices[3] = (right_pts[0] + right_pts[1]) / 2.0f; // 3: 右上 (Top-Right)
 
             armors.push_back(armor);
 
