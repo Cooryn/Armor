@@ -31,5 +31,10 @@ struct Armor
 std::vector<cv::RotatedRect> getValidLightRects(
     const std::vector<std::vector<cv::Point>> &lightBars, float min_angle = 55.0f);
 
-std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars);
+// 在 lightbar_detector.hpp 中
+std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
+                               float max_angle_diff = 8.0f,
+                               float max_length_ratio = 1.5f,
+                               float min_aspect_ratio = 1.2f,
+                               float max_y_diff_ratio = 0.8f);
 cv::Mat drawArmors(const cv::Mat &src, const std::vector<Armor> &armors);

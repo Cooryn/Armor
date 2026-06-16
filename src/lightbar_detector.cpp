@@ -136,7 +136,11 @@ std::vector<cv::RotatedRect> getValidLightRects(const std::vector<std::vector<cv
     return rects;
 }
 
-std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
+std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
+                              float max_angle_diff,
+                              float max_length_ratio,
+                              float min_aspect_ratio,
+                              float max_y_diff_ratio)
 {
     std::vector<Armor> armors;
     if (lightBars.size() < 2)
@@ -168,19 +172,24 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars)
             float left_angle = left.size.width > left.size.height ? left.angle : left.angle - 90.0f;
             float right_angle = right.size.width > right.size.height ? right.angle : right.angle - 90.0f;
 
-
             float angle_diff = std::abs(left_angle - right_angle);
-            if (angle_diff > 8.0f && std::abs(angle_diff - 180.0f) > 8.0f)
+
+            // 1. 替换角度差限制
+            if (angle_diff > max_angle_diff && std::abs(angle_diff - 180.0f) > max_angle_diff)
                 continue;
 
-            if (std::max(left_length, right_length) / std::min(left_length, right_length) > 1.5f)
+            // 2. 替换长短比限制
+            if (std::max(left_length, right_length) / std::min(left_length, right_length) > max_length_ratio)
                 continue;
 
-            if (std::abs(left.center.y - right.center.y) > avg_length * 0.8f)
+            // 3. 替换 Y 轴错位限制
+            if (std::abs(left.center.y - right.center.y) > avg_length * max_y_diff_ratio)
                 continue;
 
             float aspect_ratio = cv::norm(left.center - right.center) / avg_length;
-            if (aspect_ratio < 1.2f || aspect_ratio > 4.5f)
+
+            // 4. 替换宽高比限制 (注意上限 4.5f 通常不需要调，所以保留硬编码)
+            if (aspect_ratio < min_aspect_ratio || aspect_ratio > 4.5f)
                 continue;
 
             Armor armor;
