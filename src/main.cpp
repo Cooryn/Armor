@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <fstream>
 #include <cmath> // 引入 cmath 以使用 std::remainder
+#include <chrono>  // 用于真实时间戳计时
 
 #include "input_stream.hpp"
 #include "lightbar_detector.hpp"
@@ -165,6 +166,9 @@ int main(int argc, char **argv)
     Solver pnp_solver(camera_matrix, distort_coeffs);
     int frame_count = 0;
 
+    // 用于计算真实时间戳（替代硬编码的 frame_count * 33.33）
+    auto video_start_time = std::chrono::steady_clock::now();
+
     do
     {
         cv::Mat frame = original_frame.clone();
@@ -207,8 +211,9 @@ int main(int argc, char **argv)
 
         if (!valid_armors.empty())
         {
-            // 生成这一帧统一的时间戳 (假设 33.33ms / 帧)
-            double timestamp = frame_count * 33.33;
+            // 使用真实时间戳（毫秒），而非硬编码的固定帧间隔
+            auto now = std::chrono::steady_clock::now();
+            double timestamp = std::chrono::duration<double, std::milli>(now - video_start_time).count();
 
             // 🚀 核心修改：不再只取 [0]，而是遍历所有合法的装甲板
             for (size_t i = 0; i < valid_armors.size(); i++)

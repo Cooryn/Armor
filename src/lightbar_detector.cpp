@@ -117,25 +117,6 @@ cv::Mat drawLightBarRects(const cv::Mat &src, const std::vector<std::vector<cv::
     return out;
 }
 
-std::vector<cv::RotatedRect> getValidLightRects(const std::vector<std::vector<cv::Point>> &lightBars)
-{
-    std::vector<cv::RotatedRect> rects;
-    for (const auto &c : lightBars)
-    {
-        cv::RotatedRect rect = cv::minAreaRect(c);
-        float w = rect.size.width;
-        float h = rect.size.height;
-        float angle = std::abs(rect.angle);
-        float longEdgeAngle = (w >= h) ? angle : (90.0f - angle);
-
-        if (longEdgeAngle < 55.0f)
-            continue;
-
-        rects.push_back(rect);
-    }
-    return rects;
-}
-
 std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
                               float max_angle_diff,
                               float max_length_ratio,

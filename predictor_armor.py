@@ -11,41 +11,59 @@ class ArmorEKF:
     def __init__(self):
         # 🌟 11维状态量: [xc, vxc, yc, vyc, zc, vzc, body_yaw, w, r, dl, dh]^T
         self.X = np.zeros((11, 1))
-        
+
         self.F = np.eye(11)
         self.P = np.eye(11) * 10.0
-        # 物理结构参数极度自信，初始协方差给小点
+        # 物理结构参数初始协方差
         self.P[8, 8] = 0.01   # r
         self.P[9, 9] = 0.05   # dl
         self.P[10, 10] = 0.05 # dh
-        
-        # 过程噪声 Q
-        self.Q = np.eye(11) * 0.01
-        self.Q[1, 1] = 0.1   # vxc
-        self.Q[3, 3] = 0.1   # vyc
-        self.Q[5, 5] = 0.1   # vzc
-        self.Q[7, 7] = 0.5   # w (角速度变化大)
-        self.Q[8, 8] = 1e-5  # r (几乎不变)
-        self.Q[9, 9] = 1e-4  # dl (微小自适应)
-        self.Q[10, 10] = 1e-4 # dh (微小自适应)
-        
+
+        # 过程噪声谱密度（单位：方差/秒），按 dt 动态构建 Q
+        self.q_pos = 3.0     # 位置-速度对 (xc/vxc, yc/vyc, zc/vzc)
+        self.q_yaw = 15.0    # 偏航角-角速度对 (body_yaw, w)
+        self.q_r = 3e-4      # 底盘半径 r（几乎不变）
+        self.q_dl = 3e-3     # 侧向偏移 dl
+        self.q_dh = 3e-3     # 高度偏移 dh
+
         # 观测量: [target_yaw, target_pitch, distance, armor_orientation_yaw]
         self.R = np.diag([0.005, 0.005, 0.05, 0.05])
-        
+
         self.is_initialized = False
 
     def predict(self, dt):
-        """1. 建立车体中心运动模型"""
+        """1. 建立车体中心运动模型（过程噪声按 dt 缩放）"""
         self.F[0, 1] = dt  # xc += vxc * dt
         self.F[2, 3] = dt  # yc += vyc * dt
         self.F[4, 5] = dt  # zc += vzc * dt
         self.F[6, 7] = dt  # body_yaw += w * dt
-        # r, dl, dh 的导数为 0，所以在转移矩阵中 F[i,i]=1 即可
-        
+
         self.X = np.dot(self.F, self.X)
         self.X[6, 0] = wrap_to_pi(self.X[6, 0])
-        
-        self.P = np.dot(np.dot(self.F, self.P), self.F.T) + self.Q
+
+        # 按 dt 构建离散化过程噪声 Q
+        dt2 = dt * dt
+        dt3 = dt2 * dt
+        Q = np.zeros((11, 11))
+
+        for i, j in [(0, 1), (2, 3), (4, 5)]:
+            Q[i, i] = dt3 / 3.0 * self.q_pos
+            Q[i, j] = dt2 / 2.0 * self.q_pos
+            Q[j, i] = dt2 / 2.0 * self.q_pos
+            Q[j, j] = dt * self.q_pos
+
+        # body_yaw - w 对
+        Q[6, 6] = dt3 / 3.0 * self.q_yaw
+        Q[6, 7] = dt2 / 2.0 * self.q_yaw
+        Q[7, 6] = dt2 / 2.0 * self.q_yaw
+        Q[7, 7] = dt * self.q_yaw
+
+        # 结构参数（无动力学，微小随机游走）
+        Q[8, 8] = self.q_r * dt
+        Q[9, 9] = self.q_dl * dt
+        Q[10, 10] = self.q_dh * dt
+
+        self.P = np.dot(np.dot(self.F, self.P), self.F.T) + Q
 
     def h(self, X_state, armor_id):
         """2. 建立四块装甲板与车体中心之间的几何关系"""
@@ -53,26 +71,20 @@ class ArmorEKF:
         body_yaw = X_state[6, 0]
         r, dl, dh = X_state[8, 0], X_state[9, 0], X_state[10, 0]
 
-        # 计算理论朝向
         current_plate_yaw = body_yaw + armor_id * (np.pi / 2.0)
-        
-        # 🌟 核心：引入 dl 和 dh。判断是否为侧边装甲板 (id 1, 3)
+
         is_side = (armor_id % 2 != 0)
-        
-        # 半径补偿：侧板加 dl，高低补偿：侧板加 dh
         r_i = r + dl if is_side else r
         y_i = yc + dh if is_side else yc
-        
-        # 三维空间反推
+
         xa = xc - r_i * np.sin(current_plate_yaw)
         za = zc - r_i * np.cos(current_plate_yaw)
-        ya = y_i 
-        
-        # 转回相机视角的极坐标
+        ya = y_i
+
         target_yaw = np.arctan2(xa, za)
         distance = np.sqrt(xa**2 + ya**2 + za**2)
         target_pitch = np.arctan2(ya, np.sqrt(xa**2 + za**2))
-        
+
         return np.array([
             [wrap_to_pi(target_yaw)],
             [wrap_to_pi(target_pitch)],
@@ -85,92 +97,140 @@ class ArmorEKF:
         H = np.zeros((4, 11))
         eps = 1e-5
         Z_base = self.h(X_state, armor_id)
-        
+
         for i in range(11):
             X_eps = X_state.copy()
             X_eps[i, 0] += eps
             Z_eps = self.h(X_eps, armor_id)
-            
+
             diff = Z_eps - Z_base
             diff[0, 0] = wrap_to_pi(diff[0, 0])
             diff[1, 0] = wrap_to_pi(diff[1, 0])
             diff[3, 0] = wrap_to_pi(diff[3, 0])
-            
+
             H[:, i] = (diff / eps).flatten()
         return H
 
-    def update(self, Z_obs):
-        """
-        3 & 4. 预测器更新 (进阶方法：多重假设检验)
-        """
+    def find_best_armor_id(self, Z_obs):
+        """多重假设检验：对4块候选装甲板分别计算加权残差，返回最优ID（不修改状态）"""
         best_id = 0
         min_error = float('inf')
-        best_Y = None
-        
-        # 提取观测噪声的方差，用于后续误差的量纲归一化
         R_diag = np.diag(self.R).reshape(4, 1)
 
-        # 🌟 进阶逻辑：分别假设当前观测来自 0/1/2/3 四块装甲板
         for i in range(4):
-            # 1. 假设是第 i 块装甲板，计算预测观测量
             Z_pred_i = self.h(self.X, i)
-            
-            # 2. 计算残差 Y
             Y_i = Z_obs - Z_pred_i
-            Y_i[0, 0] = wrap_to_pi(Y_i[0, 0]) # target_yaw
-            Y_i[1, 0] = wrap_to_pi(Y_i[1, 0]) # target_pitch
-            Y_i[3, 0] = wrap_to_pi(Y_i[3, 0]) # armor_orientation_yaw
-            
-            # 3. 计算加权平方误差
-            # 为什么除以 R_diag？因为角度(弧度)和距离(米)的单位不同。
-            # 距离的误差可能是 0.1，角度的误差可能是 0.05。
-            # 除以它们各自的传感器方差，能让它们在一个起跑线上公平比较（类似于马氏距离）。
+            Y_i[0, 0] = wrap_to_pi(Y_i[0, 0])
+            Y_i[1, 0] = wrap_to_pi(Y_i[1, 0])
+            Y_i[3, 0] = wrap_to_pi(Y_i[3, 0])
             error_i = np.sum((Y_i ** 2) / R_diag)
-            
-            # 4. 记录误差最小的那一块
+
             if error_i < min_error:
                 min_error = error_i
                 best_id = i
-                best_Y = Y_i
 
-        # ==========================================
-        # 带着挑选出来的【最优 armor_id】，去算雅可比矩阵并更新
-        # ==========================================
-        H = self.get_jacobian(self.X, best_id)
-        
-        S = np.dot(np.dot(H, self.P), H.T) + self.R
-        K = np.dot(np.dot(self.P, H.T), np.linalg.inv(S))
-        
-        # 状态修正
-        self.X = self.X + np.dot(K, best_Y)
-        self.X[6, 0] = wrap_to_pi(self.X[6, 0]) 
-        
-        I = np.eye(11)
-        self.P = np.dot((I - np.dot(K, H)), self.P)
-        
         return best_id
 
-def run_predict_armor(csv_input_path, output_dir):
+    def update(self, Z_obs, armor_id=None):
+        """
+        卡尔曼更新步骤。
+        若 armor_id 为 None，则自动做多重假设检验选择最优装甲板。
+        使用 Joseph 形式保证 P 的对称正定性。
+        """
+        if armor_id is None:
+            armor_id = self.find_best_armor_id(Z_obs)
+
+        Z_pred = self.h(self.X, armor_id)
+        Y = Z_obs - Z_pred
+        Y[0, 0] = wrap_to_pi(Y[0, 0])
+        Y[1, 0] = wrap_to_pi(Y[1, 0])
+        Y[3, 0] = wrap_to_pi(Y[3, 0])
+
+        H = self.get_jacobian(self.X, armor_id)
+        S = np.dot(np.dot(H, self.P), H.T) + self.R
+        K = np.dot(np.dot(self.P, H.T), np.linalg.inv(S))
+
+        self.X = self.X + np.dot(K, Y)
+        self.X[6, 0] = wrap_to_pi(self.X[6, 0])
+        self.X[8, 0] = np.clip(self.X[8, 0], 0.20, 0.30)  # r: 20~30cm
+
+        # Joseph 形式
+        I = np.eye(11)
+        I_KH = I - np.dot(K, H)
+        self.P = np.dot(np.dot(I_KH, self.P), I_KH.T) + np.dot(np.dot(K, self.R), K.T)
+
+        return armor_id
+
+    def update_multi(self, observations):
+        """
+        使用同一帧内的多个观测顺序更新状态。
+        observations: list of dict, 每个 dict 含:
+          - 'Z_obs': (4,1) 观测向量
+          - 'armor_id': int (可选，未指定则从 body_yaw 自动推算)
+        按距离升序处理。
+        """
+        sorted_obs = sorted(observations, key=lambda o: o['Z_obs'][2, 0])
+
+        for obs in sorted_obs:
+            Z_obs = obs['Z_obs']
+            armor_id = obs.get('armor_id')
+
+            if armor_id is None:
+                yaw_diff = wrap_to_pi(Z_obs[3, 0] - self.X[6, 0])
+                armor_id = int(round(yaw_diff / (np.pi / 2.0))) % 4
+
+            Z_pred = self.h(self.X, armor_id)
+            Y = Z_obs - Z_pred
+            Y[0, 0] = wrap_to_pi(Y[0, 0])
+            Y[1, 0] = wrap_to_pi(Y[1, 0])
+            Y[3, 0] = wrap_to_pi(Y[3, 0])
+
+            H = self.get_jacobian(self.X, armor_id)
+            S = np.dot(np.dot(H, self.P), H.T) + self.R
+            K = np.dot(np.dot(self.P, H.T), np.linalg.inv(S))
+
+            self.X = self.X + np.dot(K, Y)
+            self.X[6, 0] = wrap_to_pi(self.X[6, 0])
+            self.X[8, 0] = np.clip(self.X[8, 0], 0.20, 0.30)  # r: 20~30cm
+
+            # Joseph 形式
+            I = np.eye(11)
+            I_KH = I - np.dot(K, H)
+            self.P = np.dot(np.dot(I_KH, self.P), I_KH.T) + np.dot(np.dot(K, self.R), K.T)
+
+
+def run_predict_armor(csv_input_path, output_dir, suffix="1"):
     if not os.path.exists(csv_input_path):
         print(f"错误: 找不到输入文件 {csv_input_path}")
         return
 
     os.makedirs(output_dir, exist_ok=True)
     data = pd.read_csv(csv_input_path)
-    
+
     ekf = ArmorEKF()
     results = []
     last_timestamp = None
+    first_frame_data = None  # 用于估算初始角速度
+    skip_predict = False     # 初始化帧已做过 predict，跳过重复
 
     for frame_id, group in data.groupby('frame_id'):
-        obs = group.sort_values(by='distance').iloc[0]
-        
-        Z_obs = np.array([
-            [obs['target_yaw']], [obs['target_pitch']],
-            [obs['distance']], [obs['armor_orientation_yaw']]
+        # 🌟 收集该帧所有装甲板检测
+        all_obs = []
+        for _, row in group.iterrows():
+            Z = np.array([
+                [row['target_yaw']], [row['target_pitch']],
+                [row['distance']], [row['armor_orientation_yaw']]
+            ])
+            all_obs.append({'Z_obs': Z, 'armor_id': None})
+
+        # 取距离最近的检测用于误差计算和时间戳
+        closest = group.sort_values(by='distance').iloc[0]
+        Z_closest = np.array([
+            [closest['target_yaw']], [closest['target_pitch']],
+            [closest['distance']], [closest['armor_orientation_yaw']]
         ])
-        
-        current_timestamp = obs['timestamp']
+
+        current_timestamp = closest['timestamp']
         if last_timestamp is None:
             dt = 1.0 / 30.0
         else:
@@ -178,56 +238,80 @@ def run_predict_armor(csv_input_path, output_dir):
             if dt <= 0: dt = 1.0 / 30.0
         last_timestamp = current_timestamp
 
-        # 第一帧启动
-        if not ekf.is_initialized:
-            obs_yaw = obs['armor_orientation_yaw']
-            r_init = 0.26
-            
-            xc_init = obs['x'] + r_init * np.sin(obs_yaw)
-            zc_init = obs['z'] + r_init * np.cos(obs_yaw)
-            
-            # [xc, vxc, yc, vyc, zc, vzc, body_yaw, w, r, dl, dh]
-            ekf.X = np.array([
-                [xc_init], [0], [obs['y']], [0], [zc_init], [0], 
-                [obs_yaw], [0], [r_init], [0], [0]
-            ])
-            ekf.is_initialized = True
+        # 第一帧：暂存数据，等第二帧算出角速度再初始化
+        if first_frame_data is None:
+            first_frame_data = {
+                'closest': closest, 'timestamp': current_timestamp,
+            }
+            last_timestamp = current_timestamp
             continue
 
+        # 第二帧：用两帧的 armor_orientation_yaw 估算初始角速度
+        if not ekf.is_initialized:
+            obs_yaw = first_frame_data['closest']['armor_orientation_yaw']
+            obs_yaw2 = closest['armor_orientation_yaw']
+            dt_init = dt  # 已在上面从时间戳算出
+            if dt_init <= 0: dt_init = 1.0 / 30.0
+
+            # 用两帧 yaw 差估算角速度（处理角度环绕）
+            w_init = wrap_to_pi(obs_yaw2 - obs_yaw) / dt_init
+
+            r_init = 0.26
+            first = first_frame_data['closest']
+            xc_init = first['x'] + r_init * np.sin(obs_yaw)
+            zc_init = first['z'] + r_init * np.cos(obs_yaw)
+
+            # [xc, vxc, yc, vyc, zc, vzc, body_yaw, w, r, dl, dh]
+            ekf.X = np.array([
+                [xc_init], [0], [first['y']], [0], [zc_init], [0],
+                [obs_yaw], [w_init], [r_init], [0], [0]
+            ])
+            ekf.is_initialized = True
+            skip_predict = True  # 已在上方 predict，避免重复
+            # predict: 从第一帧时刻推进到当前（第二帧）时刻
+            ekf.predict(dt)
+            # fall through to update with second frame observation
+
         # 卡尔曼
-        ekf.predict(dt)
-        armor_id = ekf.update(Z_obs) 
-        Z_pred_final = ekf.h(ekf.X, armor_id)
-        
-        # 记录误差用于图表输出
-        error_target_yaw = wrap_to_pi(Z_pred_final[0, 0] - obs['target_yaw'])
-        error_target_pitch = wrap_to_pi(Z_pred_final[1, 0] - obs['target_pitch'])
-        error_distance = Z_pred_final[2, 0] - obs['distance']
-        error_armor_yaw = wrap_to_pi(Z_pred_final[3, 0] - obs['armor_orientation_yaw'])
-        
-        # 为绘图记录当前装甲板的3D坐标
-        is_side = (armor_id % 2 != 0)
-        r_i = ekf.X[8,0] + ekf.X[9,0] if is_side else ekf.X[8,0]
-        xa_pred = ekf.X[0,0] - r_i * np.sin(Z_pred_final[3, 0])
-        za_pred = ekf.X[4,0] - r_i * np.cos(Z_pred_final[3, 0])
+        if skip_predict:
+            skip_predict = False
+        else:
+            ekf.predict(dt)
+
+        # 🌟 用先验（预测）状态计算误差——反映真实的一步预测精度
+        best_id = ekf.find_best_armor_id(Z_closest)
+        Z_pred = ekf.h(ekf.X, best_id)
+
+        error_target_yaw = wrap_to_pi(Z_pred[0, 0] - closest['target_yaw'])
+        error_target_pitch = wrap_to_pi(Z_pred[1, 0] - closest['target_pitch'])
+        error_distance = Z_pred[2, 0] - closest['distance']
+        error_armor_yaw = wrap_to_pi(Z_pred[3, 0] - closest['armor_orientation_yaw'])
+
+        # 为绘图记录当前装甲板的3D坐标（用先验状态）
+        is_side = (best_id % 2 != 0)
+        r_i = ekf.X[8, 0] + ekf.X[9, 0] if is_side else ekf.X[8, 0]
+        xa_pred = ekf.X[0, 0] - r_i * np.sin(Z_pred[3, 0])
+        za_pred = ekf.X[4, 0] - r_i * np.cos(Z_pred[3, 0])
+
+        # 🌟 用该帧所有检测更新状态
+        ekf.update_multi(all_obs)
 
         results.append({
             'frame_id': frame_id, 'timestamp': current_timestamp,
-            'xc': ekf.X[0, 0], 'zc': ekf.X[4, 0], 
-            'xa': xa_pred, 'za': za_pred, 'armor_id': armor_id,
-            'body_yaw': ekf.X[6, 0], 'pred_armor_yaw': Z_pred_final[3, 0],
-            'obs_armor_yaw': obs['armor_orientation_yaw'],
+            'xc': ekf.X[0, 0], 'yc': ekf.X[2, 0], 'zc': ekf.X[4, 0],
+            'xa': xa_pred, 'za': za_pred, 'armor_id': best_id,
+            'body_yaw': ekf.X[6, 0], 'pred_armor_yaw': Z_pred[3, 0],
+            'obs_armor_yaw': closest['armor_orientation_yaw'],
             'err_target_yaw': error_target_yaw, 'err_target_pitch': error_target_pitch,
-            'err_distance': error_distance, 'err_armor_yaw': error_armor_yaw
+            'err_distance': error_distance, 'err_armor_yaw': error_armor_yaw,
+            'r': ekf.X[8, 0], 'dl': ekf.X[9, 0], 'dh': ekf.X[10, 0],
         })
 
     res_df = pd.DataFrame(results)
-    
-    # ==========================================
-    # 严格对齐考核要求的 8 项产出物
-    # ==========================================
 
+    # ==========================================
     # 1. 导出预测结果 CSV
+    # ==========================================
     csv_out_path = os.path.join(output_dir, f'armor_prediction_result_{suffix}.csv')
     res_df.to_csv(csv_out_path, index=False)
 
@@ -289,14 +373,14 @@ def run_predict_armor(csv_input_path, output_dir):
     # 7. 输出残差误差四宫格
     fig_err, axs_err = plt.subplots(2, 2, figsize=(12, 8), sharex=True, dpi=150)
     fig_err.suptitle('Armor Prediction Observation Errors', fontsize=16)
-    axs_err[0,0].plot(res_df['frame_id'], res_df['err_target_yaw'], color='red')
-    axs_err[0,0].set_title(f'Target Yaw Error')
-    axs_err[0,1].plot(res_df['frame_id'], res_df['err_target_pitch'], color='blue')
-    axs_err[0,1].set_title(f'Target Pitch Error')
-    axs_err[1,0].plot(res_df['frame_id'], res_df['err_distance'], color='green')
-    axs_err[1,0].set_title(f'Distance Error')
-    axs_err[1,1].plot(res_df['frame_id'], res_df['err_armor_yaw'], color='purple')
-    axs_err[1,1].set_title(f'Armor Yaw Error')
+    axs_err[0, 0].plot(res_df['frame_id'], res_df['err_target_yaw'], color='red')
+    axs_err[0, 0].set_title(f'Target Yaw Error')
+    axs_err[0, 1].plot(res_df['frame_id'], res_df['err_target_pitch'], color='blue')
+    axs_err[0, 1].set_title(f'Target Pitch Error')
+    axs_err[1, 0].plot(res_df['frame_id'], res_df['err_distance'], color='green')
+    axs_err[1, 0].set_title(f'Distance Error')
+    axs_err[1, 1].plot(res_df['frame_id'], res_df['err_armor_yaw'], color='purple')
+    axs_err[1, 1].set_title(f'Armor Yaw Error')
     for ax in axs_err.flat:
         ax.axhline(0, color='black', linestyle='--', alpha=0.5)
         ax.grid(True, alpha=0.3)
@@ -306,10 +390,11 @@ def run_predict_armor(csv_input_path, output_dir):
 
     print("所有文件已保存至：", output_dir)
 
+
 if __name__ == '__main__':
     # 🌟 统一的切换开关
-    suffix = "1"
-    
-    input_csv = os.path.join('./data', f'pose_raw_{suffix}.csv') 
+    suffix = "2"
+
+    input_csv = os.path.join('./data', f'pose_raw_{suffix}.csv')
     output_directory = './results'
-    run_predict_armor(input_csv, output_directory)
+    run_predict_armor(input_csv, output_directory, suffix)

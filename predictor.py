@@ -44,14 +44,14 @@ class BasicPredictor:
         I = np.eye(6)
         self.P = np.dot((I - np.dot(K, self.H)), predicted_P)
 
-def run_predict(csv_input_path, output_dir):
+def run_predict(csv_input_path, output_dir, suffix="1"):
     if not os.path.exists(csv_input_path):
         print(f"错误: 找不到输入文件 {csv_input_path}")
         return
 
     os.makedirs(output_dir, exist_ok=True)
     data = pd.read_csv(csv_input_path)
-    
+
     predictor = BasicPredictor()
     results = []
     last_timestamp = None
@@ -60,15 +60,15 @@ def run_predict(csv_input_path, output_dir):
     for frame_id, group in data.groupby('frame_id'):
         # 基础处理：如果画面有多块装甲板，只取距离最近的一块作为追踪目标
         closest_armor = group.sort_values(by='distance').iloc[0]
-        
+
         observed_x = closest_armor['x']
         observed_y = closest_armor['y']
         observed_z = closest_armor['z']
         observed_yaw = closest_armor['target_yaw']
         observed_distance = closest_armor['distance']
-        
+
         Z = np.array([[observed_x], [observed_y], [observed_z]])
-        
+
         # 计算动态 dt
         current_timestamp = closest_armor['timestamp']
         if last_timestamp is None:
@@ -84,14 +84,14 @@ def run_predict(csv_input_path, output_dir):
             predictor.is_initialized = True
             continue
 
-        
+
         # 1. 根据第 k 帧状态预测第 k+1 帧状态
         predicted_state, predicted_P = predictor.predict(dt)
-        
+
         predicted_x = predicted_state[0, 0]
         predicted_y = predicted_state[2, 0]
         predicted_z = predicted_state[4, 0]
-        
+
         # 根据推导出的三维位置计算偏航角和距离
         predicted_yaw = np.arctan2(predicted_x, predicted_z)
         predicted_distance = np.sqrt(predicted_x**2 + predicted_y**2 + predicted_z**2)
@@ -99,7 +99,7 @@ def run_predict(csv_input_path, output_dir):
         # 2 & 4. 使用第 k+1 帧 PnP 观测进行比较，计算预测误差
         error_x = predicted_x - observed_x
         error_z = predicted_z - observed_z
-        error_yaw = wrap_to_pi(predicted_yaw - observed_yaw) 
+        error_yaw = wrap_to_pi(predicted_yaw - observed_yaw)
         error_distance = predicted_distance - observed_distance
 
         # 3. 输出一帧预测结果
@@ -118,7 +118,7 @@ def run_predict(csv_input_path, output_dir):
     # 结果结算与导出
     # ==========================================
     res_df = pd.DataFrame(results)
-    
+
     # 导出 CSV
     csv_out_path = os.path.join(output_dir, f'prediction_result_{suffix}.csv')
     res_df.to_csv(csv_out_path, index=False)
@@ -171,7 +171,7 @@ def run_predict(csv_input_path, output_dir):
 
 if __name__ == '__main__':
     suffix = "2"
-    
+
     input_csv = os.path.join('./data', f'pose_raw_{suffix}.csv')
     output_directory = './results'
-    run_predict(input_csv, output_directory)
+    run_predict(input_csv, output_directory, suffix)

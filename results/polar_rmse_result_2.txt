@@ -1,0 +1,4 @@
+RMSE_target_yaw: 0.021900 rad
+RMSE_target_pitch: 0.004627 rad
+RMSE_distance: 0.041407 m
+RMSE_armor_yaw: 0.094274 rad

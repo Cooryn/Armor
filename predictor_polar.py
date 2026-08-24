@@ -106,13 +106,13 @@ class PolarEKF:
         
         # 因为残差是基于对应的装甲板算出来的，它会平滑地去修正车头 yaw
         self.X = self.X + np.dot(K, Y)
-        self.X[8, 0] = abs(self.X[8, 0]) # 强行取绝对值
+        # 注意：半径 r 理论上应当始终为正；如果此处变为负值说明滤波器已发散，应检查初始化和噪声参数
         self.X[6, 0] = wrap_to_pi(self.X[6, 0]) 
         
         I = np.eye(9)
         self.P = np.dot((I - np.dot(K, H)), self.P)
 
-def run_predict_polar(csv_input_path, output_dir):
+def run_predict_polar(csv_input_path, output_dir, suffix="1"):
     if not os.path.exists(csv_input_path):
         print(f"错误: 找不到输入文件 {csv_input_path}")
         return
@@ -278,7 +278,7 @@ def run_predict_polar(csv_input_path, output_dir):
 
 if __name__ == '__main__':
     suffix = "1"
-    
+
     input_csv = os.path.join('./data', f'pose_raw_{suffix}.csv')
     output_directory = './results'
-    run_predict_polar(input_csv, output_directory)
+    run_predict_polar(input_csv, output_directory, suffix)

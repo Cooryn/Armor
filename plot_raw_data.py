@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 
-def plot_raw_data(csv_path, output_dir):
+def plot_raw_data(csv_path, output_dir, suffix="1"):
     # 确保输出目录存在
     os.makedirs(output_dir, exist_ok=True)
 
@@ -83,9 +83,9 @@ def plot_raw_data(csv_path, output_dir):
 
 
 if __name__ == "__main__":
-    suffix = "2" 
-    
+    suffix = "2"
+
     input_csv_file = f"./data/pose_raw_{suffix}.csv"
     output_directory = "./results"
-    
-    plot_raw_data(input_csv_file, output_directory)
+
+    plot_raw_data(input_csv_file, output_directory, suffix)
