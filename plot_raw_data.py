@@ -83,7 +83,7 @@ def plot_raw_data(csv_path, output_dir, suffix="1"):
 
 
 if __name__ == "__main__":
-    suffix = "2"
+    suffix = "1"
 
     input_csv_file = f"./data/pose_raw_{suffix}.csv"
     output_directory = "./results"

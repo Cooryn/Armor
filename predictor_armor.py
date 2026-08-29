@@ -2,7 +2,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import matplotlib.cm as cm
+
+FPS = 30.0  # 视频帧率，与 main.cpp 的 VideoWriter 一致
 
 def wrap_to_pi(angle):
     return (angle + np.pi) % (2 * np.pi) - np.pi
@@ -148,7 +149,7 @@ class ArmorEKF:
 
         H = self.get_jacobian(self.X, armor_id)
         S = np.dot(np.dot(H, self.P), H.T) + self.R
-        K = np.dot(np.dot(self.P, H.T), np.linalg.inv(S))
+        K = np.linalg.solve(S, np.dot(H, self.P)).T
 
         self.X = self.X + np.dot(K, Y)
         self.X[6, 0] = wrap_to_pi(self.X[6, 0])
@@ -166,7 +167,7 @@ class ArmorEKF:
         使用同一帧内的多个观测顺序更新状态。
         observations: list of dict, 每个 dict 含:
           - 'Z_obs': (4,1) 观测向量
-          - 'armor_id': int (可选，未指定则从 body_yaw 自动推算)
+          - 'armor_id': int (可选，未指定则自动做多重假设检验选择最优装甲板)
         按距离升序处理。
         """
         sorted_obs = sorted(observations, key=lambda o: o['Z_obs'][2, 0])
@@ -176,8 +177,7 @@ class ArmorEKF:
             armor_id = obs.get('armor_id')
 
             if armor_id is None:
-                yaw_diff = wrap_to_pi(Z_obs[3, 0] - self.X[6, 0])
-                armor_id = int(round(yaw_diff / (np.pi / 2.0))) % 4
+                armor_id = self.find_best_armor_id(Z_obs)
 
             Z_pred = self.h(self.X, armor_id)
             Y = Z_obs - Z_pred
@@ -187,7 +187,7 @@ class ArmorEKF:
 
             H = self.get_jacobian(self.X, armor_id)
             S = np.dot(np.dot(H, self.P), H.T) + self.R
-            K = np.dot(np.dot(self.P, H.T), np.linalg.inv(S))
+            K = np.linalg.solve(S, np.dot(H, self.P)).T
 
             self.X = self.X + np.dot(K, Y)
             self.X[6, 0] = wrap_to_pi(self.X[6, 0])
@@ -209,7 +209,8 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1"):
 
     ekf = ArmorEKF()
     results = []
-    last_timestamp = None
+    obs_trajectory = []      # 每帧最近装甲板的观测位置 (x, z)，用于俯视轨迹图
+    last_frame_id = None
     first_frame_data = None  # 用于估算初始角速度
     skip_predict = False     # 初始化帧已做过 predict，跳过重复
 
@@ -225,33 +226,35 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1"):
 
         # 取距离最近的检测用于误差计算和时间戳
         closest = group.sort_values(by='distance').iloc[0]
+        obs_trajectory.append((closest['x'], closest['z']))
         Z_closest = np.array([
             [closest['target_yaw']], [closest['target_pitch']],
             [closest['distance']], [closest['armor_orientation_yaw']]
         ])
 
         current_timestamp = closest['timestamp']
-        if last_timestamp is None:
-            dt = 1.0 / 30.0
+
+        # 计算动态 dt：用帧号差 / 帧率（main.cpp 的 timestamp 是处理耗时，不可靠）
+        if last_frame_id is None:
+            dt = 1.0 / FPS
         else:
-            dt = (current_timestamp - last_timestamp) / 1000.0
-            if dt <= 0: dt = 1.0 / 30.0
-        last_timestamp = current_timestamp
+            dt = (frame_id - last_frame_id) / FPS
+            if dt <= 0:
+                dt = 1.0 / FPS
+        last_frame_id = frame_id
 
         # 第一帧：暂存数据，等第二帧算出角速度再初始化
         if first_frame_data is None:
-            first_frame_data = {
-                'closest': closest, 'timestamp': current_timestamp,
-            }
-            last_timestamp = current_timestamp
+            first_frame_data = {'closest': closest}
             continue
 
         # 第二帧：用两帧的 armor_orientation_yaw 估算初始角速度
         if not ekf.is_initialized:
             obs_yaw = first_frame_data['closest']['armor_orientation_yaw']
             obs_yaw2 = closest['armor_orientation_yaw']
-            dt_init = dt  # 已在上面从时间戳算出
-            if dt_init <= 0: dt_init = 1.0 / 30.0
+            dt_init = dt  # 已在上面从帧号差算出
+            if dt_init <= 0:
+                dt_init = 1.0 / FPS
 
             # 用两帧 yaw 差估算角速度（处理角度环绕）
             w_init = wrap_to_pi(obs_yaw2 - obs_yaw) / dt_init
@@ -327,31 +330,37 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1"):
         f.write(f"RMSE_distance: {rmse_dist:.6f} m\n")
         f.write(f"RMSE_armor_yaw: {rmse_ayaw:.6f} rad\n")
 
-    # 3. 输出车体中心轨迹图
-    fig_center, ax_center = plt.subplots(figsize=(8, 8), dpi=150)
-    ax_center.plot(res_df['xc'], res_df['zc'], color='black', alpha=0.5)
-    scatter = ax_center.scatter(res_df['xc'], res_df['zc'], c=res_df['frame_id'], cmap='viridis', s=15)
-    ax_center.set_title('Center Trajectory (xc, zc)')
-    ax_center.set_xlabel('xc (m)'); ax_center.set_ylabel('zc (m)')
-    ax_center.grid(True, linestyle='--')
-    fig_center.colorbar(scatter, label='Frame ID')
-    fig_center.savefig(os.path.join(output_dir, f'center_trajectory_curve_{suffix}.png'))
-    plt.close(fig_center)
+    # ==========================================
+    # 3. 俯视图：装甲板位置（x-z 平面），观测 vs 预测
+    #    横轴 X（左右偏移），纵轴 Z（深度），越往上越远
+    # ==========================================
+    obs_traj = np.array(obs_trajectory)  # (N, 2): [x, z]
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
+    fig.suptitle('Top-down Trajectory (X-Z plane)', fontsize=14, fontweight='bold')
 
-    # 4. 输出当前可见装甲板轨迹图 (按 ID 着色)
-    fig_switch, ax_switch = plt.subplots(figsize=(8, 8), dpi=150)
-    colors = ['red', 'blue', 'green', 'orange']
-    for i in range(4):
-        mask = res_df['armor_id'] == i
-        ax_switch.scatter(res_df[mask]['xa'], res_df[mask]['za'], color=colors[i], label=f'Armor {i}', s=15, alpha=0.7)
-    ax_switch.plot(res_df['xc'], res_df['zc'], color='black', linestyle='--', label='Center')
-    ax_switch.set_title('Visible Armor Trajectory & Switching')
-    ax_switch.set_xlabel('xa (m)'); ax_switch.set_ylabel('za (m)')
-    ax_switch.legend(); ax_switch.grid(True, linestyle='--')
-    fig_switch.savefig(os.path.join(output_dir, f'armor_switch_curve_{suffix}.png'))
-    plt.close(fig_switch)
+    ax.plot(obs_traj[:, 0], obs_traj[:, 1], 'o-', color='#1f77b4',
+            linewidth=1.5, markersize=3, label='Observed', alpha=0.8)
+    ax.plot(res_df['xa'], res_df['za'], 'x-', color='#d62728',
+            linewidth=1.5, markersize=3, label='Predicted', alpha=0.8)
 
-    # 5. 输出统一车体 yaw 曲线
+    ax.scatter(obs_traj[0, 0], obs_traj[0, 1], color='green', s=80,
+               marker='o', zorder=5, label='Start')
+    ax.scatter(obs_traj[-1, 0], obs_traj[-1, 1], color='black', s=80,
+               marker='s', zorder=5, label='End')
+
+    ax.set_xlabel('X (lateral, m)')
+    ax.set_ylabel('Z (depth, m)')
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    plt.tight_layout()
+    traj_out_path = os.path.join(output_dir, f'top_down_trajectory_{suffix}.png')
+    plt.savefig(traj_out_path)
+    plt.close()
+    print(f"已生成俯视轨迹图: {traj_out_path}")
+
+    # 4. 输出统一车体 yaw 曲线
     fig_byaw, ax_byaw = plt.subplots(figsize=(10, 4), dpi=150)
     ax_byaw.plot(res_df['frame_id'], res_df['body_yaw'], color='#2ca02c')
     ax_byaw.set_title('Body Yaw Curve')
@@ -360,7 +369,7 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1"):
     fig_byaw.savefig(os.path.join(output_dir, f'body_yaw_curve_{suffix}.png'))
     plt.close(fig_byaw)
 
-    # 6. 输出 Folded Armor Yaw (观测板向 vs 预测板向)
+    # 5. 输出 Folded Armor Yaw (观测板向 vs 预测板向)
     fig_folded, ax_folded = plt.subplots(figsize=(10, 4), dpi=150)
     ax_folded.scatter(res_df['frame_id'], res_df['obs_armor_yaw'], color='red', s=5, alpha=0.5, label='Observed')
     ax_folded.plot(res_df['frame_id'], res_df['pred_armor_yaw'], color='blue', linewidth=1.5, label='Predicted (Folded)')
@@ -370,7 +379,7 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1"):
     fig_folded.savefig(os.path.join(output_dir, f'folded_armor_yaw_curve_{suffix}.png'))
     plt.close(fig_folded)
 
-    # 7. 输出残差误差四宫格
+    # 6. 输出残差误差四宫格
     fig_err, axs_err = plt.subplots(2, 2, figsize=(12, 8), sharex=True, dpi=150)
     fig_err.suptitle('Armor Prediction Observation Errors', fontsize=16)
     axs_err[0, 0].plot(res_df['frame_id'], res_df['err_target_yaw'], color='red')
