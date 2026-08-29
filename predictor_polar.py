@@ -277,7 +277,7 @@ def run_predict_polar(csv_input_path, output_dir, suffix="1"):
     print(f"生成误差图: {err_curve_path}")
 
 if __name__ == '__main__':
-    suffix = "1"
+    suffix = "2"
 
     input_csv = os.path.join('./data', f'pose_raw_{suffix}.csv')
     output_directory = './results'

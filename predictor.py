@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
+FPS = 30.0  # 视频帧率，与 main.cpp 的 VideoWriter 一致
+
 # 角度归一化到 [-pi, pi]
 def wrap_to_pi(angle):
     return (angle + np.pi) % (2 * np.pi) - np.pi
@@ -23,22 +25,36 @@ class BasicPredictor:
         ])
         
         self.P = np.eye(6) * 10.0
-        self.Q = np.eye(6) * 0.01  # 过程噪声
-        self.R = np.eye(3) * 0.1   # 观测噪声
+        self.q = 0.01                # 加速度噪声方差 (m/s^2)^2；本数据目标近乎静止，取小值更平滑
+        self.Q = np.zeros((6, 6))    # 占位，predict 时按标准 CV 模型重建
+        self.R = np.eye(3) * 0.1     # 观测噪声；一步预测误差指标下，偏大 R 平滑后误差更小
         self.is_initialized = False
 
     def predict(self, dt):
         self.F[0, 1] = dt
         self.F[2, 3] = dt
         self.F[4, 5] = dt
-        
+
+        # 标准 CV（白噪声加速度）模型的过程噪声，随 dt 变化：
+        # 每个轴 [x, vx] 分块 Q_axis = q * [[dt^4/4, dt^3/2], [dt^3/2, dt^2]]
+        dt2 = dt * dt
+        dt3 = dt2 * dt
+        dt4 = dt2 * dt2
+        block = np.array([[dt4 / 4.0, dt3 / 2.0],
+                          [dt3 / 2.0, dt2]]) * self.q
+        self.Q[:] = 0.0
+        self.Q[0:2, 0:2] = block
+        self.Q[2:4, 2:4] = block
+        self.Q[4:6, 4:6] = block
+
         predicted_state = np.dot(self.F, self.state)
         predicted_P = np.dot(np.dot(self.F, self.P), self.F.T) + self.Q
         return predicted_state, predicted_P
 
     def update(self, Z, predicted_state, predicted_P):
         S = np.dot(np.dot(self.H, predicted_P), self.H.T) + self.R
-        K = np.dot(np.dot(predicted_P, self.H.T), np.linalg.inv(S))
+        # K = P H^T S^-1，等价于解 S K^T = H P，避免直接求逆
+        K = np.linalg.solve(S, np.dot(self.H, predicted_P)).T
         y = Z - np.dot(self.H, predicted_state)
         self.state = predicted_state + np.dot(K, y)
         I = np.eye(6)
@@ -54,7 +70,8 @@ def run_predict(csv_input_path, output_dir, suffix="1"):
 
     predictor = BasicPredictor()
     results = []
-    last_timestamp = None
+    obs_trajectory = []  # 每帧小车中心点二维位置 (x, z)，用于俯视轨迹图
+    last_frame_id = None
 
     # 按帧遍历数据
     for frame_id, group in data.groupby('frame_id'):
@@ -67,16 +84,18 @@ def run_predict(csv_input_path, output_dir, suffix="1"):
         observed_yaw = closest_armor['target_yaw']
         observed_distance = closest_armor['distance']
 
+        obs_trajectory.append((observed_x, observed_z))
+
         Z = np.array([[observed_x], [observed_y], [observed_z]])
 
-        # 计算动态 dt
-        current_timestamp = closest_armor['timestamp']
-        if last_timestamp is None:
-            dt = 1.0 / 30.0
+        # 计算动态 dt：用帧号差 / 帧率（main.cpp 的 timestamp 是处理耗时，不可靠）
+        if last_frame_id is None:
+            dt = 1.0 / FPS
         else:
-            dt = (current_timestamp - last_timestamp) / 1000.0
-            if dt <= 0: dt = 1.0 / 30.0
-        last_timestamp = current_timestamp
+            dt = (frame_id - last_frame_id) / FPS
+            if dt <= 0:
+                dt = 1.0 / FPS
+        last_frame_id = frame_id
 
         # 初始化第一帧
         if not predictor.is_initialized:
@@ -168,6 +187,36 @@ def run_predict(csv_input_path, output_dir, suffix="1"):
     plt.savefig(img_out_path)
     plt.close()
     print(f"已生成误差曲线: {img_out_path}")
+
+    # ==========================================
+    # 小车中心点二维位置：世界俯视图（x-z 平面）
+    # 横轴 X（左右偏移），纵轴 Z（深度），越往上越远
+    # ==========================================
+    obs_traj = np.array(obs_trajectory)  # (N, 2): [x, z]
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
+    fig.suptitle('Top-down Trajectory (X-Z plane)', fontsize=14, fontweight='bold')
+
+    ax.plot(obs_traj[:, 0], obs_traj[:, 1], 'o-', color='#1f77b4',
+            linewidth=1.5, markersize=3, label='Observed', alpha=0.8)
+    ax.plot(res_df['predicted_x'], res_df['predicted_z'], 'x-', color='#d62728',
+            linewidth=1.5, markersize=3, label='Predicted', alpha=0.8)
+
+    ax.scatter(obs_traj[0, 0], obs_traj[0, 1], color='green', s=80,
+               marker='o', zorder=5, label='Start')
+    ax.scatter(obs_traj[-1, 0], obs_traj[-1, 1], color='black', s=80,
+               marker='s', zorder=5, label='End')
+
+    ax.set_xlabel('X (lateral, m)')
+    ax.set_ylabel('Z (depth, m)')
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    plt.tight_layout()
+    traj_out_path = os.path.join(output_dir, f'top_down_trajectory_{suffix}.png')
+    plt.savefig(traj_out_path)
+    plt.close()
+    print(f"已生成俯视轨迹图: {traj_out_path}")
 
 if __name__ == '__main__':
     suffix = "2"

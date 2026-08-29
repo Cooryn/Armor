@@ -1,0 +1,33 @@
+# ===== 构建产物 =====
+/build/
+/Armor
+*.o
+*.a
+*.so
+*.dylib
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ===== 运行输出（每次运行重新生成）=====
+/data/
+/results/
+
+# ===== 编辑器 / 系统文件 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ===== CMake 杂项 =====
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json

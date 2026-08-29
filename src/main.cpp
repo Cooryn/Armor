@@ -90,10 +90,10 @@ int main(int argc, char **argv)
     int min_area = 40;
     int min_angle = 55;
 
-    int max_angle_diff = 7;       // 最大角度差 (原为 8 度)
+    int max_angle_diff = 10;
     int max_len_ratio_x10 = 20;    // 最大长度比 2.0 (滑动条为 20)
     int min_aspect_ratio_x10 = 8;  // 最小宽高比 0.8 (滑动条为 8)
-    int max_y_diff_ratio_x10 = 2; // 最大Y轴错位比 1.0 (滑动条为 10)
+    int max_y_diff_ratio_x10 = 8;
 
     // ==========================================
     // 2. 创建 Debug 控制面板窗口与滑动条

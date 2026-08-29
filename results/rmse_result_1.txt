@@ -1,4 +1,0 @@
-RMSE_x: 0.152664 m
-RMSE_z: 0.119327 m
-RMSE_yaw: 0.068111 rad
-RMSE_distance: 0.121865 m

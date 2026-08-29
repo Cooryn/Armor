@@ -1,3 +1,0 @@
-/Users/coryn/CODE/Armor/build/CMakeFiles/Armor.dir
-/Users/coryn/CODE/Armor/build/CMakeFiles/edit_cache.dir
-/Users/coryn/CODE/Armor/build/CMakeFiles/rebuild_cache.dir
