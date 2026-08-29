@@ -43,9 +43,10 @@ Armor/
 │   ├── main.cpp                    # 主程序：参数解析、Debug 面板、CSV/视频输出
 │   ├── lightbar_detector.cpp       # 颜色提取、灯条筛选、装甲板配对与绘制
 │   └── solver.cpp                  # solvePnP 位姿解算
-├── predictor.py                    # 6 维 CV 模型 EKF
-├── predictor_polar.py              # 9 维极坐标 EKF
-├── predictor_armor.py              # 11 维完整模型 EKF（最终版）
+├── predictor/                      # Python 预测器（三个递进版本）
+│   ├── predictor.py                # 6 维 CV 模型 EKF
+│   ├── predictor_polar.py          # 9 维极坐标 EKF
+│   └── predictor_armor.py          # 11 维完整模型 EKF（最终版）
 ├── plot_raw_data.py                # 绘制原始位姿 / 偏航观测曲线
 ├── visualize_armor_video.py        # 将 EKF 预测的四块装甲板叠加到原视频
 ├── data/                           # C++ 导出的逐帧位姿 CSV（运行时生成）
@@ -133,13 +134,13 @@ make -j4
 python plot_raw_data.py
 
 # 基础 6 维 EKF
-python predictor.py
+python predictor/predictor.py
 
 # 9 维极坐标 EKF
-python predictor_polar.py
+python predictor/predictor_polar.py
 
 # 11 维完整模型 EKF（最终版）
-python predictor_armor.py
+python predictor/predictor_armor.py
 
 # 将 EKF 预测的四块装甲板叠加到原视频
 python visualize_armor_video.py
@@ -154,7 +155,7 @@ assets/video/*.avi  ──►  C++ (Armor)  ──►  data/pose_raw_*.csv
                                                   │
                                    ┌──────────────┼───────────────┐
                                    ▼              ▼               ▼
-                           predictor.py   predictor_polar.py   predictor_armor.py
+                           predictor/predictor.py   predictor/predictor_polar.py   predictor/predictor_armor.py
                                    │              │               │
                                    ▼              ▼               ▼
                               results/*.csv / *.png / *.txt / *.mp4
@@ -187,4 +188,4 @@ frame_id, timestamp, x, y, z, target_yaw, target_pitch, distance, armor_orientat
 ## 注意事项
 
 - 相机内参在 [src/main.cpp](src/main.cpp) 中硬编码，`video_2` 使用单独一套内参，其余素材使用默认内参。
-- `visualize_armor_video.py` 读取的是 `results/armor_prediction_result_1.csv`（`suffix = "1"`），运行前需先用 `predictor_armor.py` 处理对应的 `pose_raw_1.csv`。
+- `visualize_armor_video.py` 读取的是 `results/armor_prediction_result_1.csv`（`suffix = "1"`），运行前需先用 `predictor/predictor_armor.py` 处理对应的 `pose_raw_1.csv`。

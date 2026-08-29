@@ -65,7 +65,7 @@ def main():
     output_path = "results/armor_video_1.mp4"
 
     if not os.path.exists(pred_csv):
-        print(f"错误: 找不到 {pred_csv}，请先运行 predictor_armor.py")
+        print(f"错误: 找不到 {pred_csv}，请先运行 predictor/predictor_armor.py")
         sys.exit(1)
     if not os.path.exists(video_path):
         print(f"错误: 找不到视频 {video_path}")

@@ -279,6 +279,7 @@ def run_predict_polar(csv_input_path, output_dir, suffix="1"):
 if __name__ == '__main__':
     suffix = "2"
 
-    input_csv = os.path.join('./data', f'pose_raw_{suffix}.csv')
-    output_directory = './results'
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    input_csv = os.path.join(base_dir, 'data', f'pose_raw_{suffix}.csv')
+    output_directory = os.path.join(base_dir, 'results')
     run_predict_polar(input_csv, output_directory, suffix)
