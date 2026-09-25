@@ -11,7 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 1. 寻找第三方依赖库
 # ==========================================
 find_package(OpenCV REQUIRED)
-find_package(Eigen3 REQUIRED)
+
 
 # ==========================================
 # 2. 收集源文件 (告别 GLOB 陷阱)
@@ -38,7 +38,6 @@ target_include_directories(Armor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # 统一链接依赖库 (OpenCV 和 Eigen)
 target_link_libraries(Armor PRIVATE 
     ${OpenCV_LIBS}
-    Eigen3::Eigen
 )
 
 # 开启严格的编译警告 (帮你提前揪出 C++ 里的内存或逻辑 Bug)
@@ -54,3 +53,18 @@ set_target_properties(Armor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
 )
+if(MSVC)
+    target_compile_options(Armor PRIVATE /utf-8)
+endif()
+
+option(BUILD_TESTING "Build regression tests (use tests/build)" OFF)
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(detector_tests tests/test_detector.cpp src/lightbar_detector.cpp src/solver.cpp)
+    target_include_directories(detector_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(detector_tests PRIVATE ${OpenCV_LIBS})
+    if(MSVC)
+        target_compile_options(detector_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME detector_regressions COMMAND detector_tests ${CMAKE_CURRENT_SOURCE_DIR})
+endif()

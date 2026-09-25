@@ -1,33 +1,61 @@
-# ===== 构建产物 =====
+# C++ builds and generated binaries
 /build/
+/tests/build/
 /Armor
+/Armor.exe
+*.obj
 *.o
 *.a
+*.lib
 *.so
 *.dylib
+*.dll
+*.pdb
+*.ilk
+*.exp
 
-# ===== Python =====
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-
-# ===== 运行输出（每次运行重新生成）=====
-/data/
-/results/
-
-# ===== 编辑器 / 系统文件 =====
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# ===== CMake 杂项 =====
+# CMake-generated files
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 CTestTestfile.cmake
 compile_commands.json
+
+# Python environments, caches and packaging outputs
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+/dist/
+
+# Generated observations, formal results and test artifacts
+# Keep the tracked input samples under assets/.
+/data/
+/results/
+/tests/outputs/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.vs/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini

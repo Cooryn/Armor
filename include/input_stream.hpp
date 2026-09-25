@@ -7,6 +7,7 @@ class InputStream
 {
 public:
     virtual ~InputStream() = default;
+    virtual double fps() const { return 0.0; }
     virtual bool getFrame(cv::Mat &frame) = 0;
 };
 
@@ -16,6 +17,7 @@ private:
     cv::VideoCapture cap;
 
 public:
+    double fps() const override { return cap.get(cv::CAP_PROP_FPS); }
     explicit VideoFileStream(const std::string &path)
     {
         cap.open(path);

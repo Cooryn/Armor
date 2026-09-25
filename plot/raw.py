@@ -1,3 +1,4 @@
+"""Export raw PnP position and orientation curves; no EKF results required."""
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -82,10 +83,10 @@ def plot_raw_data(csv_path, output_dir, suffix="1"):
     print(f"已生成偏航角观测曲线: {raw_yaw_path}")
 
 
-if __name__ == "__main__":
-    suffix = "1"
+def main():
+    from ._cli import parse_paths
+    args = parse_paths(__doc__ or 'Plot raw observations')
+    plot_raw_data(args.data_dir / f'pose_raw_{args.suffix}.csv', args.output_dir, args.suffix)
 
-    input_csv_file = f"./data/pose_raw_{suffix}.csv"
-    output_directory = "./results"
-
-    plot_raw_data(input_csv_file, output_directory, suffix)
+if __name__ == '__main__':
+    main()

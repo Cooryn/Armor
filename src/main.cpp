@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <fstream>
 #include <cmath> // 引入 cmath 以使用 std::remainder
-#include <chrono>  // 用于真实时间戳计时
+#include <iomanip>
 
 #include "input_stream.hpp"
 #include "lightbar_detector.hpp"
@@ -79,6 +79,8 @@ int main(int argc, char **argv)
         }
     }
 
+    const bool headless = !(argc >= 5 && std::string(argv[4]) == "--gui");
+
     // ==========================================
     // 1. 初始化调参变量
     // ==========================================
@@ -90,24 +92,29 @@ int main(int argc, char **argv)
     int min_area = 40;
     int min_angle = 55;
 
-    int max_angle_diff = 10;
+    int max_angle_diff = 20;
     int max_len_ratio_x10 = 20;    // 最大长度比 2.0 (滑动条为 20)
     int min_aspect_ratio_x10 = 8;  // 最小宽高比 0.8 (滑动条为 8)
+    int max_aspect_ratio_x10 = 31; // Small-armor model; configurable for other geometry.
     int max_y_diff_ratio_x10 = 8;
 
     // ==========================================
     // 2. 创建 Debug 控制面板窗口与滑动条
     // ==========================================
-    cv::namedWindow("Debug Dashboard", cv::WINDOW_AUTOSIZE);
+    if (!headless)
+    {
+        cv::namedWindow("Debug Dashboard", cv::WINDOW_AUTOSIZE);
 
-    cv::createTrackbar("Gray Thresh", "Debug Dashboard", &gray_th, 255);
-    cv::createTrackbar("Color Thresh", "Debug Dashboard", &color_th, 255);
-    cv::createTrackbar("Max Angle Diff", "Debug Dashboard", &max_angle_diff, 45);
-    cv::createTrackbar("Max Len Ratio(x10)", "Debug Dashboard", &max_len_ratio_x10, 50);
-    cv::createTrackbar("Min Aspect(x10)", "Debug Dashboard", &min_aspect_ratio_x10, 50);
-    cv::createTrackbar("Max Y Diff(x10)", "Debug Dashboard", &max_y_diff_ratio_x10, 30);
+        cv::createTrackbar("Gray Thresh", "Debug Dashboard", &gray_th, 255);
+        cv::createTrackbar("Color Thresh", "Debug Dashboard", &color_th, 255);
+        cv::createTrackbar("Max Angle Diff", "Debug Dashboard", &max_angle_diff, 45);
+        cv::createTrackbar("Max Len Ratio(x10)", "Debug Dashboard", &max_len_ratio_x10, 50);
+        cv::createTrackbar("Min Aspect(x10)", "Debug Dashboard", &min_aspect_ratio_x10, 50);
+        cv::createTrackbar("Max Aspect(x10)", "Debug Dashboard", &max_aspect_ratio_x10, 60);
+        cv::createTrackbar("Max Y Diff(x10)", "Debug Dashboard", &max_y_diff_ratio_x10, 30);
 
-    // 创建输出目录
+        // 创建输出目录
+    }
     std::string stem = fs::path(input_path).stem().string();
     std::string out_dir = "./results/";
     fs::create_directories(out_dir);
@@ -123,26 +130,40 @@ int main(int argc, char **argv)
     else if (run_mode == "image")
         stream = std::make_unique<ImageStream>(input_path);
 
+    if (!stream)
+    {
+        std::cerr << "Invalid mode: " << run_mode << std::endl;
+        return 1;
+    }
     cv::Mat original_frame;
     if (!stream->getFrame(original_frame))
         return -1;
 
+    const double source_fps = stream->fps();
+    if (run_mode == "video" && (!std::isfinite(source_fps) || source_fps <= 0)) {
+        std::cerr << "Invalid source video FPS" << std::endl;
+        return 1;
+    }
     cv::VideoWriter writer;
     std::ofstream csv_file;
     if (run_mode == "video")
     {
         int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
-        writer.open(output_path, fourcc, 30.0, original_frame.size(), true);
+        writer.open(output_path, fourcc, source_fps, original_frame.size(), true);
+        if (!writer.isOpened()) { std::cerr << "Cannot open output video" << std::endl; return 1; }
 
-        std::string suffix = stem.substr(stem.find_last_of('_'));
+        const auto separator = stem.find_last_of('_');
+        std::string suffix = separator == std::string::npos ? "_" + stem : stem.substr(separator);
         std::string csv_filename = "pose_raw" + suffix + ".csv";
 
         // 确保 ./data/ 目录存在
         fs::create_directories("./data/");
         csv_file.open("./data/" + csv_filename);
+        if (!csv_file.is_open()) { std::cerr << "Cannot open output CSV" << std::endl; return 1; }
         if (csv_file.is_open())
         {
-            csv_file << "frame_id,timestamp,x,y,z,target_yaw,target_pitch,distance,armor_orientation_yaw\n";
+            csv_file << std::setprecision(15);
+            csv_file << "frame_id,timestamp,x,y,z,target_yaw,target_pitch,distance,armor_orientation_yaw,detection_score,reprojection_error,pnp_candidate_count,pnp_used_temporal\n";
         }
     }
 
@@ -166,8 +187,8 @@ int main(int argc, char **argv)
     Solver pnp_solver(camera_matrix, distort_coeffs);
     int frame_count = 0;
 
-    // 用于计算真实时间戳（替代硬编码的 frame_count * 33.33）
-    auto video_start_time = std::chrono::steady_clock::now();
+    // Frame timestamps use the source video clock.
+
 
     do
     {
@@ -176,23 +197,30 @@ int main(int argc, char **argv)
         cv::Mat mask = extractColor(frame, target_color, color_th, gray_th);
         auto contours = extractContours(mask);
         auto lightBars = filterLightBars(contours, 1.5, (double)min_area);
-        auto lightRects = getValidLightRects(lightBars, (float)min_angle);
+        std::vector<float> light_quality;
+        std::vector<cv::RotatedRect> original_rects;
+        auto lightRects = getValidLightRects(lightBars, (float)min_angle, &light_quality, &original_rects);
         // 将整型参数还原为浮点数传入匹配函数
         auto armors = matchArmors(lightRects,
-                                  max_angle_diff,
+                                  static_cast<float>(max_angle_diff),
                                   max_len_ratio_x10 / 10.0f,
                                   min_aspect_ratio_x10 / 10.0f,
-                                  max_y_diff_ratio_x10 / 10.0f);
+                                  max_y_diff_ratio_x10 / 10.0f,
+                                  max_aspect_ratio_x10 / 10.0f, .35f, light_quality);
 
-        cv::Mat raw_result = drawArmors(frame, armors);
-        cv::Mat final_result = raw_result.clone();
+        cv::Mat final_result = frame.clone();
 
         int text_y_offset = 30;
         std::vector<Armor> valid_armors;
+        const double source_time = run_mode == "video" ? frame_count/source_fps : 0.0;
+        const auto yaw_hints = pnp_solver.yawHints(armors, source_time);
 
         for (size_t i = 0; i < armors.size(); i++)
         {
-            if (pnp_solver.solve(armors[i]))
+            bool solved = pnp_solver.solve(armors[i], yaw_hints[i]);
+            if (!solved && restoreLightEndpoints(armors[i], lightRects, original_rects))
+                solved = pnp_solver.solve(armors[i], yaw_hints[i]);
+            if (solved)
             {
                 valid_armors.push_back(armors[i]);
 
@@ -209,11 +237,12 @@ int main(int argc, char **argv)
             }
         }
 
+        pnp_solver.finishFrame(valid_armors, source_time);
+        final_result = drawArmors(final_result, valid_armors);
         if (!valid_armors.empty())
         {
-            // 使用真实时间戳（毫秒），而非硬编码的固定帧间隔
-            auto now = std::chrono::steady_clock::now();
-            double timestamp = std::chrono::duration<double, std::milli>(now - video_start_time).count();
+            // Source video time in milliseconds.
+            double timestamp = run_mode == "video" ? frame_count * 1000.0 / source_fps : 0.0;
 
             // 🚀 核心修改：不再只取 [0]，而是遍历所有合法的装甲板
             for (size_t i = 0; i < valid_armors.size(); i++)
@@ -245,12 +274,20 @@ int main(int argc, char **argv)
                              << target_yaw << ","
                              << target_pitch << ","
                              << distance << ","
-                             << armor_orientation_yaw << "\n";
+                             << armor_orientation_yaw << ","
+                             << current_armor.detection_score << ","
+                             << current_armor.reprojection_error << ","
+                             << current_armor.pnp_candidate_count << ","
+                             << current_armor.pnp_used_temporal << "\n";
                 }
             }
         }
 
-        cv::imshow("Armor Tracking", final_result);
+        if (!headless) cv::imshow("Armor Tracking", final_result);
+        if (headless && run_mode == "image") {
+            cv::imwrite(output_path, final_result);
+            break;
+        }
 
         if (run_mode == "image")
         {
@@ -274,14 +311,14 @@ int main(int argc, char **argv)
         else
         {
             writer.write(final_result);
-            if (cv::waitKey(1) == 27)
+            if (!headless && cv::waitKey(1) == 27)
             {
                 std::cout << "按下了 ESC 键退出视频。" << std::endl;
                 break;
             }
+            frame_count++;
             if (!stream->getFrame(original_frame))
                 break;
-            frame_count++;
         }
 
     } while (true);
@@ -295,10 +332,14 @@ int main(int argc, char **argv)
     if (run_mode == "video")
     {
         std::string mp4 = out_dir + stem + ".mp4";
-        std::string cmd_final = "ffmpeg -y -i " + output_path + " -c:v libx264 " + mp4 + " -loglevel quiet";
+        std::string cmd_final = "ffmpeg -y -i \"" + output_path + "\" -c:v mpeg4 -q:v 3 \"" + mp4 + "\" -loglevel error";
 
         int ret = system(cmd_final.c_str());
 
+        if (ret != 0) {
+            std::cerr << "MP4 conversion failed; AVI retained: " << output_path << std::endl;
+            return 1;
+        }
         if (ret == 0)
         {
             std::remove(output_path.c_str());
@@ -306,6 +347,6 @@ int main(int argc, char **argv)
         std::cout << "视频已导出至 " << out_dir << " (共处理 " << frame_count << " 帧)" << std::endl;
     }
 
-    cv::destroyAllWindows();
+    if (!headless) cv::destroyAllWindows();
     return 0;
 }
