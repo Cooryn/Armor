@@ -35,15 +35,17 @@ class ArmorEKF:
 
     def predict(self, dt):
         """1. 建立车体中心运动模型（过程噪声按 dt 缩放）"""
+        self.F, Q = self._transition(dt)
+        self.X = self.F @ self.X
+        self.X[6, 0] = wrap_to_pi(self.X[6, 0])
+        self.P = self.F @ self.P @ self.F.T + Q
+
+    def _transition(self, dt):
+        """Return transition and process noise without modifying the tracker."""
         if not np.isfinite(dt) or dt < 0:
             raise ValueError("dt must be finite and nonnegative")
-        self.F[0, 1] = dt  # xc += vxc * dt
-        self.F[2, 3] = dt  # yc += vyc * dt
-        self.F[4, 5] = dt  # zc += vzc * dt
-        self.F[6, 7] = dt  # body_yaw += w * dt
-
-        self.X = np.dot(self.F, self.X)
-        self.X[6, 0] = wrap_to_pi(self.X[6, 0])
+        F = np.eye(11)
+        F[0, 1] = F[2, 3] = F[4, 5] = F[6, 7] = dt
 
         # 按 dt 构建离散化过程噪声 Q
         dt2 = dt * dt
@@ -67,7 +69,29 @@ class ArmorEKF:
         Q[9, 9] = self.q_dl * dt
         Q[10, 10] = self.q_dh * dt
 
-        self.P = np.dot(np.dot(self.F, self.P), self.F.T) + Q
+        return F, Q
+
+    def forecast(self, horizon_s=0.05):
+        """Predict from the current state, leaving X, P and F unchanged.
+
+        Returns state (11x1), covariance (11x11), and four plate poses (4x4,
+        columns x/y/z/yaw). The caller owns the timestamp; horizon is seconds.
+        Poses use the existing yaw-only model in the same coordinate frame.
+        """
+        if not self.is_initialized:
+            raise ValueError('Cannot forecast before initialization')
+        F, Q = self._transition(horizon_s)
+        state = F @ self.X
+        state[6, 0] = wrap_to_pi(state[6, 0])
+        covariance = F @ self.P @ F.T + Q
+        poses = []
+        for aid in range(4):
+            yaw = wrap_to_pi(state[6, 0] + aid*np.pi/2)
+            radius = state[8, 0] + (state[9, 0] if aid % 2 else 0)
+            poses.append([state[0, 0] + radius*np.sin(yaw),
+                          state[2, 0] + (state[10, 0] if aid % 2 else 0),
+                          state[4, 0] - radius*np.cos(yaw), yaw])
+        return dict(state=state, covariance=covariance, plates=np.array(poses))
 
     def h(self, X_state, armor_id):
         """2. 建立四块装甲板与车体中心之间的几何关系"""

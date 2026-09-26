@@ -9,7 +9,7 @@ import unittest
 import cv2
 import pandas as pd
 
-from predictor.run_armor import run_predict_armor
+from tests.reference.predictor.run_armor import run_predict_armor
 from plot.armor import plot_armor
 
 
@@ -17,7 +17,7 @@ class PlotSeparationTests(unittest.TestCase):
     def test_core_import_needs_no_plotting_or_csv_library(self):
         root = Path(__file__).resolve().parents[1]
         code = (
-            'import sys; from predictor.predictor_armor import ArmorEKF; '
+            'import sys; from tests.reference.predictor.predictor_armor import ArmorEKF; '
             'assert "matplotlib" not in sys.modules; '
             'assert "pandas" not in sys.modules; '
             'assert "cv2" not in sys.modules; ArmorEKF()'

@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from predictor.predictor_armor import ArmorEKF
-from predictor.run_armor import run_predict_armor
+from tests.reference.predictor.predictor_armor import ArmorEKF
+from tests.reference.predictor.run_armor import run_predict_armor
 from tests.test_armor_tracking import measurement
 
 

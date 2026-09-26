@@ -1,70 +1,70 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.16)
 project(RoboMaster_Vision LANGUAGES CXX)
 
-# 设置 C++17 标准
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-# 关闭特定编译器的扩展以保证跨平台兼容性
-set(CMAKE_CXX_EXTENSIONS OFF) 
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ==========================================
-# 1. 寻找第三方依赖库
-# ==========================================
 find_package(OpenCV REQUIRED)
+find_package(Eigen3 REQUIRED NO_MODULE)
 
-
-# ==========================================
-# 2. 收集源文件 (告别 GLOB 陷阱)
-# ==========================================
-# 强烈建议显式列出，而不是用 file(GLOB ...)
-set(SOURCES
-    src/main.cpp
-    src/lightbar_detector.cpp
-    src/solver.cpp
-    # src/ekf_predictor.cpp  # 如果你以后要在 C++ 里加回 EKF，取消注释即可
-)
-
-# ==========================================
-# 3. 创建可执行文件
-# ==========================================
-add_executable(Armor ${SOURCES})
-
-# ==========================================
-# 4. 配置目标 (头文件、链接库、编译选项) - 集中管理
-# ==========================================
-# 包含头文件目录
-target_include_directories(Armor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-# 统一链接依赖库 (OpenCV 和 Eigen)
-target_link_libraries(Armor PRIVATE 
-    ${OpenCV_LIBS}
-)
-
-# 开启严格的编译警告 (帮你提前揪出 C++ 里的内存或逻辑 Bug)
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(Armor PRIVATE -Wall -Wextra -Wpedantic -O2)
-endif()
-
-# ==========================================
-# 5. 设置可执行文件的输出路径
-# ==========================================
-set_target_properties(Armor PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
-)
-if(MSVC)
-    target_compile_options(Armor PRIVATE /utf-8)
-endif()
-
-option(BUILD_TESTING "Build regression tests (use tests/build)" OFF)
-include(CTest)
-if(BUILD_TESTING)
-    add_executable(detector_tests tests/test_detector.cpp src/lightbar_detector.cpp src/solver.cpp)
-    target_include_directories(detector_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_link_libraries(detector_tests PRIVATE ${OpenCV_LIBS})
+function(configure_target target)
+    target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     if(MSVC)
-        target_compile_options(detector_tests PRIVATE /utf-8)
+        target_compile_options(${target} PRIVATE /utf-8 /W4)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
+endfunction()
+
+add_executable(Armor src/main.cpp src/lightbar_detector.cpp src/solver.cpp)
+target_link_libraries(Armor PRIVATE ${OpenCV_LIBS})
+
+set(PREDICTORS predictor predictor_polar predictor_armor)
+foreach(target IN LISTS PREDICTORS)
+    add_executable(${target} src/${target}.cpp)
+    target_link_libraries(${target} PRIVATE Eigen3::Eigen)
+    target_compile_definitions(${target} PRIVATE PREDICTOR_DEFAULT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+    if(MINGW)
+        target_link_options(${target} PRIVATE -static)
+    endif()
+endforeach()
+
+foreach(target camera_gimbal pose_base)
+    add_executable(${target} src/${target}.cpp)
+    target_link_libraries(${target} PRIVATE Eigen3::Eigen)
+    target_compile_definitions(${target} PRIVATE CAMERA_DEFAULT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+    if(MINGW)
+        target_link_options(${target} PRIVATE -static)
+    endif()
+endforeach()
+
+foreach(target Armor ${PREDICTORS} camera_gimbal pose_base)
+    configure_target(${target})
+    # A generator expression keeps multi-config builds in the same output directory.
+    set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/$<0:>")
+endforeach()
+
+option(BUILD_TESTING "Build regression tests" OFF)
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(detector_tests tests/test_detector.cpp src/lightbar_detector.cpp src/solver.cpp)
+    configure_target(detector_tests)
+    target_link_libraries(detector_tests PRIVATE ${OpenCV_LIBS})
     add_test(NAME detector_regressions COMMAND detector_tests ${CMAKE_CURRENT_SOURCE_DIR})
+
+    add_executable(predictor_tests tests/test_predictors.cpp)
+    configure_target(predictor_tests)
+    target_link_libraries(predictor_tests PRIVATE Eigen3::Eigen)
+    add_test(NAME predictor_api_regressions COMMAND predictor_tests)
+    add_executable(camera_gimbal_tests tests/test_camera_gimbal.cpp)
+    configure_target(camera_gimbal_tests)
+    target_link_libraries(camera_gimbal_tests PRIVATE Eigen3::Eigen)
+    add_test(NAME camera_gimbal_regressions COMMAND camera_gimbal_tests)
+    foreach(target IN LISTS PREDICTORS)
+        add_test(NAME ${target}_missing_input COMMAND ${target} --input "${CMAKE_CURRENT_BINARY_DIR}/missing-input.csv")
+        set_tests_properties(${target}_missing_input PROPERTIES WILL_FAIL TRUE)
+    endforeach()
+    add_test(NAME predictor_invalid_horizon COMMAND predictor_armor --prediction-horizon-ms -1)
+    set_tests_properties(predictor_invalid_horizon PROPERTIES WILL_FAIL TRUE)
 endif()

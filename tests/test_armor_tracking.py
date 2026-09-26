@@ -8,8 +8,8 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from predictor.predictor_armor import ArmorEKF, wrap_to_pi
-from predictor.run_armor import run_predict_armor
+from tests.reference.predictor.predictor_armor import ArmorEKF, wrap_to_pi
+from tests.reference.predictor.run_armor import run_predict_armor
 from plot.video import compute_plate_position
 
 

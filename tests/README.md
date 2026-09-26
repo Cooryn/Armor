@@ -51,3 +51,17 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1 -PythonOnly
 在 `outputs/light_refinement/` 保存统计表、对比图和相同帧的检测截图。
 EKF 统计窗口：视频 1 为 2–25 秒，视频 2 为 2–10 秒；
 漏检和双板异常统计覆盖全视频。残差只展示每帧最近的被接受观测。
+
+## C++ predictor 迁移回归
+
+正式预测器位于根目录 `include/`、`src/`；`reference/predictor/` 是迁移时保留的 Python 基准，
+包含迁移前工作区中的修改，只用于测试，不再作为应用入口。
+`test_*.py` 的滤波器测试验证参考实现；原生 C++ 行为由 `tests/test_predictors.cpp`
+及 `verify_predictor_equivalence.py` 联合验证。`run.ps1` 会运行全部三部分。
+
+独立验证（仓库根目录，先构建 predictor 并生成两份 pose_raw CSV）：
+
+```powershell
+ctest --test-dir tests/build -C Release --output-on-failure
+.\.venv\Scripts\python.exe -B tests/verify_predictor_equivalence.py --python-root . --bin-dir . --work-dir tests/outputs/predictor-comparison-new
+```

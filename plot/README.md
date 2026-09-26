@@ -21,7 +21,7 @@
 .\.venv\Scripts\python -m plot.raw --suffix 1
 
 # 先运行完整 EKF，再独立绘图
-.\.venv\Scripts\python -m predictor.run_armor --suffix 1
+.\predictor_armor.exe --suffix 1
 .\.venv\Scripts\python -m plot.armor --suffix 1
 
 # 视频叠加：自动选择对应相机参数
@@ -46,14 +46,19 @@
 .\.venv\Scripts\python -m plot.video --suffix 1 --start-frame 745 --max-frames 30 --output tests/outputs/video_preview.mp4
 ```
 
-彩色边框和圆圈表示当前帧的 EKF 估计装甲板，加号表示观测，红色叉号表示被拒绝的观测。
+彩色实线 A0–A3 和圆圈表示当前帧的 EKF 估计装甲板，同色虚线 F0–F3 和菱形表示未来预测。
+加号表示观测，红色叉号表示被拒绝的观测。白色星形为当前中心，白色菱形为未来中心。
 边框按与 C++ PnP 相同的 135×56 mm 尺寸构建三维角点，随各板 yaw 旋转后带畸变投影；
 局部放大图也显示边框。它是 EKF 几何模型的投影，不是原始检测框；当前模型不包含板面俯仰和横滚。
 接收观测的板号来自诊断 CSV，不通过 yaw 临时猜测；缺少诊断时显示黄色未分类观测，
 也可用 `--no-diagnostics` 显式关闭诊断标记。A0–A3 是跟踪器相对编号，不保证对应物理前后左右。
 右侧显示帧号、源视频时间、更新/只预测/无状态、中心、角速度、结构参数及目标局部放大图。
 中心轨迹默认保留 30 帧，`--trail-length 0` 可关闭。当前帧没有 EKF 记录时不沿用旧状态。
-画面中的 EKF 点是当前时刻估计，不是未来时刻预测；四块板全部显示，未模拟遮挡。
+侧栏显示未来预测提前量和目标时间。提前量由 `predictor_armor.exe --prediction-horizon-ms`
+设置，默认 50 ms；修改后需重新生成预测 CSV 再绘制视频。`0` 关闭提前预测框。
+旧 CSV 缺少未来字段时只显示当前估计，字段不完整或时间不一致时停止导出并提示。
+未来框叠加在当前画面上，仅表示预期位置，不应与当前观测直接计算未来预测误差。
+四块板全部显示，未模拟遮挡。误差图和 RMSE 文本仍是当前帧更新前残差，不是未来预测误差。
 
 `basic` 与 `armor` 的俯视图都叫 `top_down_trajectory_*.png`；同编号对照时请通过
 `--output-dir` 分开保存，避免相互覆盖。

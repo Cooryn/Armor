@@ -12,6 +12,16 @@ from plot.video import PROFILES, project, draw_frame, render_video
 
 
 class VideoTests(unittest.TestCase):
+    def test_base_frame_states_are_not_projected_as_camera_coordinates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            pred = root/'states.csv'
+            pd.DataFrame([dict(frame_id=0, xc=0, yc=0, zc=3, body_yaw=0,
+                               r=.26, dl=0, dh=0, coordinate_frame='base')]).to_csv(pred, index=False)
+            with self.assertRaisesRegex(ValueError, 'camera-frame states'):
+                render_video(root/'unused.avi', pred, root/'unused.csv', root/'output.mp4')
+            self.assertFalse((root/'output.mp4').exists())
+
     def test_second_camera_projection(self):
         matrix, distortion, size = PROFILES['2']
         expected, _ = cv2.projectPoints(np.array([[.1,.2,3.]]), np.zeros(3), np.zeros(3), matrix, distortion)

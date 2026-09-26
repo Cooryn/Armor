@@ -163,7 +163,7 @@ int main(int argc, char **argv)
         if (csv_file.is_open())
         {
             csv_file << std::setprecision(15);
-            csv_file << "frame_id,timestamp,x,y,z,target_yaw,target_pitch,distance,armor_orientation_yaw,detection_score,reprojection_error,pnp_candidate_count,pnp_used_temporal\n";
+            csv_file << "frame_id,timestamp,x,y,z,target_yaw,target_pitch,distance,armor_orientation_yaw,detection_score,reprojection_error,pnp_candidate_count,pnp_used_temporal,rvec_x,rvec_y,rvec_z,coordinate_frame\n";
         }
     }
 
@@ -278,7 +278,10 @@ int main(int argc, char **argv)
                              << current_armor.detection_score << ","
                              << current_armor.reprojection_error << ","
                              << current_armor.pnp_candidate_count << ","
-                             << current_armor.pnp_used_temporal << "\n";
+                             << current_armor.pnp_used_temporal << ","
+                             << current_armor.rvec.at<double>(0) << ","
+                             << current_armor.rvec.at<double>(1) << ","
+                             << current_armor.rvec.at<double>(2) << ",camera\n";
                 }
             }
         }

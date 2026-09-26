@@ -7,9 +7,9 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 import pandas as pd
-from predictor.predictor import run_predict
-from predictor.predictor_polar import run_predict_polar, PolarEKF
-from predictor.run_armor import run_predict_armor
+from tests.reference.predictor.predictor import run_predict
+from tests.reference.predictor.predictor_polar import run_predict_polar, PolarEKF
+from tests.reference.predictor.run_armor import run_predict_armor
 from plot.video import project, CAMERA_MATRIX, DISTORTION
 
 COLUMNS = "frame_id timestamp x y z target_yaw target_pitch distance armor_orientation_yaw".split()
@@ -40,7 +40,7 @@ class RegressionTests(unittest.TestCase):
             self.assertAlmostEqual(result.err_distance.iloc[0], -1.)
 
     def test_elapsed_time_uses_timestamps(self):
-        from predictor.predictor import BasicPredictor
+        from tests.reference.predictor.predictor import BasicPredictor
         calls = []
         original = BasicPredictor.predict
         def record(obj, dt):

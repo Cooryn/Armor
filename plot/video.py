@@ -67,7 +67,7 @@ def compute_plate_corners(xc, yc, zc, body_yaw, r, dl, dh, armor_id):
                      center+half_width+half_height, center+half_width-half_height])
 
 
-def draw_plate_outline(canvas, corners, camera_matrix, distortion, width, height, color):
+def draw_plate_outline(canvas, corners, camera_matrix, distortion, width, height, color, dashed=False):
     if not np.isfinite(corners).all() or np.any(corners[:, 2] <= .1):
         return []
     projected, _ = cv2.projectPoints(corners, np.zeros(3), np.zeros(3), camera_matrix, distortion)
@@ -80,7 +80,17 @@ def draw_plate_outline(canvas, corners, camera_matrix, distortion, width, height
         a, b = tuple(map(int, points[i])), tuple(map(int, points[(i+1) % 4]))
         ok, a, b = cv2.clipLine((0, 0, width, height), a, b)
         if ok:
-            cv2.line(canvas, a, b, color, 2, cv2.LINE_AA)
+            if dashed:
+                start, end = np.array(a, dtype=float), np.array(b, dtype=float)
+                length = np.linalg.norm(end-start)
+                if length > 0:
+                    direction = (end-start)/length
+                    for offset in np.arange(0, length, 10):
+                        p = tuple(np.rint(start+direction*offset).astype(int))
+                        q = tuple(np.rint(start+direction*min(offset+6, length)).astype(int))
+                        cv2.line(canvas, p, q, color, 2, cv2.LINE_AA)
+            else:
+                cv2.line(canvas, a, b, color, 2, cv2.LINE_AA)
             visible.extend([a, b])
     return visible
 
@@ -117,6 +127,7 @@ def draw_frame(frame, frame_id, fps, state, observations, diagnostics,
     status = 'NO STATE'
     plate_points = {}
     detail_points = []
+    future_values = None
     if state is not None:
         values = np.array([state[name] for name in ['xc', 'yc', 'zc', 'body_yaw', 'r', 'dl', 'dh']])
         if not np.isfinite(values).all():
@@ -146,6 +157,27 @@ def draw_frame(frame, frame_id, fps, state, observations, diagnostics,
                                 cv2.FONT_HERSHEY_SIMPLEX, .5, color, 1, cv2.LINE_AA)
                     if center is not None:
                         cv2.line(canvas, center, point, color, 1, cv2.LINE_AA)
+            if state.get('prediction_horizon_ms', 0) > 0:
+                future_values = np.array([state.get(name, np.nan) for name in
+                    ['future_xc', 'future_yc', 'future_zc', 'future_body_yaw', 'r', 'dl', 'dh']])
+                if not np.isfinite(future_values).all():
+                    future_values = None
+                else:
+                    future_center = pixel(future_values[:3])
+                    if future_center is not None:
+                        detail_points.append(future_center)
+                        cv2.drawMarker(canvas, future_center, (255,255,255), cv2.MARKER_DIAMOND, 13, 1)
+                    for aid in range(4):
+                        color = ARMOR_COLORS[aid]
+                        corners = compute_plate_corners(*future_values, aid)
+                        detail_points.extend(draw_plate_outline(canvas, corners, camera_matrix,
+                                                distortion, width, height, color, dashed=True))
+                        point = pixel(compute_plate_position(*future_values, aid))
+                        if point is not None:
+                            detail_points.append(point)
+                            cv2.drawMarker(canvas, point, color, cv2.MARKER_DIAMOND, 11, 1)
+                            cv2.putText(canvas, f'F{aid}', (point[0]+8, point[1]+16),
+                                        cv2.FONT_HERSHEY_SIMPLEX, .45, color, 1, cv2.LINE_AA)
     if state is None:
         trail.clear()
     accepted, rejected, unknown = 0, 0, 0
@@ -181,15 +213,20 @@ def draw_frame(frame, frame_id, fps, state, observations, diagnostics,
             lines.append((f'w: {state["w"]:.2f} rad/s', (235,235,235)))
         lines += [(f'r: {state["r"]:.3f} m', (235,235,235)),
                   (f'dl / dh: {state["dl"]:.3f} / {state["dh"]:.3f}', (235,235,235))]
+        if future_values is not None:
+            lines += [(f'FORECAST: +{state["prediction_horizon_ms"]:g} ms', (255,255,255)),
+                      (f'Target time: {state["prediction_timestamp"]/1000:.3f} s', (210,210,210))]
+        else:
+            lines.append(('FORECAST: off / unavailable', (170,170,170)))
     lines += [('',(0,0,0)), (f'Observations: {len(observations)}', (230,230,230)),
               (f'Accepted: {accepted}   Rejected: {rejected}',(230,230,230)),
               (f'Unclassified: {unknown}', (0,220,255)), ('',(0,0,0)),
-              ('LEGEND', (255,255,255)), ('Box + circle: estimated plate', (220,220,220)),
+              ('LEGEND', (255,255,255)), ('Solid A0-A3: current estimate', (220,220,220)),
+              ('Dashed F0-F3: future forecast', (220,220,220)),
               ('+ : observation', (220,220,220)), ('Red X: rejected observation', (40,80,255)),
               ('Yellow +: not classified', (0,220,255)), ('Star / trail: center', (220,220,220)),
-              ('A0-A3: tracker-relative IDs', (170,170,170))]
-    for aid,color in ARMOR_COLORS.items():
-        lines.append((f'A{aid}', color))
+              ('Diamond: future center/plate', (220,220,220)),
+              ('A/F pairs: same relative ID', (170,170,170))]
     for index,(label,color) in enumerate(lines):
         y = 32 + index*27
         if y >= height-10:
@@ -224,7 +261,21 @@ def render_video(video_path, prediction_csv, raw_csv, output_path, profile='1',
     if any(output_path.resolve() == path.resolve() for path in inputs):
         raise ValueError('Output must not overwrite an input file')
     pred = load_table(prediction_csv, ['frame_id','xc','yc','zc','body_yaw','r','dl','dh'], unique=True)
+    if 'coordinate_frame' in pred and not pred.coordinate_frame.eq('camera').all():
+        raise ValueError('This video renderer requires camera-frame states; base-frame states need a per-frame camera transform before projection.')
+    forecast_columns = {'prediction_horizon_ms','prediction_timestamp',
+                        'future_xc','future_yc','future_zc','future_body_yaw'}
+    if forecast_columns.intersection(pred.columns):
+        if not forecast_columns.issubset(pred.columns) or 'timestamp' not in pred:
+            raise ValueError('Incomplete forecast columns; rerun predictor_armor.exe')
+        if (not np.isfinite(pred[list(forecast_columns)+['timestamp']].to_numpy()).all()
+                or (pred.prediction_horizon_ms < 0).any()
+                or not np.allclose(pred.prediction_timestamp-pred.timestamp,
+                                   pred.prediction_horizon_ms, rtol=0, atol=1e-6)):
+            raise ValueError('Invalid forecast timestamp or values')
     raw = load_table(raw_csv, ['frame_id','x','y','z'])
+    if 'coordinate_frame' in raw and not raw.coordinate_frame.eq('camera').all():
+        raise ValueError('This video renderer requires camera-frame observations; do not project base-frame positions directly.')
     pred_lookup = {int(r['frame_id']): r for r in pred.to_dict('records')}
     raw_lookup = {int(fid): group.to_dict('records') for fid,group in raw.groupby('frame_id',sort=False)}
     diagnostic_lookup = {}

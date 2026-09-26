@@ -59,3 +59,19 @@ htmlcov/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Native predictor builds and supplied delivery binaries
+
+/predictor
+/predictor.exe
+/predictor_polar
+/predictor_polar.exe
+/run_armor
+/run_armor.exe
+
+/predictor_armor
+/predictor_armor.exe
+/camera_gimbal
+/camera_gimbal.exe
+/pose_base
+/pose_base.exe
