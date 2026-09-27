@@ -86,7 +86,7 @@ def main():
     assert len(future) == 4*len(state) and future.coordinate_frame.eq('base').all()
     np.testing.assert_allclose(np.linalg.norm(future[['qw', 'qx', 'qy', 'qz']], axis=1), 1, atol=1e-12)
     commands_path = out/'camera_gimbal_sim.csv'
-    run('camera_gimbal', '--input', state_path, '--output', commands_path, *frame_options)
+    run('camera_tracking', '--input', state_path, '--output', commands_path, *frame_options)
     commands = pd.read_csv(commands_path)
     for _, row in commands.iterrows():
         R, t = transforms[int(row.frame_id)]
@@ -107,11 +107,11 @@ def main():
     np.testing.assert_allclose(reset[['qw', 'qx', 'qy', 'qz']], base[['qw', 'qx', 'qy', 'qz']], atol=1e-12)
     run('predictor_armor', '--input', reset_csv, '--output-dir', out/'reset', '--suffix', 'sim')
     reset_state = out/'reset/armor_prediction_result_sim.csv'
-    run('camera_gimbal', '--input', reset_state, '--output', out/'reset_commands.csv', *reset_options)
+    run('camera_tracking', '--input', reset_state, '--output', out/'reset_commands.csv', *reset_options)
     reset_commands = pd.read_csv(out/'reset_commands.csv')
     cols = ['yaw_error_deg', 'pitch_error_deg', 'yaw_rate_dps', 'pitch_rate_dps']
     np.testing.assert_allclose(reset_commands[cols], commands[cols], atol=1e-7)
-    run('camera_gimbal', '--input', reset_state, '--output', out/'wrong_origin.csv', *frame_options, success=False)
+    run('camera_tracking', '--input', reset_state, '--output', out/'wrong_origin.csv', *frame_options, success=False)
     mixed = base.copy()
     metadata = ['base_reference_timestamp_ms', 'base_origin_x_m', 'base_origin_y_m', 'base_origin_z_m']
     mixed.loc[50, metadata] = reset.loc[50, metadata]
@@ -123,12 +123,12 @@ def main():
     loss.loc[10:20, ['accepted_count', 'status']] = [0, 'prediction_only']
     loss.loc[30, 'zc'] = np.nan
     loss.to_csv(out/'loss.csv', index=False)
-    run('camera_gimbal', '--input', out/'loss.csv', '--output', out/'loss_commands.csv', *frame_options)
+    run('camera_tracking', '--input', out/'loss.csv', '--output', out/'loss_commands.csv', *frame_options)
     stopped = pd.read_csv(out/'loss_commands.csv')
     assert not stopped.loc[10:20, 'control_valid'].any()
     assert stopped.loc[10:20, ['yaw_rate_dps', 'pitch_rate_dps']].eq(0).all().all()
     assert not stopped.loc[30, 'control_valid']
-    run('camera_gimbal', '--input', state_path, '--output', out/'missing_transform.csv', success=False)
+    run('camera_tracking', '--input', state_path, '--output', out/'missing_transform.csv', success=False)
     run('pose_base', '--input', camera_csv, '--output', out/'missing_calibration.csv', success=False)
     snapshot = camera_csv.read_bytes()
     run('pose_base', '--input', camera_csv, '--output', camera_csv, *frame_options, success=False)

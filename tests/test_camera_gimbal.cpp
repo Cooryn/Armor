@@ -1,4 +1,4 @@
-#include "camera_gimbal.hpp"
+#include "camera_tracking.hpp"
 #include "camera_frames.hpp"
 #include <iostream>
 

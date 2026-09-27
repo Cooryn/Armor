@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from tests.reference.predictor.predictor import run_predict
-from tests.reference.predictor.predictor_polar import run_predict_polar, PolarEKF
+from tests.reference.predictor.predictor_polar import run_predict_polar
 from tests.reference.predictor.run_armor import run_predict_armor
 from plot.video import project, CAMERA_MATRIX, DISTORTION
 

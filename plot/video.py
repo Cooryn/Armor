@@ -95,12 +95,6 @@ def draw_plate_outline(canvas, corners, camera_matrix, distortion, width, height
     return visible
 
 
-def draw_cross(img, cx, cy, size=6, color=(255, 255, 255), thickness=2):
-    """绘制十字标记"""
-    cv2.line(img, (cx - size, cy), (cx + size, cy), color, thickness)
-    cv2.line(img, (cx, cy - size), (cx, cy + size), color, thickness)
-
-
 def load_table(path, required, unique=False):
     table = pd.read_csv(path)
     missing = set(required) - set(table.columns)

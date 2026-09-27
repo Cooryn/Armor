@@ -13,10 +13,6 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th = 20, in
 
 std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask);
 
-std::vector<std::vector<cv::Point>> filterLightBars(
-    const std::vector<std::vector<cv::Point>> &contours,
-    double minAspectRatio = 1.5, double minArea = 10.0);
-
 struct Armor
 {
     cv::RotatedRect left_light;
@@ -35,13 +31,8 @@ struct Armor
 std::vector<cv::RotatedRect> getValidLightRects(
     const std::vector<std::vector<cv::Point>> &lightBars, float min_angle = 55.0f,
     std::vector<float> *quality = nullptr,
-    std::vector<cv::RotatedRect> *original_rects = nullptr);
+    double minAspectRatio = 1.5, double minArea = 10.0);
 
-// Restore the same two lights' original endpoints if refinement fails PnP.
-bool restoreLightEndpoints(Armor &armor, const std::vector<cv::RotatedRect> &refined,
-                           const std::vector<cv::RotatedRect> &original);
-
-// 在 lightbar_detector.hpp 中
 std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
                                float max_angle_diff = 20.0f,
                                float max_length_ratio = 1.5f,
@@ -50,4 +41,4 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
                                float max_aspect_ratio = 3.1f,
                                float min_detection_score = 0.35f,
                                const std::vector<float> &light_quality = {});
-cv::Mat drawArmors(const cv::Mat &src, const std::vector<Armor> &armors);
+void drawArmors(cv::Mat &src, const std::vector<Armor> &armors);

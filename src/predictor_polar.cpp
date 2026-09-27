@@ -120,7 +120,7 @@ inline double number(const InputRow &r, const std::string &key, bool optional = 
     if (first == std::string::npos)
         return std::numeric_limits<double>::quiet_NaN();
     s = s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
-    if (s.empty() || s == "NA" || s == "N/A" || s == "NULL" || s == "null" || s == "None" ||
+    if (s == "NA" || s == "N/A" || s == "NULL" || s == "null" || s == "None" ||
         s == "NaN" || s == "nan" || s == "<NA>")
         return std::numeric_limits<double>::quiet_NaN();
     try {
@@ -179,7 +179,7 @@ inline bool input_is_base(const std::vector<InputRow> &data) {
         if (current == "base") {
             for (const char *key : {"base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"}) {
                 const double value = number(row, key), first = number(data.front(), key);
-                if (!std::isfinite(value) || !std::isfinite(first) || value != first)
+                if (!std::isfinite(value) || value != first)
                     throw std::invalid_argument("Missing or mixed base origin metadata; regenerate base CSV");
             }
             if (number(row, "base_reference_timestamp_ms") < 0)
@@ -196,14 +196,6 @@ inline void mark_base(Table &table, const InputRow &reference) {
         table.columns.push_back(key);
         for (auto &row : table.rows) row.push_back({key, number(reference, key)});
     }
-}
-inline bool prepare(const fs::path &p, const fs::path &out) {
-    if (!fs::exists(p)) {
-        std::cout << "错误: 找不到输入文件 " << p.string() << '\n';
-        return false;
-    }
-    fs::create_directories(out);
-    return true;
 }
 inline void empty_message() {
     std::cout << "No prediction exported: at least two detected frames are required.\n";
@@ -238,8 +230,7 @@ inline void metrics(const Table &t, const fs::path &p, const std::vector<std::st
 
 std::optional<Table> run_predict_polar(const fs::path &p, const fs::path &out,
                                        const std::string &suffix) {
-    if (!prepare(p, out))
-        return std::nullopt;
+    fs::create_directories(out);
     auto data = load(p);
     const bool base_frame = input_is_base(data);
     auto groups = group_rows(data);

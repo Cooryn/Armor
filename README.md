@@ -1,14 +1,14 @@
 # RoboMaster Vision：装甲板检测与 EKF 跟踪
 
-本项目使用 C++ / OpenCV 从图片或视频中检测装甲板，通过 PnP 解算装甲板位姿，再由 Python 扩展卡尔曼滤波器（EKF）估计车体中心、旋转朝向、角速度和装甲板几何参数。支持导出检测视频、原始观测、滤波结果、诊断曲线和状态叠加视频。
+本项目使用 C++ / OpenCV 从视频中检测装甲板，通过 PnP 解算装甲板位姿，再由 C++ / Eigen 扩展卡尔曼滤波器（EKF）估计车体中心、旋转朝向、角速度和装甲板几何参数。支持导出检测视频、原始观测、滤波结果、诊断曲线和状态叠加视频。
 
-主要工作流面向单辆小车的四装甲板跟踪。默认采用无窗口批处理，适合离线检查检测与跟踪效果。
+主要工作流面向单辆小车的四装甲板跟踪。默认逐帧显示视频检测结果，模拟实时图像输入；也支持无窗口批处理。
 
 ## 1. 功能与数据流程
 
 | 模块 | 输入 | 功能 | 输出 |
 | --- | --- | --- | --- |
-| 装甲板检测 | 红色或蓝色装甲板图片、视频 | 颜色提取、灯条筛选、端点定位、灯条配对 | 装甲板角点与检测质量 |
+| 装甲板检测 | 红色或蓝色装甲板视频 | 颜色提取、灯条筛选、端点定位、灯条配对 | 装甲板角点与检测质量 |
 | PnP 解算 | 角点、相机标定、装甲板尺寸 | 平面姿态候选求解、筛选与短时关联 | 装甲板位置、朝向、重投影误差 |
 | 装甲板 EKF | 逐帧 PnP 观测 | 多板关联、质量加权、状态估计、漏检预测 | 车体状态、观测诊断、残差统计 |
 | 图表与视频 | 原始观测、EKF 结果、原视频 | 绘制曲线与投影状态 | PNG 图表、MP4 视频 |
@@ -34,7 +34,6 @@ EKF 核心使用 C++ 和 Eigen；CSV 读写由 C++ 运行程序负责，Python �
 Armor/
 ├── CMakeLists.txt                 C++ 构建配置
 ├── setup.ps1                      Python 环境配置与 C++ 构建
-├── run.ps1                        C++ 检测运行入口
 ├── requirements.txt               Python 依赖
 ├── include/                       检测器、预测器与输入流头文件
 ├── src/
@@ -51,7 +50,7 @@ Armor/
 │   ├── basic.py                   6 维模型图表
 │   ├── polar.py                   9 维模型图表
 │   └── _cli.py                    静态绘图命令的公共路径参数
-├── assets/image/                  输入图片
+├── assets/image/                  历史样本（检测程序不再提供图片模式）
 ├── assets/video/                  输入视频
 ├── data/                          C++ 导出的原始观测 CSV
 ├── results/                       正式 CSV、TXT、PNG 和 MP4 输出
@@ -110,7 +109,7 @@ Python 命令统一使用 `.\.venv\Scripts\python`，不要求额外激活 `.ven
 
 ```powershell
 # 检测视频，导出原始观测
-powershell -ExecutionPolicy Bypass -File .\run.ps1 -Mode video -Color red -InputFile video_1.avi
+.\Armor.exe red video_1.avi
 
 # 运行装甲板 EKF
 .\predictor_armor.exe --suffix 1
@@ -127,7 +126,7 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1 -Mode video -Color red -Input
 
 ```powershell
 foreach ($suffix in 1, 2) {
-    powershell -ExecutionPolicy Bypass -File .\run.ps1 -Mode video -Color red -InputFile "video_$suffix.avi"
+    .\Armor.exe red "video_$suffix.avi"
     if ($LASTEXITCODE -ne 0) { throw "检测失败：video_$suffix" }
     .\predictor_armor.exe --suffix $suffix
     if ($LASTEXITCODE -ne 0) { throw "EKF 运行失败：$suffix" }
@@ -140,38 +139,33 @@ foreach ($suffix in 1, 2) {
 
 正常完成后，每段视频对应 `data/` 中 1 个原始 CSV 和 `results/` 中 12 个正式结果文件。
 
-### 4.3 图片检测
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run.ps1 -Mode image -Color red -InputFile image_1.jpg
-```
-
-图片模式保存 `results/image_1.png`，不产生用于时序 EKF 的观测 CSV。
-
 ## 5. 命令参数
 
-### 5.1 检测程序
-
-`run.ps1` 接受 `-Mode image|video`、`-Color red|blue`、`-InputFile`，默认值分别为 `video`、`red`、`video_2.avi`。脚本会将 Conda 的 `Library/bin` 加入本次运行的 DLL 搜索路径。
-
-配置好 DLL 和 FFmpeg 路径后，也可直接运行：
+### 5.1 视频检测
 
 ```powershell
-.\Armor.exe video red video_1.avi
-.\Armor.exe image blue image_3.jpg
+.\Armor.exe red video_1.avi
+.\Armor.exe blue video_2.avi
 ```
 
-直接运行 `Armor.exe` 的默认模式是 `image`，颜色为 `red`。未指定文件时，图片模式使用 `image_1.jpg`，视频模式使用 `video_1.avi`。
-
-程序先检查传入路径，找不到时从 `assets/<模式>/<文件名>` 查找。检测视频按源文件名输出，例如 `video_1.avi` 对应 `results/video_1.mp4`。CSV 编号取文件名主干最后一个下划线后的部分；无下划线时使用整个主干，例如 `sample.avi` 对应 `data/pose_raw_sample.csv`。
-
-默认不打开窗口。安装了支持 GUI 的 C++ OpenCV 时，可传入第四个参数 `--gui`：
-
-```powershell
-.\Armor.exe video red video_1.avi --gui
-```
-
-GUI 中可调颜色阈值、灯条角度差、长度比、装甲板宽高比和灯条错位。图片模式按 `S` 保存、`Esc` 退出；视频模式按 `Esc` 提前结束。批处理不需要 GUI 支持。
+程序只处理视频，默认打开实时预览窗口，显示检测框和 PnP 位姿，不包含调参滑动条。
+预览使用 OpenCV HighGUI（Qt 后端），C++ OpenCV 必须是带 GUI 的构建，不能使用 headless 构建。当前环境使用 `opencv=4.13.0=qt*_py313*`。
+`Armor.exe [red|blue] [视频文件] [--headless]` 默认使用 `red video_1.avi`。
+显示按源视频帧率限速，并扣除当前帧处理耗时；处理不及时则播放变慢，不跳帧。CSV 时间戳仍使用源视频时间。
+按 Esc 或关闭窗口可提前结束，保留已处理部分的 AVI 和 CSV。加上 `--headless` 可关闭窗口并不限速处理。
+`Armor.exe` 保持仅显示检测框和 PnP 位姿。预测画面通过独立程序启动：`camera_tracking.exe red video_1.avi`（同样支持末尾添加 `--headless`）。两个程序分别运行各自的视频处理流程，不需要同时启动。
+两个程序的入口分别是 `src/main.cpp` 和 `src/camera_tracking.cpp`，各自负责视频读取、检测、CSV/AVI 输出和窗口处理，由同一个 CMake 分别构建，不使用共用视频流程模块或条件编译切换入口行为。
+预测和相机自瞄统一在 `camera_tracking.cpp/.hpp` 中，不再单独构建 `camera_gimbal.exe`。运行 `camera_tracking.exe red video_1.avi` 后，默认自动模式；窗口获得焦点后按 `1` 切换手动、`2` 切换自动、`3` 或 `C` 归中。手动模式下 `A/D` 左右调整目标 yaw，`W/S` 上下调整目标 pitch，每次 2°。归中回到启动时的 yaw=0、pitch=0，完成后保持零位，按 `1/2` 退出归中。
+目前控制对象是仿真相机云台：yaw 向右为正，pitch 向上为正，角度范围分别为 ±45°、±30°。自动模式从未来 50 ms 的四块装甲板位置中选择相机前方距离最近的一块，驱动仿真光轴跟踪；未接受到观测时保持姿态。青色十字表示仿真光轴，紫色叉表示自动跟踪的预测位置。界面标注 `SIMULATION`，录像画面不会因仿真云台转动而改变，也不会把仿真角度当作真实相机遥测补偿 EKF。
+每帧控制结果保存为 `results/camera_control_<编号>.csv`，包含模式、仿真标志、目标有效性、仿真 yaw/pitch、角速度及预测跟踪点。`target_valid` 仅表示自动模式存在有效预测目标；手动和归中不依赖装甲板观测。当前没有下位机通信，归中完成仅表示仿真角度回到零位。
+预测窗口沿用 `plot.video` 的布局：原视频右侧增加 340 像素信息栏和目标放大图。彩色实线 A0～A3 为当前估计，同色虚线 F0～F3 为 50 ms 后的位置；白色星标及轨迹表示当前中心，菱形表示未来中心或装甲板。观测以加号显示，拒绝观测为红叉。侧栏显示跟踪参数、观测统计、预测时间和相机 yaw/pitch 偏差及限速后的角速度，仅用于预览，不发送电机指令。保存的预测 AVI 也使用此布局。
+每帧检测结果直接进入现有 `ArmorEKF`，无需先生成 CSV 再绘图。没有接受到观测时，自动模式立即保持仿真姿态，预测状态标记 PREDICTION ONLY；手动和归中继续工作。超过 200 ms 未接受观测时隐藏预测图形并清空轨迹。重新关联成功后恢复显示。
+此实时入口当前使用相机系，适用于固定相机视频；未接入真实云台姿态反馈，不能把它当成运动云台下的固定系预测。现有 `pose_base` 固定系离线流程不变。预测程序单独输出 `results/camera_prediction_<视频名>.avi` 和 `data/camera_pose_raw_<编号>.csv`，不会覆盖普通检测程序的输出。
+直接运行前，需确保 OpenCV 运行库目录已加入 PATH。检测程序直接输出 MJPG 编码的 AVI，不再调用外部 FFmpeg 转码。
+输入路径不存在时，程序从 `assets/video/` 查找。
+支持扩展名：AVI、MP4、MOV、MKV、M4V、WebM、MPG、MPEG、WMV。
+检测参数直接设置在 `src/main.cpp` 中。
+输出为 `results/<视频名>.avi` 和 `data/pose_raw_<编号>.csv`。`plot.video` 默认读取原始视频，不依赖检测程序的视频输出；其可视化结果仍为 MP4。
 
 ### 5.2 装甲板 EKF
 
@@ -345,7 +339,7 @@ predictor::ArmorEKF ekf; // 默认启用自适应观测噪声
 
 | 文件 | 内容与用途 |
 | --- | --- |
-| `video_*.mp4` | C++ 检测视频，显示通过 PnP 检查的装甲板边框 |
+| `video_*.avi` | C++ 检测视频，显示通过 PnP 检查的装甲板边框，MJPG 编码 |
 | `armor_video_*.mp4` | EKF 叠加视频，显示观测、估计车体中心、四块板及状态信息 |
 | `pose_raw_curve_*.png` | 原始装甲板中心的 x、y、z、距离、目标俯仰角曲线 |
 | `raw_yaw_curve_*.png` | 原始目标方位角与装甲板朝向角，均未经过 EKF |
@@ -487,10 +481,8 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1 -PythonOnly
 | 现象 | 检查方法 |
 | --- | --- |
 | `cmake` 不可识别 | 确认 CMake 已安装，将其 `bin` 目录加入 PATH 后重新打开终端 |
-| 找不到 OpenCV 或 DLL | 确认当前 Conda 环境包含 C++ 开发库、`Library/cmake` 配置和运行库，通过 `run.ps1` 运行 |
+| 找不到 OpenCV 或 DLL | 确认当前 Conda 环境包含 C++ 开发库、`Library/cmake` 配置，并将其 `Library/bin` 加入 PATH |
 | Python 缺少依赖 | 使用项目 `.venv` 的解释器，检查 `setup.ps1` 是否成功完成 |
-| OpenCV 无法创建窗口 | 使用默认批处理；`--gui` 需要支持 GUI 的 C++ OpenCV |
-| FFmpeg 转码失败 | 检查 `ffmpeg` 是否可调用及是否支持 `mpeg4`；失败时保留中间 AVI |
 | 没有新的 EKF 文件 | 检查输入路径、有效帧数和终端提示，不要把已有同名文件当成本次结果 |
 | 图中出现竖线或角度跳变 | 检查同帧多板、换板、角度折回，以及真实观测异常 |
 | 可视化提示尺寸或诊断不匹配 | 使用同一轮、同编号的原视频、原始 CSV、EKF 结果和诊断文件，并核对相机配置 |
@@ -498,7 +490,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1 -PythonOnly
 
 ## 12. 纯相机云台：固定基座坐标与控制 CSV
 
-新增独立程序 `pose_base.exe` 和 `camera_gimbal.exe`，由同一个根目录 CMake 构建。
+`pose_base.exe` 保留离线坐标变换；原来的离线控制 CSV 转换已合入 `camera_tracking.exe --input ...`，与实时预测共用一个可执行文件，由根目录 CMake 构建。
 前者输出基座系装甲板位姿；后者输出相机光轴跟踪偏差和角速度，不连接电机或串口。
 
 ### 坐标与变换顺序
@@ -519,7 +511,7 @@ R_BA = R_BC · R_CA
 ```
 
 其中 M 为以 yaw 转轴为原点的机械参考系，仅用于外参计算；B 与 M 的轴方向一致。
-`t_ref` 默认取遥测第一帧时间，也可在 `pose_base` 和 `camera_gimbal` 中同时指定相同的 `--origin-time-ms 1000`（毫秒）。
+`t_ref` 默认取遥测第一帧时间，也可在 `pose_base` 和 `camera_tracking --input` 中同时指定相同的 `--origin-time-ms 1000`（毫秒）。
 参考时刻的相机位置在 B 系中为零，安装旋转和云台角度仍保留在 `R_BC` 中。
 
 其中 A 为装甲板自身坐标系，PnP 的 `rvec/tvec` 给出 A 到 C 的变换。
@@ -552,10 +544,10 @@ timestamp,yaw_deg,pitch_deg,roll_deg
 
 ```powershell
 cmake --build build --config Release --parallel
-.\run.ps1 -Mode video -Color red -InputFile video_1.avi
+.\Armor.exe red video_1.avi
 .\pose_base.exe --suffix 1 --telemetry telemetry.csv --calibration calibration.csv
 .\predictor_armor.exe --input data/pose_base_1.csv --suffix 1 --output-dir results/base
-.\camera_gimbal.exe --input results/base/armor_prediction_result_1.csv --output results/base/camera_gimbal_1.csv --telemetry telemetry.csv --calibration calibration.csv
+.\camera_tracking.exe --input results/base/armor_prediction_result_1.csv --output results/base/camera_gimbal_1.csv --telemetry telemetry.csv --calibration calibration.csv
 ```
 
 `data/pose_raw_1.csv` 保留原始相机测量，`data/pose_base_1.csv` 是正式基座系观测输出。
@@ -573,7 +565,7 @@ cmake --build build --config Release --parallel
 
 ### 相机跟踪指令
 
-`camera_gimbal` 使用**当前帧估计中心**，经 `T_BC` 的逆变换得到相机系位置，再计算：
+`camera_tracking --input` 使用**当前帧估计中心**，经 `T_BC` 的逆变换得到相机系位置，再计算：
 
 ```text
 yaw_error   = atan2(x_camera, z_camera)
@@ -593,7 +585,7 @@ pitch_error = -atan2(y_camera, hypot(x_camera, z_camera))
 | `status` | `initializing`、`tracking`、`no_observation`、`invalid_target` 或 `time_gap` |
 
 默认参数：增益 2/s；yaw/pitch 偏差限幅 45°/30°；速度限制 60°/s、45°/s；加速度限制 180°/s²；
-中心死区 0.2°；控制帧间隔上限 200 ms。使用 `camera_gimbal.exe --help` 查看对应参数。
+中心死区 0.2°；控制帧间隔上限 200 ms。使用 `camera_tracking.exe --help` 查看对应参数。
 这里的角度限幅是**相对光轴偏差限幅**，不代替实际关节行程限制。
 首帧等待时基；没有接受观测、位置无效或时间间隔过大时立即输出零角速度并令 `control_valid=false`。
 丢失目标的立即停止优先于加速度限幅。CSV 最后一行不会自动生成后续停止帧，未来硬件执行端必须另设命令超时。

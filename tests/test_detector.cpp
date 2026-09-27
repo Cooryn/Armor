@@ -38,6 +38,13 @@ int main(int argc, char **argv) {
         require(selected.size() == 2, "Expected two non-conflicting plates");
         require(selected[0].right_light.center.x == 72.f &&
                 selected[1].left_light.center.x == 150.f, "Incorrect global assignment");
+        // A greedy highest-score pair consumes both middle lights and loses a plate.
+        std::vector<cv::RotatedRect> competing;
+        for (float x : {0.f, 60.f, 120.f, 180.f})
+            competing.emplace_back(cv::Point2f(x,100), cv::Size2f(30,4), 90.f);
+        auto optimal = matchArmors(competing,20,2,.8f,.8f,3.1f,.35f,{.6f,1.f,1.f,.6f});
+        require(optimal.size() == 2 && optimal[0].right_light.center.x == 60.f &&
+                optimal[1].left_light.center.x == 120.f, "Greedy pairing lost a valid plate");
         require(matchArmors({}).empty(), "Empty input");
         require(matchArmors(bars, 0, 2, .8f, .8f).empty(), "Invalid threshold");
 
@@ -132,8 +139,8 @@ int main(int argc, char **argv) {
             cv::Mat frame;
             require(cap.read(frame), "Cannot read regression frame");
             auto mask = extractColor(frame, EnemyColor::RED, 70, 170);
-            auto contours = filterLightBars(extractContours(mask), 1.5, 40);
-            selected = matchArmors(getValidLightRects(contours, 55), 20, 2, .8f, .8f);
+            auto contours = extractContours(mask);
+            selected = matchArmors(getValidLightRects(contours, 55, nullptr, 1.5, 40), 20, 2, .8f, .8f);
             bool correct = false;
             for (const auto &a : selected) {
                 require(!(a.left_light.center.x > 700 && a.right_light.center.x > 800),
@@ -148,18 +155,16 @@ int main(int argc, char **argv) {
             cap.set(cv::CAP_PROP_POS_FRAMES, 41);
             require(cap.read(frame), "Cannot read side-plate regression frame");
             mask = extractColor(frame, EnemyColor::RED, 70, 170);
-            contours = filterLightBars(extractContours(mask), 1.5, 40);
-            selected = matchArmors(getValidLightRects(contours, 55), 20, 2, .8f, .8f);
+            contours = extractContours(mask);
+            selected = matchArmors(getValidLightRects(contours, 55, nullptr, 1.5, 40), 20, 2, .8f, .8f);
             require(selected.size() == 2, "Thin side plate lost by shape filtering");
 
-            // Endpoint refinement must not turn a recoverable PnP failure into
-            // a missing frame. Fallback reuses the same lights and same solver.
+            // The refined endpoints must retain the known frame-220 detection.
             cap.set(cv::CAP_PROP_POS_FRAMES, 220);
-            require(cap.read(frame), "Cannot read refinement fallback frame");
+            require(cap.read(frame), "Cannot read refinement regression frame");
             mask = extractColor(frame, EnemyColor::RED, 70, 170);
-            contours = filterLightBars(extractContours(mask), 1.5, 40);
-            std::vector<cv::RotatedRect> originals;
-            fitted = getValidLightRects(contours, 55, &quality, &originals);
+            contours = extractContours(mask);
+            fitted = getValidLightRects(contours, 55, &quality, 1.5, 40);
             selected = matchArmors(fitted,20,2,.8f,.8f,3.1f,.35f,quality);
             cv::Mat K2 = (cv::Mat_<double>(3,3) << 1711.311186,0,732.488057,
                 0,1714.616882,546.930868,0,0,1);
@@ -168,8 +173,6 @@ int main(int argc, char **argv) {
             bool recovered = false;
             for (auto a : selected) {
                 bool solved = solver2.solve(a);
-                if (!solved && restoreLightEndpoints(a, fitted, originals))
-                    solved = solver2.solve(a);
                 recovered |= solved;
             }
             require(recovered, "Endpoint refinement lost video 2 frame 220");

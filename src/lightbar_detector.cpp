@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <unordered_map>
 
 cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gray_th)
@@ -48,24 +49,27 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
 
 std::vector<cv::RotatedRect> getValidLightRects(
     const std::vector<std::vector<cv::Point>> &lightBars, float min_angle,
-    std::vector<float> *quality, std::vector<cv::RotatedRect> *original_rects)
+    std::vector<float> *quality,
+    double minAspectRatio, double minArea)
 {
     std::vector<cv::RotatedRect> rects;
     if (quality) quality->clear();
-    if (original_rects) original_rects->clear();
     for (const auto &c : lightBars)
     {
-        if (c.size() < 3 || cv::contourArea(c) <= 0) continue;
+        if (c.size() < 3) continue;
+        const double area = cv::contourArea(c);
+        if (area <= 0 || area < minArea) continue;
         cv::RotatedRect rect = cv::minAreaRect(c);
         float w = rect.size.width;
         float h = rect.size.height;
+        if (w < 1.f || h < 1.f || std::max(w, h) / std::min(w, h) < minAspectRatio ||
+            area / (w * h) < .30) continue;
         float angle = std::abs(rect.angle);
         float longEdgeAngle = (w >= h) ? angle : (90.0f - angle);
 
         if (longEdgeAngle < min_angle)
             continue;
 
-        if (original_rects) original_rects->push_back(rect);
         // Resample the closed boundary uniformly. CHAIN_APPROX_SIMPLE otherwise
         // gives corners/outliers disproportionate influence over the fitted axis.
         std::vector<cv::Point2f> boundary;
@@ -93,23 +97,26 @@ std::vector<cv::RotatedRect> getValidLightRects(
             axis = cv::Point2f(std::cos(radians), std::sin(radians));
             if (axis.y < 0) axis *= -1.f;
             const cv::Point2f normal(axis.y, -axis.x);
-            std::vector<float> along, across;
+            float along_min = std::numeric_limits<float>::infinity();
+            float along_max = -std::numeric_limits<float>::infinity();
+            std::vector<float> across;
             for (const auto &point : boundary) {
-                along.push_back((point-origin).dot(axis));
+                const float projection = (point-origin).dot(axis);
+                along_min = std::min(along_min, projection);
+                along_max = std::max(along_max, projection);
                 across.push_back((point-origin).dot(normal));
             }
-            std::sort(along.begin(), along.end());
             std::sort(across.begin(), across.end());
             // Preserve the full measured length: trimming both ends biases depth.
-            const float length = along.back()-along.front();
+            const float length = along_max-along_min;
             const float width = across.back()-across.front();
             const float offset = (across[across.size()/10] + across[across.size()*9/10]) / 2;
-            const cv::Point2f center = origin + axis*((along.front()+along.back())/2)
+            const cv::Point2f center = origin + axis*((along_min+along_max)/2)
                                       + normal*offset;
             rect = cv::RotatedRect(center, cv::Size2f(length, width), fitted_angle);
             fit_quality = 1.f;
         }
-        const float fill = static_cast<float>(cv::contourArea(c)) /
+        const float fill = static_cast<float>(area) /
                            std::max(1.f, rect.size.area());
         // A bounded confidence penalty for incomplete/irregular light shapes.
         // Oblique plate views are not penalized just for their screen angle.
@@ -122,57 +129,8 @@ std::vector<cv::RotatedRect> getValidLightRects(
 std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask)
 {
     std::vector<std::vector<cv::Point>> contours;
-    cv::Mat maskCopy = mask.clone();
-    cv::findContours(maskCopy, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
     return contours;
-}
-
-std::vector<std::vector<cv::Point>> filterLightBars(const std::vector<std::vector<cv::Point>> &contours, double minAspectRatio, double minArea)
-{
-    std::vector<std::vector<cv::Point>> result;
-    for (const auto &c : contours)
-    {
-        double area = cv::contourArea(c);
-        if (area < minArea)
-            continue;
-
-        cv::RotatedRect rect = cv::minAreaRect(c);
-        float w = rect.size.width;
-        float h = rect.size.height;
-        if (w < 1.0f || h < 1.0f)
-            continue;
-
-        float aspect = std::max(w, h) / std::min(w, h);
-        const double fill_ratio = area / (w * h);
-        if (aspect >= minAspectRatio && fill_ratio >= 0.30)
-        {
-            result.push_back(c);
-        }
-    }
-    return result;
-}
-
-cv::Mat drawLightBarRects(const cv::Mat &src, const std::vector<std::vector<cv::Point>> &lightBars)
-{
-    cv::Mat out = src.clone();
-    for (const auto &c : lightBars)
-    {
-        cv::RotatedRect rect = cv::minAreaRect(c);
-        float w = rect.size.width;
-        float h = rect.size.height;
-        float angle = std::abs(rect.angle);
-        float longEdgeAngle = (w >= h) ? angle : (90.0f - angle);
-        if (longEdgeAngle < 75.0f)
-            continue;
-
-        cv::Point2f vertices[4];
-        rect.points(vertices);
-        for (int j = 0; j < 4; j++)
-        {
-            cv::line(out, vertices[j], vertices[(j + 1) % 4], cv::Scalar(0, 255, 255), 2);
-        }
-    }
-    return out;
 }
 
 namespace {
@@ -191,25 +149,6 @@ LightGeometry geometry(const cv::RotatedRect &rect) {
             rect.center - axis * (length / 2), rect.center + axis * (length / 2)};
 }
 struct Candidate { size_t left, right; Armor armor; };
-}
-
-bool restoreLightEndpoints(Armor &armor, const std::vector<cv::RotatedRect> &refined,
-                           const std::vector<cv::RotatedRect> &original)
-{
-    if (refined.size() != original.size()) return false;
-    size_t left = refined.size(), right = refined.size();
-    for (size_t i = 0; i < refined.size(); ++i) {
-        if (cv::norm(refined[i].center-armor.left_light.center) < 1e-4) left = i;
-        if (cv::norm(refined[i].center-armor.right_light.center) < 1e-4) right = i;
-    }
-    if (left == refined.size() || right == refined.size() || left == right) return false;
-    const auto l = geometry(original[left]), r = geometry(original[right]);
-    armor.left_light = original[left]; armor.right_light = original[right];
-    armor.center = (original[left].center + original[right].center) / 2.f;
-    armor.vertices[0] = l.top; armor.vertices[1] = l.bottom;
-    armor.vertices[2] = r.bottom; armor.vertices[3] = r.top;
-    armor.detection_score *= .9; // Mark a failed refinement as lower confidence.
-    return true;
 }
 
 std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
@@ -367,15 +306,13 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
     return armors;
 }
 
-cv::Mat drawArmors(const cv::Mat &src, const std::vector<Armor> &armors)
+void drawArmors(cv::Mat &src, const std::vector<Armor> &armors)
 {
-    cv::Mat out = src.clone();
     for (const auto &armor : armors)
     {
         for (int i = 0; i < 4; i++)
         {
-            cv::line(out, armor.vertices[i], armor.vertices[(i + 1) % 4], cv::Scalar(0, 255, 0), 2);
+            cv::line(src, armor.vertices[i], armor.vertices[(i + 1) % 4], cv::Scalar(0, 255, 0), 2);
         }
     }
-    return out;
 }

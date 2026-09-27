@@ -120,7 +120,7 @@ inline double number(const InputRow &r, const std::string &key, bool optional = 
     if (first == std::string::npos)
         return std::numeric_limits<double>::quiet_NaN();
     s = s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
-    if (s.empty() || s == "NA" || s == "N/A" || s == "NULL" || s == "null" || s == "None" ||
+    if (s == "NA" || s == "N/A" || s == "NULL" || s == "null" || s == "None" ||
         s == "NaN" || s == "nan" || s == "<NA>")
         return std::numeric_limits<double>::quiet_NaN();
     try {
@@ -173,7 +173,7 @@ inline bool input_is_base(const std::vector<InputRow> &data) {
         if (current == "base") {
             for (const char *key : {"base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"}) {
                 const double value = number(row, key), first = number(data.front(), key);
-                if (!std::isfinite(value) || !std::isfinite(first) || value != first)
+                if (!std::isfinite(value) || value != first)
                     throw std::invalid_argument("Missing or mixed base origin metadata; regenerate base CSV");
             }
             if (number(row, "base_reference_timestamp_ms") < 0)
@@ -190,14 +190,6 @@ inline void mark_base(Table &table, const InputRow &reference) {
         table.columns.push_back(key);
         for (auto &row : table.rows) row.push_back({key, number(reference, key)});
     }
-}
-inline bool prepare(const fs::path &p, const fs::path &out) {
-    if (!fs::exists(p)) {
-        std::cout << "错误: 找不到输入文件 " << p.string() << '\n';
-        return false;
-    }
-    fs::create_directories(out);
-    return true;
 }
 inline void empty_message() {
     std::cout << "No prediction exported: at least two detected frames are required.\n";
@@ -232,10 +224,7 @@ inline void metrics(const Table &t, const fs::path &p, const std::vector<std::st
 
 std::optional<Table> run_predict_armor(const fs::path &p, const fs::path &out,
                                        const std::string &suffix, bool adaptive, double horizon) {
-    if (!std::isfinite(horizon) || horizon < 0)
-        throw std::invalid_argument("Prediction horizon must be finite and nonnegative (ms)");
-    if (!prepare(p, out))
-        return std::nullopt;
+    fs::create_directories(out);
     auto data = load(p);
     const bool base_frame = input_is_base(data);
     auto groups = group_rows(data);
@@ -258,11 +247,8 @@ std::optional<Table> run_predict_armor(const fs::path &p, const fs::path &out,
             throw std::invalid_argument(
                 "Timestamps must increase between frames; regenerate legacy CSV");
         previous = ts;
-    }
-    for (const auto &[id, g] : groups) {
-        (void)id;
         for (const auto &r : g)
-            if (number(r, "timestamp") != number(g[0], "timestamp"))
+            if (number(r, "timestamp") != ts)
                 throw std::invalid_argument("All observations of a frame must share its timestamp");
     }
     ArmorEKF b(16, 25 * ArmorEKF::pi / 180, .5, adaptive);
@@ -282,9 +268,8 @@ std::optional<Table> run_predict_armor(const fs::path &p, const fs::path &out,
             double t0 = number(left->second[0], "timestamp");
             ts = t0 + (ts - t0) / (right->first - left->first) * (id - left->first);
         }
-        std::vector<InputRow> group;
-        if (right->first == id)
-            group = right->second;
+        const std::vector<InputRow> empty_group;
+        const auto &group = right->first == id ? right->second : empty_group;
         std::vector<Observation> obs;
         for (const auto &r : group)
             obs.push_back({observation(r), std::nullopt, number(r, "detection_score", true),
@@ -357,10 +342,14 @@ std::optional<Table> run_predict_armor(const fs::path &p, const fs::path &out,
             errors = m.residual * (-1);
             obs_yaw = m.Z_obs(3);
         } else {
-            for (int i = 1; i < 4; ++i)
-                if (b.h(prior, i)(2) < b.h(prior, aid)(2))
+            pred = b.h(prior, 0);
+            for (int i = 1; i < 4; ++i) {
+                auto candidate = b.h(prior, i);
+                if (candidate(2) < pred(2)) {
                     aid = i;
-            pred = b.h(prior, aid);
+                    pred = std::move(candidate);
+                }
+            }
         }
         double ri = prior(8) + (aid % 2 ? prior(9) : 0);
         auto forecast = b.forecast(horizon / 1000);

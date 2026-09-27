@@ -22,7 +22,7 @@ try {
         cmake -S $repoRoot -B "$PSScriptRoot/build" -G 'Visual Studio 17 2022' -A x64 `
             -DBUILD_TESTING=ON "-DOpenCV_DIR=$pythonBase/Library/cmake" "-DCMAKE_PREFIX_PATH=$pythonBase/Library"
         if ($LASTEXITCODE -ne 0) { throw 'Test configuration failed.' }
-        cmake --build "$PSScriptRoot/build" --config Release --target detector_tests predictor_tests camera_gimbal_tests camera_gimbal pose_base predictor predictor_polar predictor_armor --parallel
+        cmake --build "$PSScriptRoot/build" --config Release --target detector_tests predictor_tests camera_gimbal_tests camera_tracking_tests camera_tracking pose_base predictor predictor_polar predictor_armor --parallel
         if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
         ctest --test-dir "$PSScriptRoot/build" -C Release --output-on-failure `
             --output-log "$outputDir/cpp-tests.log"

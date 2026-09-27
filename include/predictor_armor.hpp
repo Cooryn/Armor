@@ -145,16 +145,13 @@ class ArmorEKF {
     }
     Eigen::MatrixXd get_jacobian(const Eigen::MatrixXd &s, int id) const {
         Eigen::MatrixXd H = Eigen::MatrixXd::Zero(4, 11), base = h(s, id);
-        for (int i = 0; i < 11; ++i) {
+        for (int i : {0, 2, 4, 6, 8, 9, 10}) {
             Eigen::MatrixXd t = s;
             t(i) += 1e-5;
-            Eigen::MatrixXd d = residual(h(t, id), base);
+            Eigen::MatrixXd d = angular_residual(h(t, id), base);
             H.col(i) = d / 1e-5;
         }
         return H;
-    }
-    static Eigen::MatrixXd residual(const Eigen::MatrixXd &a, const Eigen::MatrixXd &b) {
-        return angular_residual(a, b);
     }
     bool base_frame = false;
     bool valid_observation(const Eigen::MatrixXd &z) const {
@@ -192,7 +189,7 @@ class ArmorEKF {
     }
     Innovation innovation(const Eigen::MatrixXd &z, int id,
                           const std::optional<Eigen::MatrixXd> &noise = std::nullopt) const {
-        Eigen::MatrixXd pred = h(X, id), res = residual(z, pred), H = get_jacobian(X, id),
+        Eigen::MatrixXd pred = h(X, id), res = angular_residual(z, pred), H = get_jacobian(X, id),
                S = H * P * H.transpose() + (noise ? *noise : R);
         double nis = (res.transpose() * solve(S, res))(0, 0);
         return {nis, res, H, pred};
@@ -295,12 +292,6 @@ class ArmorEKF {
         P = A * P * A.transpose() + K * noise * K.transpose();
         P = ((P + P.transpose()) * .5).eval();
         return result;
-    }
-    std::optional<int> find_best_armor_id(const Eigen::MatrixXd &z) const {
-        auto result = associate({Observation{z}});
-        if (result.first.empty())
-            return std::nullopt;
-        return result.first[0].armor_id;
     }
     std::optional<int> update(const Eigen::MatrixXd &z, std::optional<int> id = std::nullopt) {
         auto result = update_multi({Observation{z, id}});

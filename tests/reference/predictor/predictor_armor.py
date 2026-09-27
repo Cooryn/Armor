@@ -210,11 +210,6 @@ class ArmorEKF:
         nis = float((residual.T @ np.linalg.solve(S, residual)).item())
         return nis, residual, H, prediction
 
-    def find_best_armor_id(self, Z_obs):
-        """Return None when every hypothesis fails the observation gates."""
-        matches, _ = self.associate([{'Z_obs': Z_obs}])
-        return matches[0]['armor_id'] if matches else None
-
     def associate(self, observations):
         """Joint assignment against one prior; unique IDs and consistent yaw gaps.
 
