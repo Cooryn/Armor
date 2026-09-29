@@ -2,10 +2,7 @@
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
-#include <functional>
 #include <limits>
-#include <unordered_map>
 
 cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gray_th)
 {
@@ -70,15 +67,8 @@ std::vector<cv::RotatedRect> getValidLightRects(
         if (longEdgeAngle < min_angle)
             continue;
 
-        // Resample the closed boundary uniformly. CHAIN_APPROX_SIMPLE otherwise
-        // gives corners/outliers disproportionate influence over the fitted axis.
-        std::vector<cv::Point2f> boundary;
-        for (size_t i = 0; i < c.size(); ++i) {
-            const cv::Point2f a(c[i]), b(c[(i + 1) % c.size()]);
-            const int count = std::max(1, static_cast<int>(std::ceil(cv::norm(b-a))));
-            for (int j = 0; j < count; ++j)
-                boundary.push_back(a + (b-a) * (static_cast<float>(j) / count));
-        }
+        // Use the full pixel contour directly, without resampling.
+        const std::vector<cv::Point2f> boundary(c.begin(), c.end());
         cv::Vec4f line;
         cv::fitLine(boundary, line, cv::DIST_HUBER, 0, .01, .01);
         cv::Point2f axis(line[0], line[1]);
@@ -129,7 +119,7 @@ std::vector<cv::RotatedRect> getValidLightRects(
 std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask)
 {
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
     return contours;
 }
 
@@ -172,18 +162,22 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
         if (lightBars[a].center.x != lightBars[b].center.x)
             return lightBars[a].center.x < lightBars[b].center.x;
         return lightBars[a].center.y < lightBars[b].center.y;
-    });
+    }); // 按照灯条中心位置从左往右、从上到下排序，将顺序存入order
     std::vector<float> qualities;
     for (size_t i = 0; i < order.size(); ++i) {
         bars[i] = lightBars[order[i]];
         const float q = light_quality.size() == bars.size() ? light_quality[order[i]] : 1.f;
         qualities.push_back(std::isfinite(q) ? std::clamp(q, .1f, 1.f) : .1f);
-    }
+    } // 将light_quality按照排序后的顺序存入qualities
+
     std::vector<LightGeometry> lights;
-    for (const auto &bar : bars) lights.push_back(geometry(bar));
+    for (const auto &bar : bars)
+        lights.push_back(geometry(bar)); // 初始化LightGeometry对象
     std::vector<Candidate> candidates;
+
     for (size_t i = 0; i < bars.size(); ++i) {
-        for (size_t j = i + 1; j < bars.size(); ++j) {
+        for (size_t j = i + 1; j < bars.size(); ++j)
+        { // 枚举所有灯条组合
             const auto &l = lights[i];
             const auto &r = lights[j];
             if (l.length < 1 || r.length < 1 || l.width <= 0 || r.width <= 0) continue;
@@ -192,34 +186,34 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
                                      * static_cast<float>(180.0 / CV_PI);
             const float length_ratio = std::max(l.length, r.length) / std::min(l.length, r.length);
             cv::Point2f vertical = l.axis + r.axis;
-            const float axis_norm = static_cast<float>(cv::norm(vertical));
+            const float axis_norm = static_cast<float>(cv::norm(vertical)); // 求vertical的模
             if (axis_norm < 1e-6f) continue;
-            vertical *= 1.f / axis_norm;
-            const cv::Point2f horizontal(vertical.y, -vertical.x);
-            const cv::Point2f delta = bars[j].center - bars[i].center;
-            // Measure offsets in the plate's local axes, not the camera's axes.
+            vertical *= 1.f / axis_norm; // 将vertical单位化
+            const cv::Point2f horizontal(vertical.y, -vertical.x); // 装甲板水平向量
+            const cv::Point2f delta = bars[j].center - bars[i].center; // 灯条中心的位移
+            // 均在装甲板的局部坐标系中测量
             const float width = std::abs(delta.dot(horizontal)) / avg_length;
             const float y_offset = std::abs(delta.dot(vertical)) / avg_length;
             if (angle_diff > max_angle_diff || length_ratio > max_length_ratio ||
-                y_offset > max_y_diff_ratio || width < min_aspect_ratio || width > max_aspect_ratio)
+                y_offset > max_y_diff_ratio || width < min_aspect_ratio || width > max_aspect_ratio) // 硬阈值过滤
                 continue;
 
-            int intervening = 0;
+            int intervening = 0; // 检查两根灯条中间有无其他灯条
             for (size_t k = i + 1; k < j; ++k) {
                 const float offset = std::abs((bars[k].center - bars[i].center).dot(vertical));
                 if (offset < avg_length * .5f && lights[k].length > avg_length * .5f)
                     ++intervening;
             }
-            // Foreshortening is allowed; overly wide pairs and skewed endpoints cost more.
-            const double wide_penalty = std::max(0.f, width - 2.5f) / .6;
-            const double shape_penalty = .5 * (l.width / l.length + r.width / r.length);
-            const double cost = .35 * std::pow(angle_diff / max_angle_diff, 2)
-                              + .8 * std::pow(std::log(length_ratio), 2)
-                              + 2.0 * std::pow(y_offset, 2)
-                              + wide_penalty * wide_penalty + shape_penalty + 1.5 * intervening;
-            const double score = std::exp(-cost) * std::sqrt(qualities[i]*qualities[j]);
+            // 允许width缩短，但过宽的配对和偏斜的端点会增加惩罚
+            const double wide_penalty = std::max(0.f, width - 2.5f) / .6; // 宽度惩罚
+            const double shape_penalty = .5 * (l.width / l.length + r.width / r.length); // 形状惩罚
+            const double cost = .35 * std::pow(angle_diff / max_angle_diff, 2) // 角度差惩罚
+                              + .8 * std::pow(std::log(length_ratio), 2) // 长度一致性惩罚
+                              + 2.0 * std::pow(y_offset, 2) // 上下错位惩罚
+                              + wide_penalty * wide_penalty + shape_penalty + 1.5 * intervening; // 总惩罚
+            const double score = std::exp(-cost) * std::sqrt(qualities[i]*qualities[j]); // 装甲板得分
             if (score < min_detection_score) continue;
-            Armor armor;
+            Armor armor; // 创建Armor
             armor.left_light = bars[i]; armor.right_light = bars[j];
             armor.center = (bars[i].center + bars[j].center) / 2.f;
             armor.vertices[0] = l.top; armor.vertices[1] = l.bottom;
@@ -229,76 +223,19 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
         }
     }
 
-    // Solve each independent conflict component. Unlike first-fit matching, a
-    // locally early candidate cannot consume lights needed by a better pairing.
-    std::vector<std::vector<size_t>> edges(bars.size());
-    for (size_t e = 0; e < candidates.size(); ++e) {
-        edges[candidates[e].left].push_back(e);
-        edges[candidates[e].right].push_back(e);
-    }
-    std::vector<bool> visited(bars.size(), false);
-    for (size_t root = 0; root < bars.size(); ++root) {
-        if (visited[root] || edges[root].empty()) continue;
-        std::vector<size_t> component{root}; visited[root] = true;
-        for (size_t v = 0; v < component.size(); ++v) {
-            for (size_t e : edges[component[v]]) {
-                const auto &c = candidates[e];
-                const size_t other = c.left == component[v] ? c.right : c.left;
-                if (!visited[other]) { visited[other] = true; component.push_back(other); }
-            }
-        }
-        if (component.size() <= 20) {
-            std::unordered_map<size_t, size_t> local;
-            for (size_t i = 0; i < component.size(); ++i) local[component[i]] = i;
-            struct Choice { double score; int edge; };
-            std::unordered_map<uint32_t, Choice> memo;
-            std::function<double(uint32_t)> solve = [&](uint32_t mask) -> double {
-                if (!mask) return 0.;
-                if (memo.count(mask)) return memo.at(mask).score;
-                size_t first = 0;
-                while (!(mask & (1u << first))) ++first;
-                const uint32_t remaining = mask & ~(1u << first);
-                Choice best{solve(remaining), -1}; // A light may remain unmatched.
-                for (size_t e : edges[component[first]]) {
-                    const auto &c = candidates[e];
-                    const size_t other = local.at(c.left == component[first] ? c.right : c.left);
-                    if (!(remaining & (1u << other))) continue;
-                    const double score = c.armor.detection_score + solve(remaining & ~(1u << other));
-                    if (score > best.score) best = {score, static_cast<int>(e)};
-                }
-                memo[mask] = best;
-                return best.score;
-            };
-            uint32_t mask = (1u << component.size()) - 1;
-            solve(mask);
-            while (mask) {
-                size_t first = 0;
-                while (!(mask & (1u << first))) ++first;
-                const int edge = memo.at(mask).edge;
-                mask &= ~(1u << first);
-                if (edge >= 0) {
-                    const auto &c = candidates[edge];
-                    armors.push_back(c.armor);
-                    mask &= ~(1u << local.at(c.left));
-                    mask &= ~(1u << local.at(c.right));
-                }
-            }
-        } else {
-            // Bounded fallback for cluttered scenes: quality order, never x order.
-            std::vector<size_t> component_edges;
-            for (size_t v : component) for (size_t e : edges[v])
-                if (candidates[e].left == v) component_edges.push_back(e);
-            std::sort(component_edges.begin(), component_edges.end(), [&](size_t a, size_t b) {
-                return candidates[a].armor.detection_score > candidates[b].armor.detection_score;
-            });
-            std::vector<bool> used(bars.size(), false);
-            for (size_t e : component_edges) {
-                const auto &c = candidates[e];
-                if (!used[c.left] && !used[c.right]) {
-                    armors.push_back(c.armor); used[c.left] = used[c.right] = true;
-                }
-            }
-        }
+    // Prefer the highest-score pair; each light can belong to only one armor.
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate &a, const Candidate &b) {
+        if (a.armor.detection_score != b.armor.detection_score)
+            return a.armor.detection_score > b.armor.detection_score;
+        if (a.left != b.left) return a.left < b.left;
+        return a.right < b.right;
+    });
+    std::vector<bool> used(bars.size(), false);
+    for (const auto &c : candidates) {
+        if (used[c.left] || used[c.right]) continue;
+        armors.push_back(c.armor);
+        used[c.left] = used[c.right] = true;
     }
     std::sort(armors.begin(), armors.end(), [](const Armor &a, const Armor &b) {
         return a.center.x < b.center.x;

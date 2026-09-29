@@ -42,9 +42,13 @@ int main(int argc, char **argv) {
         std::vector<cv::RotatedRect> competing;
         for (float x : {0.f, 60.f, 120.f, 180.f})
             competing.emplace_back(cv::Point2f(x,100), cv::Size2f(30,4), 90.f);
-        auto optimal = matchArmors(competing,20,2,.8f,.8f,3.1f,.35f,{.6f,1.f,1.f,.6f});
-        require(optimal.size() == 2 && optimal[0].right_light.center.x == 60.f &&
-                optimal[1].left_light.center.x == 120.f, "Greedy pairing lost a valid plate");
+        auto greedy = matchArmors(competing,20,2,.8f,.8f,3.1f,.35f,{.6f,1.f,1.f,.6f});
+        require(greedy.size() == 1 && greedy[0].left_light.center.x == 60.f &&
+                greedy[0].right_light.center.x == 120.f, "Greedy must prefer the highest-score pair");
+        std::reverse(competing.begin(), competing.end());
+        auto reversed = matchArmors(competing,20,2,.8f,.8f,3.1f,.35f,{.6f,1.f,1.f,.6f});
+        require(reversed.size() == 1 && reversed[0].left_light.center.x == 60.f &&
+                reversed[0].right_light.center.x == 120.f, "Greedy input-order dependence");
         require(matchArmors({}).empty(), "Empty input");
         require(matchArmors(bars, 0, 2, .8f, .8f).empty(), "Invalid threshold");
 
@@ -57,6 +61,9 @@ int main(int argc, char **argv) {
         // A short reflection spur must not pull the light center toward its tip.
         std::vector<std::vector<cv::Point>> outlines{{{97,80},{103,80},
             {103,98},{108,100},{103,102},{103,120},{97,120}}};
+        cv::Mat spur_mask = cv::Mat::zeros(200, 200, CV_8UC1);
+        cv::fillPoly(spur_mask, outlines, cv::Scalar(255));
+        outlines = extractContours(spur_mask);
         std::vector<float> quality;
         auto fitted = getValidLightRects(outlines, 55, &quality);
         require(fitted.size() == 1 && quality.size() == 1, "Missing fitted light");
