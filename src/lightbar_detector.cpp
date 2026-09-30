@@ -4,15 +4,20 @@
 #include <cmath>
 #include <limits>
 
+// 提取灯条mask
 cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gray_th)
 {
+    // 检查输入
     if (src.empty() || src.channels() < 3)
         return cv::Mat::zeros(src.size(), CV_8UC1);
 
+    // 分离BGR通道
     std::vector<cv::Mat> channels;
     cv::split(src, channels);
+
     cv::Mat color_mask;
 
+    // 颜色差分+灰度阈值过滤
     if (color == EnemyColor::RED)
     {
         cv::Mat r_sub_b;
@@ -26,107 +31,26 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
         color_mask = (b_sub_r > color_th) & (channels[0] > gray_th);
     }
 
+    // 将图片灰度二值化，提取出高亮部分
     cv::Mat gray, highlight_mask;
     cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
     cv::threshold(gray, highlight_mask, 210, 255, cv::THRESH_BINARY);
 
+    // 处理过曝
     cv::Mat shield;
     static const cv::Mat big_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(15, 15));
-    cv::dilate(color_mask, shield, big_kernel);
+    cv::dilate(color_mask, shield, big_kernel);              // 膨胀颜色区域
+    cv::bitwise_and(highlight_mask, shield, highlight_mask); // 高亮区域与膨胀后的颜色区域相交
+    cv::bitwise_or(color_mask, highlight_mask, color_mask);  // 合并颜色区域和相交后的高亮区域
 
-    cv::bitwise_and(highlight_mask, shield, highlight_mask);
-
-    cv::bitwise_or(color_mask, highlight_mask, color_mask);
-
+    // 闭运算填补空隙
     static const cv::Mat small_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
     cv::morphologyEx(color_mask, color_mask, cv::MORPH_CLOSE, small_kernel);
 
     return color_mask;
 }
 
-std::vector<cv::RotatedRect> getValidLightRects(
-    const std::vector<std::vector<cv::Point>> &lightBars, float min_angle,
-    std::vector<float> *quality,
-    double minAspectRatio, double minArea)
-{
-    std::vector<cv::RotatedRect> rects;
-    if (quality)
-        quality->clear();
-    for (const auto &c : lightBars)
-    {
-        if (c.size() < 3)
-            continue;
-        const double area = cv::contourArea(c);
-        if (area <= 0 || area < minArea)
-            continue;
-        cv::RotatedRect rect = cv::minAreaRect(c);
-        float w = rect.size.width;
-        float h = rect.size.height;
-        if (w < 1.f || h < 1.f || std::max(w, h) / std::min(w, h) < minAspectRatio ||
-            area / (w * h) < .30)
-            continue;
-        float angle = std::abs(rect.angle);
-        float longEdgeAngle = (w >= h) ? angle : (90.0f - angle);
-
-        if (longEdgeAngle < min_angle)
-            continue;
-
-        float fit_quality = .75f;
-        // Broad blobs retain the bounding box; only elongated contours need fitting.
-        if (std::max(w, h) >= 2.f * std::min(w, h))
-        {
-            // Use the full pixel contour directly, without resampling.
-            const std::vector<cv::Point2f> boundary(c.begin(), c.end());
-            cv::Vec4f line;
-            cv::fitLine(boundary, line, cv::DIST_HUBER, 0, .01, .01);
-            cv::Point2f axis(line[0], line[1]);
-            if (axis.y < 0)
-                axis *= -1.f;
-            const cv::Point2f origin(line[2], line[3]);
-            float fitted_angle = std::atan2(axis.y, axis.x) * static_cast<float>(180.0 / CV_PI);
-            const float old_angle = rect.angle + (w < h ? 90.f : 0.f);
-            const float axis_change = std::abs(std::remainder(fitted_angle - old_angle, 180.f));
-            if (axis_change <= 10.f)
-            {
-                // Blend rather than replace the bounding-box axis: short rasterized
-                // contours cannot support an arbitrarily precise line orientation.
-                fitted_angle = old_angle + .5f * std::remainder(fitted_angle - old_angle, 180.f);
-                const float radians = fitted_angle * static_cast<float>(CV_PI / 180.0);
-                axis = cv::Point2f(std::cos(radians), std::sin(radians));
-                if (axis.y < 0)
-                    axis *= -1.f;
-                const cv::Point2f normal(axis.y, -axis.x);
-                float along_min = std::numeric_limits<float>::infinity();
-                float along_max = -std::numeric_limits<float>::infinity();
-                std::vector<float> across;
-                for (const auto &point : boundary)
-                {
-                    const float projection = (point - origin).dot(axis);
-                    along_min = std::min(along_min, projection);
-                    along_max = std::max(along_max, projection);
-                    across.push_back((point - origin).dot(normal));
-                }
-                std::sort(across.begin(), across.end());
-                // Preserve the full measured length: trimming both ends biases depth.
-                const float length = along_max - along_min;
-                const float width = across.back() - across.front();
-                const float offset = (across[across.size() / 10] + across[across.size() * 9 / 10]) / 2;
-                const cv::Point2f center = origin + axis * ((along_min + along_max) / 2) + normal * offset;
-                rect = cv::RotatedRect(center, cv::Size2f(length, width), fitted_angle);
-                fit_quality = 1.f;
-            }
-        }
-        const float fill = static_cast<float>(area) /
-                           std::max(1.f, rect.size.area());
-        // A bounded confidence penalty for incomplete/irregular light shapes.
-        // Oblique plate views are not penalized just for their screen angle.
-        if (quality)
-            quality->push_back(std::sqrt(fit_quality * std::clamp(fill / .75f, .5f, 1.f)));
-        rects.push_back(rect);
-    }
-    return rects;
-}
-
+// 提取灯条轮廓
 std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask)
 {
     std::vector<std::vector<cv::Point>> contours;
@@ -134,14 +58,112 @@ std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask)
     return contours;
 }
 
+// 筛选有效灯条的旋转矩形
+std::vector<cv::RotatedRect> getValidLightRects(
+    const std::vector<std::vector<cv::Point>> &lightBars, float min_angle,
+    std::vector<float> *quality,
+    double minAspectRatio, double minArea)
+{
+    std::vector<cv::RotatedRect> rects;
+
+    // 清空拟合质量
+    if (quality)
+        quality->clear();
+
+    for (const auto &c : lightBars)
+    {
+        // 硬性条件筛选轮廓
+        if (c.size() < 3)
+            continue;
+        const double area = cv::contourArea(c);
+        if (area <= 0 || area < minArea)
+            continue;
+
+        // 初始化最小外接旋转矩形
+        cv::RotatedRect rect = cv::minAreaRect(c);
+        float w = rect.size.width;
+        float h = rect.size.height;
+
+        // 几何条件筛选旋转矩形
+        if (w < 1.f || h < 1.f || std::max(w, h) / std::min(w, h) < minAspectRatio ||
+            area / (w * h) < .30)
+            continue;
+        float angle = std::abs(rect.angle);
+        float longEdgeAngle = (w >= h) ? angle : (90.0f - angle);
+        if (longEdgeAngle < min_angle)
+            continue;
+
+        // 初始拟合质量
+        float fit_quality = .75f;
+
+        // 宽轮廓保留旋转矩形，对细长轮廓做fitline
+        if (std::max(w, h) >= 2.f * std::min(w, h))
+        {
+            const std::vector<cv::Point2f> boundary(c.begin(), c.end()); // 把轮廓点转换成Point2f
+            cv::Vec4f line;                                              // 初始化拟合直线
+            cv::fitLine(boundary, line, cv::DIST_HUBER, 0, .01, .01);
+            cv::Point2f axis(line[0], line[1]); // 灯条长轴方向向量
+            if (axis.y < 0)
+                axis *= -1.f; // 统一方向向下
+            const cv::Point2f origin(line[2], line[3]);
+
+            // 角度比较
+            float fitted_angle = std::atan2(axis.y, axis.x) * static_cast<float>(180.0 / CV_PI);
+            const float old_angle = rect.angle + (w < h ? 90.f : 0.f);
+            const float axis_change = std::abs(std::remainder(fitted_angle - old_angle, 180.f));
+
+            if (axis_change <= 10.f) // 相差较小
+            {
+                fitted_angle = old_angle + .5f * std::remainder(fitted_angle - old_angle, 180.f); // 取平均值
+
+                // 重新构造单位方向向量
+                const float radians = fitted_angle * static_cast<float>(CV_PI / 180.0);
+                axis = cv::Point2f(std::cos(radians), std::sin(radians));
+                if (axis.y < 0)
+                    axis *= -1.f;
+                const cv::Point2f normal(axis.y, -axis.x); // 构造法向量
+
+                // 计算灯条实际长度
+                float along_min = std::numeric_limits<float>::infinity();
+                float along_max = -std::numeric_limits<float>::infinity();
+                float across_min = std::numeric_limits<float>::infinity();
+                float across_max = -std::numeric_limits<float>::infinity();
+                for (const auto &point : boundary)
+                {
+                    const float projection = (point - origin).dot(axis); // 计算轮廓点到origin的长轴投影
+                    along_min = std::min(along_min, projection);
+                    along_max = std::max(along_max, projection);
+                    const float across = (point - origin).dot(normal); // 计算轮廓点到origin的短轴投影
+                    across_min = std::min(across_min, across);
+                    across_max = std::max(across_max, across);
+                }
+                const float length = along_max - along_min;                               // 灯条长度
+                const float width = across_max - across_min;                              // 灯条宽度
+                const cv::Point2f center = origin + axis * ((along_min + along_max) / 2); // 灯条中心
+                rect = cv::RotatedRect(center, cv::Size2f(length, width), fitted_angle);  // 重构旋转矩形
+                fit_quality = 1.f;
+            }
+        }
+        const float fill = static_cast<float>(area) / std::max(1.f, rect.size.area()); // 计算填充率
+        if (quality)
+            quality->push_back(std::sqrt(fit_quality * std::clamp(fill / .75f, .5f, 1.f))); // 计算灯条质量
+        rects.push_back(rect);
+    }
+    return rects;
+}
+
+// 创建匿名命名空间
 namespace
 {
+    // 重定义灯条信息
     struct LightGeometry
     {
         float length, width;
         cv::Point2f axis;
         cv::Point2f top, bottom;
     };
+
+    // 计算灯条几何信息
     LightGeometry geometry(const cv::RotatedRect &rect)
     {
         const float angle = (rect.angle + (rect.size.width < rect.size.height ? 90.f : 0.f)) * static_cast<float>(CV_PI / 180.0);
@@ -152,6 +174,8 @@ namespace
         return {length, std::min(rect.size.width, rect.size.height), axis,
                 rect.center - axis * (length / 2), rect.center + axis * (length / 2)};
     }
+
+    // 定义候选装甲板
     struct Candidate
     {
         size_t left, right;
@@ -170,7 +194,8 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
                                const std::vector<float> &light_quality)
 {
     std::vector<Armor> armors;
-    // 输出检测
+
+    // 输入检测
     if (lightBars.size() < 2 || max_angle_diff <= 0 || max_length_ratio < 1 ||
         max_y_diff_ratio <= 0 || min_aspect_ratio <= 0 || max_aspect_ratio < min_aspect_ratio ||
         min_detection_score <= 0 || min_detection_score > 1)
