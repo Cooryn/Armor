@@ -6,7 +6,7 @@ def wrap_to_pi(angle):
 
 class ArmorEKF:
     def __init__(self, nis_gate=16.0, pair_yaw_tolerance=np.deg2rad(25),
-                 max_distance_error=0.5, adaptive_noise=True):
+                 max_distance_error=0.5):
         # 🌟 11维状态量: [xc, vxc, yc, vyc, zc, vzc, body_yaw, w, r, dl, dh]^T
         self.X = np.zeros((11, 1))
 
@@ -25,8 +25,7 @@ class ArmorEKF:
         self.q_dh = 3e-3     # 高度偏移 dh
 
         # 观测量: [target_yaw, target_pitch, distance, armor_orientation_yaw]
-        self.R = np.diag([0.005, 0.005, 0.05, 0.05])
-        self.adaptive_noise = adaptive_noise
+        self.R = np.diag([0.0016, 0.0016, 0.16, 0.0576])
 
         self.nis_gate = nis_gate
         self.pair_yaw_tolerance = pair_yaw_tolerance
@@ -166,54 +165,18 @@ class ArmorEKF:
         self.P = np.diag([.1, 1., .1, 1., .1, 1., .05, 100., .01, .01, .01])
         self.is_initialized = True
 
-    def observation_noise(self, obs):
-        """Bounded variance inflation from optional detector quality metadata.
-
-        These are heuristic variance factors, not calibrated probabilities.
-        Missing/invalid quality metadata preserves the legacy noise matrix.
-        The horizontal incidence angle is plate_yaw + target_yaw because the
-        solver's yaw sign is opposite the camera Y-axis rotation convention.
-        """
-        scales = np.ones(4)
-        if not self.adaptive_noise:
-            return self.R.copy(), scales
-
-        def finite_number(key):
-            try:
-                value = float(obs.get(key, np.nan))
-                return value if np.isfinite(value) else np.nan
-            except (TypeError, ValueError):
-                return np.nan
-
-        score = finite_number('detection_score')
-        error = finite_number('reprojection_error')
-        score_valid = np.isfinite(score) and 0 <= score <= 1
-        error_valid = np.isfinite(error) and error >= 0
-        if not (score_valid or error_valid):
-            return self.R.copy(), scales
-        quality = 1.0 + ((1-score)**2 if score_valid else 0)
-        quality *= 1.0 + ((min(error, 4.0)/2.0)**2 if error_valid else 0)
-        scales[:] = min(quality, 3.0)
-        z = np.asarray(obs['Z_obs'], dtype=float)
-        grazing = np.sin(z[3, 0] + z[0, 0])**2
-        scales[2] *= 1.0 + .5*grazing
-        scales[3] *= 1.0 + grazing
-        # D R D also preserves positive definiteness for a correlated base R.
-        D = np.diag(np.sqrt(scales))
-        return D @ self.R @ D, scales
-
-    def innovation(self, z, armor_id, R=None):
+    def innovation(self, z, armor_id):
         prediction = self.h(self.X, armor_id)
         residual = self.residual(z, prediction)
         H = self.get_jacobian(self.X, armor_id)
-        S = H @ self.P @ H.T + (self.R if R is None else R)
+        S = H @ self.P @ H.T + self.R
         nis = float((residual.T @ np.linalg.solve(S, residual)).item())
         return nis, residual, H, prediction
 
     def associate(self, observations):
         """Joint assignment against one prior; unique IDs and consistent yaw gaps.
 
-        Prefer the largest consistent set, then NIS plus a noise-volume penalty.
+        Prefer the largest consistent set, then the smallest total NIS.
         Absolute range gating prevents a large covariance from admitting gross
         depth errors. Thresholds are configurable, not ground-truth guarantees.
         """
@@ -225,21 +188,11 @@ class ArmorEKF:
                               best_candidate_id=-1, distance_residual=np.nan)
             options = []
             if self.valid_observation(z):
-                R, scales = self.observation_noise({**obs, 'Z_obs': z})
-                diagnostic.update(target_yaw_noise_scale=scales[0],
-                                  target_pitch_noise_scale=scales[1],
-                                  distance_noise_scale=scales[2], yaw_noise_scale=scales[3])
                 ids = range(4) if obs.get('armor_id') is None else [obs['armor_id']]
                 for armor_id in ids:
                     if armor_id not in range(4):
                         continue
-                    nis, residual, H, predicted = self.innovation(z, armor_id, R)
-                    base_S = H @ self.P @ H.T + self.R
-                    S = H @ self.P @ H.T + R
-                    # Inflating R reduces NIS. Include the covariance-volume
-                    # penalty when choosing between conflicting observations.
-                    # Subtract the base volume to retain legacy scores at R=R0.
-                    cost = nis + np.linalg.slogdet(S)[1] - np.linalg.slogdet(base_S)[1]
+                    nis, residual, H, predicted = self.innovation(z, armor_id)
                     if not np.isfinite(diagnostic['nis']) or nis < diagnostic['nis']:
                         diagnostic['nis'] = nis
                         diagnostic['best_candidate_id'] = armor_id
@@ -248,7 +201,7 @@ class ArmorEKF:
                             and abs(residual[2, 0]) <= self.max_distance_error):
                         options.append(dict(index=index, armor_id=armor_id, nis=nis,
                                             residual=residual, H=H, predicted=predicted,
-                                            Z_obs=z, R=R, association_cost=cost))
+                                            Z_obs=z))
                 diagnostic['reason'] = 'association_conflict' if options else 'innovation_gate'
             candidates.append(options)
             diagnostics.append(diagnostic)
@@ -275,7 +228,7 @@ class ArmorEKF:
                         break
                 if consistent:
                     search(index + 1, selected + [candidate], used | {aid},
-                           score + candidate['association_cost'])
+                           score + candidate['nis'])
             search(index + 1, selected, used, score)
         search(0, [], set(), 0.)
         for match in best:
@@ -292,8 +245,8 @@ class ArmorEKF:
         H = np.vstack([m['H'] for m in matches])
         residual = np.vstack([m['residual'] for m in matches])
         R = np.zeros((4*len(matches), 4*len(matches)))
-        for i, match in enumerate(matches):
-            R[4*i:4*i+4, 4*i:4*i+4] = match['R']
+        for i in range(len(matches)):
+            R[4*i:4*i+4, 4*i:4*i+4] = self.R
         S = H @ self.P @ H.T + R
         K = np.linalg.solve(S, H @ self.P).T
         self.X += K @ residual

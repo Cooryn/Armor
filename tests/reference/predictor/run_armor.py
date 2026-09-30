@@ -10,7 +10,7 @@ if __package__:
 else:
     from predictor_armor import ArmorEKF
 
-def run_predict_armor(csv_input_path, output_dir, suffix="1", adaptive_noise=True,
+def run_predict_armor(csv_input_path, output_dir, suffix="1",
                       prediction_horizon_ms=50.0):
     if not np.isfinite(prediction_horizon_ms) or prediction_horizon_ms < 0:
         raise ValueError('Prediction horizon must be finite and nonnegative (ms)')
@@ -36,16 +36,14 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1", adaptive_noise=Tru
         raise ValueError("Timestamps must increase between frames; regenerate legacy CSV")
     if any(g.timestamp.nunique() != 1 for g in groups.values()):
         raise ValueError("All observations of a frame must share its timestamp")
-    ekf = ArmorEKF(adaptive_noise=adaptive_noise)
+    ekf = ArmorEKF()
     results, observation_log, future_results = [], [], []
     last_timestamp = None
     for frame_id in range(frame_ids[0], frame_ids[-1] + 1):
         timestamp = float(np.interp(frame_id, frame_ids, timestamps))
         group = groups.get(frame_id, data.iloc[:0])
         all_obs = [dict(Z_obs=row[['target_yaw', 'target_pitch', 'distance',
-                                   'armor_orientation_yaw']].to_numpy(dtype=float).reshape(4, 1),
-                        detection_score=row.get('detection_score', np.nan),
-                        reprojection_error=row.get('reprojection_error', np.nan))
+                                   'armor_orientation_yaw']].to_numpy(dtype=float).reshape(4, 1))
                    for _, row in group.iterrows()]
         valid = [o for o in all_obs if ekf.valid_observation(o['Z_obs'])]
         if not ekf.is_initialized:
@@ -147,14 +145,13 @@ def main():
     parser.add_argument('--suffix', default='1')
     parser.add_argument('--input', type=Path, help='Input pose CSV; overrides --suffix input')
     parser.add_argument('--output-dir', type=Path, default=root / 'results')
-    parser.add_argument('--fixed-noise', action='store_true', help='Use legacy fixed observation covariance')
     parser.add_argument('--prediction-horizon-ms', type=float, default=50.0,
                         help='Forecast offset from each image timestamp, in ms (default: 50; 0 disables lead)')
     args = parser.parse_args()
     source = args.input if args.input is not None else root / 'data' / f'pose_raw_{args.suffix}.csv'
     if not np.isfinite(args.prediction_horizon_ms) or args.prediction_horizon_ms < 0:
         parser.error('--prediction-horizon-ms must be finite and nonnegative')
-    run_predict_armor(source, args.output_dir, args.suffix, adaptive_noise=not args.fixed_noise,
+    run_predict_armor(source, args.output_dir, args.suffix,
                       prediction_horizon_ms=args.prediction_horizon_ms)
 
 if __name__ == '__main__':

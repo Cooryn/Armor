@@ -15,8 +15,7 @@ int main() {
         reference.initialize(observation);
         check(live.visible() && live.status()=="initializing", "initialization");
         for (int frame=2; frame<10; ++frame) {
-            std::vector<predictor::Observation> obs{{reference.h(state,0),{},.8,.3},
-                                                   {reference.h(state,1),{},.9,.2}};
+            std::vector<predictor::Observation> obs{{reference.h(state,0)}, {reference.h(state,1)}};
             reference.predict(.03);
             reference.update_multi(obs);
             live.update(obs,frame*30.);

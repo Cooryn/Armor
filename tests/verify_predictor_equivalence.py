@@ -1,4 +1,4 @@
-"""Compare C++ CSV/TXT exports against the original Python implementation."""
+"""Compare C++ CSV/TXT exports against the matching Python reference model."""
 import argparse
 import contextlib
 import io
@@ -20,14 +20,13 @@ from tests.reference.predictor.predictor_polar import run_predict_polar
 from tests.reference.predictor.run_armor import run_predict_armor
 root=a.work_dir.resolve();root.mkdir(parents=True,exist_ok=True)
 report=[]
-def compare(name,path,mode='armor',fixed=False,horizon=50):
+def compare(name,path,mode='armor',horizon=50):
     py=root/name/'python';cpp=root/name/'cpp'
     fn={'basic':run_predict,'polar':run_predict_polar,'armor':run_predict_armor}[mode]
-    kwargs=dict(adaptive_noise=not fixed,prediction_horizon_ms=horizon) if mode=='armor' else {}
+    kwargs=dict(prediction_horizon_ms=horizon) if mode=='armor' else {}
     with contextlib.redirect_stdout(io.StringIO()):fn(path,py,**kwargs)
     exe={'basic':'predictor','polar':'predictor_polar','armor':'predictor_armor'}[mode]
     cmd=[str(a.bin_dir.resolve()/(exe+('.exe' if sys.platform == 'win32' else ''))), '--input',str(path),'--output-dir',str(cpp),'--suffix','1','--prediction-horizon-ms',str(horizon)]
-    if fixed:cmd+=['--fixed-noise']
     subprocess.run(cmd,check=True,capture_output=True)
     pf={p.name for p in py.glob('*')};cf={p.name for p in cpp.glob('*')}
     assert pf==cf,(name,pf,cf)
@@ -54,11 +53,10 @@ def compare(name,path,mode='armor',fixed=False,horizon=50):
 for suffix in ('1','2'):
     source=a.python_root/'data'/f'pose_raw_{suffix}.csv'
     for mode in ('basic','polar','armor'):compare(f'real_{suffix}_{mode}',source,mode)
-    compare(f'real_{suffix}_fixed',source,fixed=True)
     compare(f'real_{suffix}_zero',source,horizon=0)
 
 # Rotating target: multi-plate observations, duplicates, outliers, missing frames,
-# invalid initial rows, adaptive metadata and wrap-boundary crossings.
+# invalid initial rows, ignored quality metadata and wrap-boundary crossings.
 rows=[]
 for frame in range(90):
     if frame in (7,8,9,42,43):continue
@@ -71,7 +69,7 @@ for frame in range(90):
         if frame==50:row['target_yaw']=np.nan
         rows.append(row)
 synthetic=root/'synthetic.csv';pd.DataFrame(rows).to_csv(synthetic,index=False)
-for fixed in (False,True):compare(f'synthetic_{fixed}',synthetic,fixed=fixed)
+compare('synthetic',synthetic)
 for size in (0,1):
     path=root/f'small_{size}.csv';pd.DataFrame(rows).iloc[:size].to_csv(path,index=False)
     for mode in ('basic','polar','armor'):compare(f'small_{size}_{mode}',path,mode)

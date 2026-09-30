@@ -14,14 +14,12 @@ namespace predictor {
 struct Observation {
     Eigen::MatrixXd Z_obs;
     std::optional<int> armor_id = std::nullopt;
-    double detection_score = std::numeric_limits<double>::quiet_NaN(), reprojection_error = std::numeric_limits<double>::quiet_NaN();
 };
 struct Match {
     size_t index;
     int armor_id;
     double nis;
-    Eigen::MatrixXd residual, H, predicted, Z_obs, R;
-    double association_cost;
+    Eigen::MatrixXd residual, H, predicted, Z_obs;
 };
 struct Diagnostic {
     size_t observation_index;
@@ -31,7 +29,6 @@ struct Diagnostic {
     std::string reason = "invalid";
     int best_candidate_id = -1;
     double distance_residual = std::numeric_limits<double>::quiet_NaN();
-    Eigen::MatrixXd scales = Eigen::MatrixXd::Constant(4, 1, std::numeric_limits<double>::quiet_NaN());
 };
 struct Forecast {
     Eigen::MatrixXd state, covariance, plates;
@@ -69,12 +66,6 @@ class ArmorEKF {
             throw std::runtime_error("Non-finite linear solution");
         return result;
     }
-    static double logabsdet(const Eigen::MatrixXd &a) {
-        if (a.rows() != a.cols() || a.rows() == 0 || !a.allFinite())
-            throw std::invalid_argument("Invalid determinant matrix");
-        Eigen::PartialPivLU<Eigen::MatrixXd> lu(a);
-        return lu.matrixLU().diagonal().array().abs().log().sum();
-    }
     static Eigen::MatrixXd angular_residual(const Eigen::MatrixXd &a, const Eigen::MatrixXd &b) {
         if (a.rows() != 4 || a.cols() != 1 || b.rows() != 4 || b.cols() != 1)
             throw std::invalid_argument("Observation shape mismatch");
@@ -84,14 +75,16 @@ class ArmorEKF {
         return d;
     }
     Eigen::VectorXd X = Eigen::VectorXd::Zero(11);
+    // Fixed variances for [target yaw, target pitch, distance, plate yaw].
+    // Effective standard deviations: [0.04 rad, 0.04 rad, 0.40 m, 0.24 rad].
     Eigen::MatrixXd F = Eigen::MatrixXd::Identity(11, 11), P = Eigen::MatrixXd::Identity(11, 11) * 10,
-           R = diagonal({.005, .005, .05, .05});
+           R = diagonal({.0016, .0016, .16, .0576});
     double q_pos = 3, q_yaw = 15, q_r = 3e-4, q_dl = 3e-3, q_dh = 3e-3;
-    bool adaptive_noise, is_initialized = false;
+    bool is_initialized = false;
     double nis_gate, pair_yaw_tolerance, max_distance_error;
     explicit ArmorEKF(double gate = 16, double tolerance = 25 * pi / 180,
-                      double distance_error = .5, bool adaptive = true)
-        : adaptive_noise(adaptive), nis_gate(gate), pair_yaw_tolerance(tolerance),
+                      double distance_error = .5)
+        : nis_gate(gate), pair_yaw_tolerance(tolerance),
           max_distance_error(distance_error) {
         P(8, 8) = .01;
         P(9, 9) = P(10, 10) = .05;
@@ -171,26 +164,9 @@ class ArmorEKF {
         P = diagonal({.1, 1, .1, 1, .1, 1, .05, 100, .01, .01, .01});
         is_initialized = true;
     }
-    std::pair<Eigen::MatrixXd, Eigen::MatrixXd> observation_noise(const Observation &o) const {
-        Eigen::MatrixXd scales = Eigen::MatrixXd::Ones(4, 1);
-        double score = o.detection_score, error = o.reprojection_error;
-        bool sv = std::isfinite(score) && score >= 0 && score <= 1,
-             ev = std::isfinite(error) && error >= 0;
-        if (!adaptive_noise || !(sv || ev))
-            return {R, scales};
-        double quality = (1 + (sv ? (1 - score) * (1 - score) : 0)) *
-                         (1 + (ev ? std::pow(std::min(error, 4.) / 2, 2) : 0));
-        scales.setConstant(std::min(quality, 3.));
-        double grazing = std::pow(std::sin(o.Z_obs(3) + o.Z_obs(0)), 2);
-        scales(2) *= 1 + .5 * grazing;
-        scales(3) *= 1 + grazing;
-        Eigen::MatrixXd D = scales.col(0).array().sqrt().matrix().asDiagonal();
-        return {D * R * D, scales};
-    }
-    Innovation innovation(const Eigen::MatrixXd &z, int id,
-                          const std::optional<Eigen::MatrixXd> &noise = std::nullopt) const {
+    Innovation innovation(const Eigen::MatrixXd &z, int id) const {
         Eigen::MatrixXd pred = h(X, id), res = angular_residual(z, pred), H = get_jacobian(X, id),
-               S = H * P * H.transpose() + (noise ? *noise : R);
+               S = H * P * H.transpose() + R;
         double nis = (res.transpose() * solve(S, res))(0, 0);
         return {nis, res, H, pred};
     }
@@ -203,14 +179,10 @@ class ArmorEKF {
             d.observation_index = index;
             std::vector<Match> options;
             if (valid_observation(o.Z_obs)) {
-                auto [noise, scales] = observation_noise(o);
-                d.scales = scales;
                 for (int id = 0; id < 4; ++id) {
                     if (o.armor_id && *o.armor_id != id)
                         continue;
-                    auto in = innovation(o.Z_obs, id, noise);
-                    Eigen::MatrixXd base = in.H * P * in.H.transpose();
-                    double cost = in.nis + logabsdet(base + noise) - logabsdet(base + R);
+                    auto in = innovation(o.Z_obs, id);
                     if (!std::isfinite(d.nis) || in.nis < d.nis) {
                         d.nis = in.nis;
                         d.best_candidate_id = id;
@@ -218,7 +190,7 @@ class ArmorEKF {
                     }
                     if (in.nis <= nis_gate && std::abs(in.residual(2)) <= max_distance_error)
                         options.push_back({index, id, in.nis, in.residual, in.H, in.prediction,
-                                           o.Z_obs, noise, cost});
+                                           o.Z_obs});
                 }
                 d.reason = options.empty() ? "innovation_gate" : "association_conflict";
             }
@@ -253,7 +225,7 @@ class ArmorEKF {
                     }
                 if (consistent) {
                     selected.push_back(c);
-                    search(index + 1, used | (1u << c.armor_id), score + c.association_cost);
+                    search(index + 1, used | (1u << c.armor_id), score + c.nis);
                     selected.pop_back();
                 }
             }
@@ -281,7 +253,7 @@ class ArmorEKF {
             const auto offset = static_cast<Eigen::Index>(4 * k);
             res.block(offset, 0, 4, 1) = matches[k].residual;
             H.block(offset, 0, 4, 11) = matches[k].H;
-            noise.block(offset, offset, 4, 4) = matches[k].R;
+            noise.block(offset, offset, 4, 4) = R;
         }
         Eigen::MatrixXd S = H * P * H.transpose() + noise, K = solve(S, H * P).transpose();
         X = X + K * res;

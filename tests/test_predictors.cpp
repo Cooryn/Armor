@@ -33,7 +33,6 @@ int main() {
         expected << 1, -2, 3, 4;
         rhs = system * expected;
         near(ArmorEKF::solve(system, rhs), expected);
-        check(std::abs(ArmorEKF::logabsdet(system) - std::log(2.)) < 1e-12, "Eigen log determinant");
         bool singular_rejected = false;
         try {
             ArmorEKF::solve(Eigen::MatrixXd::Zero(2, 2), rhs);
@@ -66,9 +65,22 @@ int main() {
         check(!b.update(measurement(0), 9), "invalid id");
         auto a = tracker();
         b = tracker();
-        std::vector<Observation> observations = {{measurement(.02), 0, .4, 1.5},
-                                                 {measurement(.02, 1), 1, .95, .1}};
+        std::vector<Observation> observations = {{measurement(.02), 0}, {measurement(.02, 1), 1}};
+        auto matches = a.associate(observations).first;
+        check(matches.size() == 2, "stacked reference association");
+        Eigen::MatrixXd stacked_h(8, 11), stacked_residual(8, 1), stacked_r = Eigen::MatrixXd::Zero(8, 8);
+        for (int k = 0; k < 2; ++k) {
+            stacked_h.middleRows(4*k, 4) = matches[k].H;
+            stacked_residual.middleRows(4*k, 4) = matches[k].residual;
+            stacked_r.block(4*k, 4*k, 4, 4) = a.R;
+        }
+        Eigen::MatrixXd gain = (stacked_h*a.P*stacked_h.transpose() + stacked_r).ldlt().solve(stacked_h*a.P).transpose();
+        Eigen::MatrixXd expected_state = a.X + gain*stacked_residual;
+        Eigen::MatrixXd identity_minus_kh = Eigen::MatrixXd::Identity(11, 11) - gain*stacked_h;
+        Eigen::MatrixXd expected_covariance = identity_minus_kh*a.P*identity_minus_kh.transpose() + gain*stacked_r*gain.transpose();
         check(a.update_multi(observations).first.size() == 2, "two plate update");
+        near(a.X, expected_state);
+        near(a.P, expected_covariance);
         std::reverse(observations.begin(), observations.end());
         b.update_multi(observations);
         near(a.X, b.X);
@@ -85,15 +97,10 @@ int main() {
               "pair geometry");
         b = tracker();
         b.predict(.03);
-        result = b.associate(
-            {Observation{measurement(0), 0, .1, 3}, Observation{measurement(0), 0, 1, 0}});
-        check(result.first.size() == 1 && result.first[0].index == 1, "noise volume cost");
-        auto noise = b.observation_noise({measurement(.5), {}, 0, 1e6});
-        for (int i = 0; i < 4; ++i)
-            check(noise.second(i) >= 1 && noise.second(i) <= (i == 3   ? 6
-                                                              : i == 2 ? 4.5
-                                                                       : 3),
-                  "noise bounds");
+        bad = measurement(0);
+        bad(2) += .1;
+        result = b.associate({Observation{bad, 0}, Observation{measurement(0), 0}});
+        check(result.first.size() == 1 && result.first[0].index == 1, "lowest NIS conflict selection");
         b = tracker();
         b.X(1) = 1;
         b.X(3) = -.2;

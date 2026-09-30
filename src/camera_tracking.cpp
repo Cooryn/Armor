@@ -366,8 +366,7 @@ int main(int argc, char **argv)
                 // 将角度约束在 [-PI, PI]
                 double armor_orientation_yaw = std::remainder(armor_yaw_rad, 2.0 * CV_PI);
                 observations.push_back({predictor::ArmorEKF::make_vector(
-                    {target_yaw, target_pitch, distance, armor_orientation_yaw}), std::nullopt,
-                    current_armor.detection_score, current_armor.reprojection_error});
+                    {target_yaw, target_pitch, distance, armor_orientation_yaw})});
 
                 // 3. 写入 CSV (同一个 frame_count 会被写入多次，占多行)
                 csv_file << frame_count << ","

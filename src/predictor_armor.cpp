@@ -223,7 +223,7 @@ inline void metrics(const Table &t, const fs::path &p, const std::vector<std::st
 } // namespace
 
 std::optional<Table> run_predict_armor(const fs::path &p, const fs::path &out,
-                                       const std::string &suffix, bool adaptive, double horizon) {
+                                       const std::string &suffix, double horizon) {
     fs::create_directories(out);
     auto data = load(p);
     const bool base_frame = input_is_base(data);
@@ -251,7 +251,7 @@ std::optional<Table> run_predict_armor(const fs::path &p, const fs::path &out,
             if (number(r, "timestamp") != ts)
                 throw std::invalid_argument("All observations of a frame must share its timestamp");
     }
-    ArmorEKF b(16, 25 * ArmorEKF::pi / 180, .5, adaptive);
+    ArmorEKF b;
     b.base_frame = base_frame;
     Table results, logs, futures;
     double last = 0;
@@ -272,8 +272,7 @@ std::optional<Table> run_predict_armor(const fs::path &p, const fs::path &out,
         const auto &group = right->first == id ? right->second : empty_group;
         std::vector<Observation> obs;
         for (const auto &r : group)
-            obs.push_back({observation(r), std::nullopt, number(r, "detection_score", true),
-                           number(r, "reprojection_error", true)});
+            obs.push_back({observation(r)});
         if (!b.is_initialized) {
             int seed = -1;
             for (size_t i = 0; i < obs.size(); ++i)
@@ -321,12 +320,6 @@ std::optional<Table> run_predict_armor(const fs::path &p, const fs::path &out,
                        {"reason", d.reason},
                        {"best_candidate_id", double(d.best_candidate_id)},
                        {"distance_residual", d.distance_residual}};
-            if (b.valid_observation(obs[d.observation_index].Z_obs)) {
-                row.push_back({"target_yaw_noise_scale", d.scales(0)});
-                row.push_back({"target_pitch_noise_scale", d.scales(1)});
-                row.push_back({"distance_noise_scale", d.scales(2)});
-                row.push_back({"yaw_noise_scale", d.scales(3)});
-            }
             logs.append(row);
         }
         int aid = 0;
@@ -437,7 +430,6 @@ int main(int argc, char **argv) {
     namespace fs = std::filesystem;
     std::string suffix = "1";
     fs::path root = PREDICTOR_DEFAULT_ROOT, input, output;
-    bool fixed = false;
     double horizon = 50;
     try {
         for (int i = 1; i < argc; ++i) {
@@ -455,8 +447,6 @@ int main(int argc, char **argv) {
                 output = fs::u8path(value());
             else if (a == "--root")
                 root = fs::u8path(value());
-            else if (a == "--fixed-noise")
-                fixed = true;
             else if (a == "--prediction-horizon-ms") {
                 std::string s = value();
                 size_t n;
@@ -464,7 +454,7 @@ int main(int argc, char **argv) {
                 if (n != s.size())
                     throw std::invalid_argument("Invalid horizon");
             } else if (a == "--help" || a == "-h") {
-                std::cout << "Options: --suffix VALUE --input CSV --output-dir DIR --fixed-noise "
+                std::cout << "Options: --suffix VALUE --input CSV --output-dir DIR "
                              "--prediction-horizon-ms MS --root DIR\n";
                 return 0;
             } else
@@ -478,7 +468,7 @@ int main(int argc, char **argv) {
             output = root / "results";
         if (!fs::is_regular_file(input))
             throw std::invalid_argument("Input CSV does not exist or is not a file: " + input.string());
-        predictor::run_predict_armor(input, output, suffix, !fixed, horizon);
+        predictor::run_predict_armor(input, output, suffix, horizon);
         return 0;
     } catch (const std::exception &e) {
         std::cerr << "error: " << e.what() << '\n';

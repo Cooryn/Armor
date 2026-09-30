@@ -1,11 +1,9 @@
 # 测试与诊断目录
 
-第 4 项观测加权对比：`.\.venv\Scripts\python -B -m tests.plotting.adaptive_observation`。
-使用相同原始 CSV，对比第 2 项完成后的基线，产物位于 `outputs/adaptive_observation/`。
-`weighting_summary.csv` 补充全部接受观测的距离残差、接受数量、权重倍率和停车尾段指标。
-停车指标以第 320 帧为检查起点，不把它当作精确实测停车时刻。
-`test_observation_noise.py` 检查权重上界、角度符号、旧输入兼容、离群门控、
-不同权重的联合更新、顺序不变性及诊断字段导出。
+固定观测噪声调参：先构建 `armor_noise_evaluation`，再运行
+`.\.venv\Scripts\python -B -m tests.tune_fixed_noise`。方法和参数见 [调参说明](fixed_noise_tuning.md)。
+`test_fixed_noise.py` 检查质量字段不影响更新、旧 CSV 兼容、离群门控、
+固定协方差的联合更新、顺序不变性及诊断字段导出。
 
 PnP 第 2 项对比：`.\.venv\Scripts\python -B -m tests.plotting.pnp_candidates`。
 基线为第 1 项完成后的数据，产物位于 `outputs/pnp_candidates/`。

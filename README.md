@@ -12,7 +12,7 @@
 | --- | --- | --- | --- |
 | 装甲板检测 | 红色或蓝色装甲板视频 | 颜色提取、灯条筛选、端点定位、灯条配对 | 装甲板角点与检测质量 |
 | PnP 解算 | 角点、相机标定、装甲板尺寸 | 平面姿态候选求解、筛选与短时关联 | 装甲板位置、朝向、重投影误差 |
-| 装甲板 EKF | 逐帧 PnP 观测 | 多板关联、质量加权、状态估计、漏检预测 | 车体状态、观测诊断、残差统计 |
+| 装甲板 EKF | 逐帧 PnP 观测 | 多板关联、固定观测噪声、状态估计、漏检预测 | 车体状态、观测诊断、残差统计 |
 | 实时预测与相机自瞄 | 视频逐帧检测结果 | EKF、50 ms 预测、手动/自动/归中、仿真光轴跟踪 | 实时窗口、预测 AVI、原始观测与控制 CSV |
 | 图表与视频 | 原始观测、EKF 结果、原视频 | 绘制曲线与投影状态 | PNG 图表、MP4 视频 |
 
@@ -228,14 +228,11 @@ foreach ($suffix in 1, 2) {
 | `--suffix` | 输入、输出编号 | `1` |
 | `--input` | 指定原始 CSV，优先于编号输入路径 | `data/pose_raw_<suffix>.csv` |
 | `--output-dir` | 数值结果输出目录 | `results/` |
-| `--fixed-noise` | 使用固定观测协方差，关闭质量加权 | 不启用，默认按质量加权 |
 | `--prediction-horizon-ms` | 相对于图像时间的未来预测提前量，单位 ms；`0` 关闭提前预测 | `50` |
 
 ```powershell
 .\predictor_armor.exe --input data/pose_raw_1.csv --suffix 1 --output-dir results/custom
 
-# 固定权重的对照运行单独保存
-.\predictor_armor.exe --suffix 1 --fixed-noise --output-dir tests/outputs/fixed_noise
 ```
 
 默认预测图像采集时间之后 50 ms 的四块板位置与水平朝向。使用
@@ -339,21 +336,22 @@ PnP 与叠加边框采用灯条中心间距 **135 mm**、灯条长度 **56 mm**�
 1. 检查每条观测的有效性，并尝试关联 A0–A3。
 2. 使用 NIS 和距离残差门限筛除不一致候选。
 3. 要求同帧板号唯一，板间朝向差与板号关系一致。
-4. 优先选择数量最多的一致观测集合，再比较关联代价。
-5. 将选中观测联合更新到同一个车体状态，使用各自的观测协方差。
+4. 优先选择数量最多的一致观测集合，再比较总 NIS。
+5. 将选中观测联合更新到同一个车体状态，每条观测使用相同的固定协方差。
 
 初始化帧只使用最近的一条有效观测，将其定义为 A0；该帧其他观测不参与更新。当前流程没有多车分组，同帧输入默认属于同一辆小车。
 
-### 7.3 质量加权与漏检
+### 7.3 固定观测噪声与漏检
 
-默认根据检测评分、重投影误差和水平观察角度调整观测协方差。低分、高重投影误差的观测权重降低，侧视板的距离和朝向权重额外降低。倍率有上限，质量字段缺失或全部无效时使用基础固定协方差。这是启发式加权，不是对实际测量噪声的统计标定。
+使用固定观测协方差 `R = diag(0.0016, 0.0016, 0.16, 0.0576)`，观测顺序为目标方位角、目标俯仰角、距离、装甲板朝向；角度项单位为 rad²，距离项为 m²。对应的有效标准差为 `0.04 rad、0.04 rad、0.40 m、0.24 rad`。检测评分、重投影误差和水平观察角度不改变观测权重。
+
+所有观测共用一个固定 `R`，CSV 中的检测评分和重投影误差仅供检测诊断。调参记录与可复现方法见 [固定噪声调参说明](tests/fixed_noise_tuning.md)。
 
 | 构造参数 | 默认值 | 含义 |
 | --- | --- | --- |
 | `nis_gate` | `16.0` | 归一化创新平方门限 |
 | `max_distance_error` | `0.5` m | 距离残差绝对上限 |
 | `pair_yaw_tolerance` | 25°，传参单位为弧度 | 板间朝向关系容差 |
-| `adaptive_noise` | `True` | 是否启用质量加权 |
 
 过程噪声、基础观测协方差和初始化设置位于 `include/predictor_armor.hpp`。调参时应同时检查残差、中心漂移、接受率和运动变化时的响应。
 
@@ -366,7 +364,7 @@ PnP 与叠加边框采用灯条中心间距 **135 mm**、灯条长度 **56 mm**�
 ```cpp
 #include "predictor_armor.hpp"
 
-predictor::ArmorEKF ekf; // 默认启用自适应观测噪声
+predictor::ArmorEKF ekf; // 默认使用固定观测噪声
 // 纯滤波器：initialize / predict / update_multi / forecast
 // CSV 批处理通过 predictor_armor.exe --suffix 1 运行。
 ```
@@ -415,7 +413,7 @@ predictor::ArmorEKF ekf; // 默认启用自适应观测噪声
 | `armor_prediction_error_curve_*.png` | 目标方位、俯仰、距离、板朝向的更新前残差 |
 | `armor_prediction_result_*.csv` | 每帧一行的 EKF 状态和代表性观测残差 |
 | `armor_future_prediction_*.csv` | 每个源帧四行，记录四块板在目标时刻的未来位置和水平朝向 |
-| `armor_observation_diagnostics_*.csv` | 每条观测一行的关联、接受情况、拒绝原因、权重倍率 |
+| `armor_observation_diagnostics_*.csv` | 每条观测一行的关联、接受情况、拒绝原因和距离残差 |
 | `armor_rmse_result_*.txt` | 预测结果 CSV 中四项残差的 RMSE |
 
 原始曲线连接 CSV 中的所有观测，没有按物理板号分组。同帧多板会出现相同横坐标的多个点，换板也会产生跳变。**原始位置是装甲板中心，不是车体中心。**
@@ -476,8 +474,6 @@ predictor::ArmorEKF ekf; // 默认启用自适应观测噪声
 | `best_candidate_id` | 用于候选诊断的最小 NIS 板号，未必是最终联合关联结果 |
 | `observed_distance, observed_armor_yaw` | 原始距离和朝向观测 |
 | `distance_residual` | 观测减预测的距离残差，与结果 CSV 的距离误差符号相反 |
-| `target_yaw_noise_scale, target_pitch_noise_scale` | 方位、俯仰观测方差倍率 |
-| `distance_noise_scale, yaw_noise_scale` | 距离、板朝向观测方差倍率 |
 | `reason` | 接受或未使用的原因，见下表 |
 
 | `reason` 值 | 含义 |
@@ -559,7 +555,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1
 powershell -ExecutionPolicy Bypass -File .\tests\run.ps1 -PythonOnly
 ```
 
-测试覆盖灯条几何、PnP 姿态、时序匹配、EKF 关联与离群筛选、质量加权、协方差、多帧 CSV 和可视化对齐。日志、临时文件与 C++ 测试构建分别位于 `tests/outputs/`、`tests/outputs/tmp/`、`tests/build/`。
+测试覆盖灯条几何、PnP 姿态、时序匹配、EKF 关联与离群筛选、固定协方差、多帧 CSV 和可视化对齐。日志、临时文件与 C++ 测试构建分别位于 `tests/outputs/`、`tests/outputs/tmp/`、`tests/build/`。
 
 相机相关测试还覆盖手动角度控制、归中、自动跟踪预测位置、丢失观测时保持仿真姿态，以及固定基座坐标变换。测试目标名 `camera_gimbal_tests` 保留，但不代表还有独立的 `camera_gimbal.exe` 程序。
 
