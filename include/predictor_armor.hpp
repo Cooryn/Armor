@@ -1,9 +1,7 @@
 #pragma once
 #include <Eigen/Dense>
-#include <initializer_list>
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -11,15 +9,20 @@
 #include <utility>
 #include <vector>
 namespace predictor {
+using ArmorState = Eigen::Matrix<double, 11, 1>;
+using ArmorCovariance = Eigen::Matrix<double, 11, 11>;
+using ArmorJacobian = Eigen::Matrix<double, 4, 11>;
 struct Observation {
-    Eigen::MatrixXd Z_obs;
+    Eigen::Vector4d Z_obs = Eigen::Vector4d::Zero();
     std::optional<int> armor_id = std::nullopt;
 };
 struct Match {
     size_t index;
     int armor_id;
     double nis;
-    Eigen::MatrixXd residual, H, predicted, Z_obs;
+    Eigen::Vector4d residual;
+    ArmorJacobian H;
+    Eigen::Vector4d predicted, Z_obs;
 };
 struct Diagnostic {
     size_t observation_index;
@@ -31,15 +34,28 @@ struct Diagnostic {
     double distance_residual = std::numeric_limits<double>::quiet_NaN();
 };
 struct Forecast {
-    Eigen::MatrixXd state, covariance, plates;
+    ArmorState state;
+    ArmorCovariance covariance;
+    Eigen::Matrix4d plates;
 };
 struct Innovation {
     double nis;
-    Eigen::MatrixXd residual, H, prediction;
+    Eigen::Vector4d residual;
+    ArmorJacobian H;
+    Eigen::Vector4d prediction;
 };
 using Association = std::pair<std::vector<Match>, std::vector<Diagnostic>>;
 class ArmorEKF {
   public:
+    using State = ArmorState;
+    using Covariance = ArmorCovariance;
+    using Measurement = Eigen::Vector4d;
+    using Jacobian = ArmorJacobian;
+    // One to four accepted plates, four observation components per plate.
+    using JointJacobian = Eigen::Matrix<double, Eigen::Dynamic, 11, 0, 16, 11>;
+    using JointResidual = Eigen::Matrix<double, Eigen::Dynamic, 1, 0, 16, 1>;
+    using JointNoise = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, 0, 16, 16>;
+    using Gain = Eigen::Matrix<double, 11, Eigen::Dynamic, 0, 11, 16>;
     static constexpr double pi = 3.14159265358979323846;
     static double wrap_to_pi(double a) {
         double r = std::fmod(a + pi, 2 * pi);
@@ -47,38 +63,17 @@ class ArmorEKF {
             r += 2 * pi;
         return r - pi;
     }
-    static Eigen::VectorXd make_vector(std::initializer_list<double> values) {
-        return Eigen::Map<const Eigen::VectorXd>(values.begin(), static_cast<Eigen::Index>(values.size()));
-    }
-    static Eigen::MatrixXd diagonal(std::initializer_list<double> values) {
-        return make_vector(values).asDiagonal();
-    }
-    static Eigen::MatrixXd solve(const Eigen::MatrixXd &a, const Eigen::MatrixXd &b) {
-        if (a.rows() != a.cols() || a.rows() != b.rows() || a.rows() == 0)
-            throw std::invalid_argument("Solve shape mismatch");
-        if (!a.allFinite() || !b.allFinite())
-            throw std::invalid_argument("Non-finite linear system");
-        Eigen::PartialPivLU<Eigen::MatrixXd> lu(a);
-        if ((lu.matrixLU().diagonal().array() == 0).any())
-            throw std::runtime_error("Singular matrix");
-        Eigen::MatrixXd result = lu.solve(b);
-        if (!result.allFinite())
-            throw std::runtime_error("Non-finite linear solution");
-        return result;
-    }
-    static Eigen::MatrixXd angular_residual(const Eigen::MatrixXd &a, const Eigen::MatrixXd &b) {
-        if (a.rows() != 4 || a.cols() != 1 || b.rows() != 4 || b.cols() != 1)
-            throw std::invalid_argument("Observation shape mismatch");
-        Eigen::MatrixXd d = a - b;
+    static Measurement angular_residual(const Measurement &a, const Measurement &b) {
+        Measurement d = a - b;
         for (int i : {0, 1, 3})
             d(i) = wrap_to_pi(d(i));
         return d;
     }
-    Eigen::VectorXd X = Eigen::VectorXd::Zero(11);
+    State X = State::Zero();
     // Fixed variances for [target yaw, target pitch, distance, plate yaw].
     // Effective standard deviations: [0.04 rad, 0.04 rad, 0.40 m, 0.24 rad].
-    Eigen::MatrixXd F = Eigen::MatrixXd::Identity(11, 11), P = Eigen::MatrixXd::Identity(11, 11) * 10,
-           R = diagonal({.0016, .0016, .16, .0576});
+    Covariance F = Covariance::Identity(), P = Covariance::Identity() * 10;
+    Eigen::Matrix4d R = Measurement(.0016, .0016, .16, .0576).asDiagonal();
     double q_pos = 3, q_yaw = 15, q_r = 3e-4, q_dl = 3e-3, q_dh = 3e-3;
     bool is_initialized = false;
     double nis_gate, pair_yaw_tolerance, max_distance_error;
@@ -89,10 +84,10 @@ class ArmorEKF {
         P(8, 8) = .01;
         P(9, 9) = P(10, 10) = .05;
     }
-    std::pair<Eigen::MatrixXd, Eigen::MatrixXd> _transition(double dt) const {
+    std::pair<Covariance, Covariance> _transition(double dt) const {
         if (!std::isfinite(dt) || dt < 0)
             throw std::invalid_argument("dt must be finite and nonnegative");
-        Eigen::MatrixXd f = Eigen::MatrixXd::Identity(11, 11), q = Eigen::MatrixXd::Zero(11, 11);
+        Covariance f = Covariance::Identity(), q = Covariance::Zero();
         for (int i : {0, 2, 4, 6}) {
             f(i, i + 1) = dt;
             double noise = i == 6 ? q_yaw : q_pos;
@@ -116,58 +111,63 @@ class ArmorEKF {
         if (!is_initialized)
             throw std::invalid_argument("Cannot forecast before initialization");
         auto [f, q] = _transition(horizon_s);
-        Eigen::MatrixXd s = f * X;
+        State s = f * X;
         s(6) = wrap_to_pi(s(6));
-        Eigen::MatrixXd poses(4, 4);
-        for (int id = 0; id < 4; ++id) {
-            double yaw = wrap_to_pi(s(6) + id * pi / 2), r = s(8) + (id % 2 ? s(9) : 0);
-            poses(id, 0) = s(0) + r * std::sin(yaw);
-            poses(id, 1) = s(2) + (id % 2 ? s(10) : 0);
-            poses(id, 2) = s(4) - r * std::cos(yaw);
-            poses(id, 3) = yaw;
-        }
+        Eigen::Matrix4d poses;
+        for (int id = 0; id < 4; ++id)
+            poses.row(id) = plate_pose(s, id).transpose();
         return {s, f * P * f.transpose() + q, poses};
     }
-    Eigen::MatrixXd h(const Eigen::MatrixXd &s, int id) const {
+    Measurement plate_pose(const State &s, int id) const {
         double yaw = s(6) + id * pi / 2, r = s(8) + (id % 2 ? s(9) : 0),
                x = s(0) + r * std::sin(yaw), y = s(2) + (id % 2 ? s(10) : 0),
                z = s(4) - r * std::cos(yaw);
-        return make_vector({wrap_to_pi(std::atan2(x, z)),
-                               wrap_to_pi(std::atan2(y, std::sqrt(x * x + z * z))),
-                               std::sqrt(x * x + y * y + z * z), wrap_to_pi(yaw)});
+        return {x, y, z, wrap_to_pi(yaw)};
     }
-    Eigen::MatrixXd get_jacobian(const Eigen::MatrixXd &s, int id) const {
-        Eigen::MatrixXd H = Eigen::MatrixXd::Zero(4, 11), base = h(s, id);
+    Measurement h(const State &s, int id) const {
+        const auto pose = plate_pose(s, id);
+        const double x = pose(0), y = pose(1), z = pose(2);
+        return {wrap_to_pi(std::atan2(x, z)),
+                               wrap_to_pi(std::atan2(y, std::sqrt(x * x + z * z))),
+                               std::sqrt(x * x + y * y + z * z), pose(3)};
+    }
+    Jacobian get_jacobian(const State &s, int id) const {
+        Jacobian H = Jacobian::Zero();
+        const Measurement base = h(s, id);
         for (int i : {0, 2, 4, 6, 8, 9, 10}) {
-            Eigen::MatrixXd t = s;
+            State t = s;
             t(i) += 1e-5;
-            Eigen::MatrixXd d = angular_residual(h(t, id), base);
+            const Measurement d = angular_residual(h(t, id), base);
             H.col(i) = d / 1e-5;
         }
         return H;
     }
     bool base_frame = false;
-    bool valid_observation(const Eigen::MatrixXd &z) const {
-        if (z.rows() != 4 || z.cols() != 1)
-            return false;
-        if (!z.allFinite())
-            return false;
-        return z(2) > 0 && std::abs(z(1)) < pi / 2 && (base_frame || std::abs(z(0)) < pi / 2);
+    bool valid_observation(const Measurement &z) const {
+        return z.allFinite() && z(2) > 0 &&
+               std::abs(z(1)) < pi / 2 && (base_frame || std::abs(z(0)) < pi / 2);
     }
-    void initialize(const Eigen::MatrixXd &z) {
+    void initialize(const Measurement &z) {
         if (!valid_observation(z))
             throw std::invalid_argument("Invalid initialization observation");
         double x = z(2) * std::cos(z(1)) * std::sin(z(0)), y = z(2) * std::sin(z(1)),
                zc = z(2) * std::cos(z(1)) * std::cos(z(0));
-        X = make_vector(
-            {x - .26 * std::sin(z(3)), 0, y, 0, zc + .26 * std::cos(z(3)), 0, z(3), 0, .26, 0, 0});
-        P = diagonal({.1, 1, .1, 1, .1, 1, .05, 100, .01, .01, .01});
+        X << x - .26 * std::sin(z(3)), 0, y, 0, zc + .26 * std::cos(z(3)), 0, z(3), 0, .26, 0, 0;
+        P = (State() << .1, 1, .1, 1, .1, 1, .05, 100, .01, .01, .01).finished().asDiagonal();
         is_initialized = true;
     }
-    Innovation innovation(const Eigen::MatrixXd &z, int id) const {
-        Eigen::MatrixXd pred = h(X, id), res = angular_residual(z, pred), H = get_jacobian(X, id),
-               S = H * P * H.transpose() + R;
-        double nis = (res.transpose() * solve(S, res))(0, 0);
+    Innovation innovation(const Measurement &z, int id) const {
+        const Measurement pred = h(X, id), res = angular_residual(z, pred);
+        const Jacobian H = get_jacobian(X, id);
+        const Eigen::Matrix4d S = H * P * H.transpose() + R;
+        if (!S.allFinite())
+            throw std::runtime_error("Non-finite armor innovation covariance");
+        const Eigen::LDLT<Eigen::Matrix4d> solver(S);
+        if (solver.info() != Eigen::Success || solver.vectorD().minCoeff() <= 0)
+            throw std::runtime_error("Armor innovation covariance must be positive definite");
+        const double nis = res.dot(solver.solve(res));
+        if (!std::isfinite(nis))
+            throw std::runtime_error("Non-finite armor innovation");
         return {nis, res, H, pred};
     }
     Association associate(const std::vector<Observation> &observations) const {
@@ -183,7 +183,7 @@ class ArmorEKF {
                     if (o.armor_id && *o.armor_id != id)
                         continue;
                     auto in = innovation(o.Z_obs, id);
-                    if (!std::isfinite(d.nis) || in.nis < d.nis) {
+                    if (d.best_candidate_id < 0 || in.nis < d.nis) {
                         d.nis = in.nis;
                         d.best_candidate_id = id;
                         d.distance_residual = in.residual(2);
@@ -199,8 +199,7 @@ class ArmorEKF {
         }
         std::vector<Match> best, selected;
         double best_score = std::numeric_limits<double>::infinity();
-        std::function<void(size_t, unsigned, double)> search = [&](size_t index, unsigned used,
-                                                                   double score) {
+        auto search = [&](auto &&self, size_t index, unsigned used, double score) -> void {
             if (selected.size() + std::min(size_t(4) - selected.size(), candidates.size() - index) <
                 best.size())
                 return;
@@ -225,13 +224,13 @@ class ArmorEKF {
                     }
                 if (consistent) {
                     selected.push_back(c);
-                    search(index + 1, used | (1u << c.armor_id), score + c.nis);
+                    self(self, index + 1, used | (1u << c.armor_id), score + c.nis);
                     selected.pop_back();
                 }
             }
-            search(index + 1, used, score);
+            self(self, index + 1, used, score);
         };
-        search(0, 0, 0);
+        search(search, 0, 0, 0);
         for (const auto &m : best) {
             auto &d = diagnostics[m.index];
             d.accepted = true;
@@ -248,24 +247,34 @@ class ArmorEKF {
         if (matches.empty())
             return result;
         int n = static_cast<int>(matches.size()) * 4;
-        Eigen::MatrixXd H = Eigen::MatrixXd::Zero(n, 11), res = Eigen::MatrixXd::Zero(n, 1), noise = Eigen::MatrixXd::Zero(n, n);
+        JointJacobian H(n, 11);
+        JointResidual res(n);
+        JointNoise noise = JointNoise::Zero(n, n);
         for (size_t k = 0; k < matches.size(); ++k) {
             const auto offset = static_cast<Eigen::Index>(4 * k);
-            res.block(offset, 0, 4, 1) = matches[k].residual;
-            H.block(offset, 0, 4, 11) = matches[k].H;
-            noise.block(offset, offset, 4, 4) = R;
+            res.segment<4>(offset) = matches[k].residual;
+            H.middleRows<4>(offset) = matches[k].H;
+            noise.block<4, 4>(offset, offset) = R;
         }
-        Eigen::MatrixXd S = H * P * H.transpose() + noise, K = solve(S, H * P).transpose();
+        const JointNoise S = H * P * H.transpose() + noise;
+        if (!S.allFinite())
+            throw std::runtime_error("Non-finite armor joint covariance");
+        const Eigen::LDLT<JointNoise> solver(S);
+        if (solver.info() != Eigen::Success || solver.vectorD().minCoeff() <= 0)
+            throw std::runtime_error("Armor joint covariance must be positive definite");
+        const Gain K = solver.solve(H * P).transpose();
+        if (!K.allFinite())
+            throw std::runtime_error("Non-finite armor Kalman gain");
         X = X + K * res;
         X(6) = wrap_to_pi(X(6));
         X(8) = std::clamp(X(8), .20, .30);
         X(9) = std::clamp(X(8) + X(9), .20, .30) - X(8);
-        Eigen::MatrixXd A = Eigen::MatrixXd::Identity(11, 11) - K * H;
+        const Covariance A = Covariance::Identity() - K * H;
         P = A * P * A.transpose() + K * noise * K.transpose();
         P = ((P + P.transpose()) * .5).eval();
         return result;
     }
-    std::optional<int> update(const Eigen::MatrixXd &z, std::optional<int> id = std::nullopt) {
+    std::optional<int> update(const Measurement &z, std::optional<int> id = std::nullopt) {
         auto result = update_multi({Observation{z, id}});
         if (result.first.empty())
             return std::nullopt;

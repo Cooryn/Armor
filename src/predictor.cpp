@@ -1,337 +1,252 @@
 #include "predictor.hpp"
+#include <algorithm>
+#include <array>
 #include <filesystem>
-#include <variant>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
-#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
-namespace predictor {
 namespace {
 namespace fs = std::filesystem;
-using Cell = std::variant<double, std::string, bool>;
-using Row = std::vector<std::pair<std::string, Cell>>;
-// DataFrame replacement: preserves insertion order, named columns and missing cells.
-struct Table {
-    std::vector<std::string> columns;
-    std::vector<Row> rows;
-    void append(Row row);
-    void to_csv(const std::filesystem::path &path) const;
+using predictor::SinglePlateEKF;
+constexpr std::array<const char *, 8> input_columns = {
+    "frame_id", "timestamp", "x", "y", "z", "target_yaw", "target_pitch", "distance"};
+constexpr std::array<const char *, 4> origin_columns = {
+    "base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"};
+struct Sample {
+    double timestamp;
+    Eigen::Vector3d position;
+    SinglePlateEKF::Observation observation;
+};
+struct Input {
+    std::map<double, Sample> frames;
+    bool base = false;
+    std::array<double, 4> origin{};
 };
 
-inline void Table::append(Row row) {
-    for (const auto &kv : row)
-        if (std::find(columns.begin(), columns.end(), kv.first) == columns.end())
-            columns.push_back(kv.first);
-    rows.push_back(std::move(row));
-}
-inline std::string quoted(const std::string &s) {
-    if (s.find_first_of(",\"\r\n") == std::string::npos)
-        return s;
-    std::string r = "\"";
-    for (char c : s) {
-        r += c;
-        if (c == '\"')
-            r += c;
-    }
-    return r + '\"';
-}
-inline void Table::to_csv(const fs::path &p) const {
-    std::ofstream out(p);
-    if (!out)
-        throw std::runtime_error("Cannot write " + p.string());
-    for (size_t i = 0; i < columns.size(); ++i)
-        out << (i ? "," : "") << quoted(columns[i]);
-    out << '\n' << std::setprecision(17);
-    for (const auto &row : rows) {
-        for (size_t i = 0; i < columns.size(); ++i) {
-            if (i)
-                out << ',';
-            auto it = std::find_if(row.begin(), row.end(),
-                                   [&](const auto &kv) { return kv.first == columns[i]; });
-            if (it == row.end())
-                continue;
-            const auto &v = it->second;
-            if (auto d = std::get_if<double>(&v)) {
-                if (!std::isnan(*d))
-                    out << *d;
-            } else if (auto b = std::get_if<bool>(&v))
-                out << (*b ? "True" : "False");
-            else
-                out << quoted(std::get<std::string>(v));
-        }
-        out << '\n';
-    }
-    if (!out)
-        throw std::runtime_error("CSV write failed");
-}
-using InputRow = std::map<std::string, std::string>;
-inline std::vector<std::vector<std::string>> read_csv(const fs::path &p) {
-    std::ifstream f(p, std::ios::binary);
-    if (!f)
-        throw std::runtime_error("Cannot read " + p.string());
-    std::vector<std::vector<std::string>> rows;
-    std::vector<std::string> row;
+// Read one record, including quoted commas/newlines and doubled quotes.
+bool read_record(std::istream &input, std::vector<std::string> &fields) {
+    fields.clear();
     std::string field;
     bool in_quote = false;
     char c;
-    while (f.get(c)) {
-        if (c == '\"') {
-            if (in_quote && f.peek() == '\"') {
-                f.get(c);
-                field += '\"';
+    while (input.get(c)) {
+        if (c == '"') {
+            if (in_quote && input.peek() == '"') {
+                input.get(c);
+                field += '"';
             } else
                 in_quote = !in_quote;
         } else if (!in_quote && (c == ',' || c == '\n' || c == '\r')) {
-            row.push_back(field);
+            fields.push_back(std::move(field));
             field.clear();
             if (c != ',') {
-                if (c == '\r' && f.peek() == '\n')
-                    f.get(c);
-                if (row.size() > 1 || !row[0].empty())
-                    rows.push_back(row);
-                row.clear();
+                if (c == '\r' && input.peek() == '\n')
+                    input.get(c);
+                if (fields.size() > 1 || !fields[0].empty())
+                    return true;
+                fields.clear();
             }
         } else
             field += c;
     }
     if (in_quote)
         throw std::invalid_argument("Unclosed CSV quote");
-    if (!field.empty() || !row.empty()) {
-        row.push_back(field);
-        rows.push_back(row);
-    }
-    if (rows.empty())
-        throw std::invalid_argument("No columns to parse from file");
-    if (rows[0][0].compare(0, 3, "\xef\xbb\xbf") == 0)
-        rows[0][0].erase(0, 3);
-    return rows;
+    if (input.bad())
+        throw std::runtime_error("CSV read failed");
+    if (fields.empty() && field.empty())
+        return false;
+    fields.push_back(std::move(field));
+    return true;
 }
-inline double number(const InputRow &r, const std::string &key, bool optional = false) {
-    auto it = r.find(key);
-    if (it == r.end()) {
-        if (optional)
-            return std::numeric_limits<double>::quiet_NaN();
-        throw std::invalid_argument("Missing CSV column: " + key);
-    }
-    auto s = it->second;
-    auto first = s.find_first_not_of(" \t\r\n");
+double number(const std::string &text) {
+    const auto first = text.find_first_not_of(" \t\r\n");
     if (first == std::string::npos)
         return std::numeric_limits<double>::quiet_NaN();
-    s = s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
-    if (s == "NA" || s == "N/A" || s == "NULL" || s == "null" || s == "None" ||
-        s == "NaN" || s == "nan" || s == "<NA>")
+    const auto value = text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+    if (value == "NA" || value == "N/A" || value == "NULL" || value == "null" ||
+        value == "None" || value == "NaN" || value == "nan" || value == "<NA>")
         return std::numeric_limits<double>::quiet_NaN();
-    try {
-        size_t n;
-        double v = std::stod(s, &n);
-        if (n != s.size())
-            throw std::invalid_argument("trailing characters");
-        return v;
-    } catch (...) {
-        if (optional)
-            return std::numeric_limits<double>::quiet_NaN();
-        throw std::invalid_argument("Invalid numeric CSV value in " + key + ": " + s);
-    }
+    size_t parsed;
+    const double result = std::stod(value, &parsed);
+    if (parsed != value.size())
+        throw std::invalid_argument("Invalid numeric CSV value: " + value);
+    return result;
 }
-inline std::vector<InputRow> load(const fs::path &p) {
-    auto raw = read_csv(p);
-    std::vector<InputRow> rows;
-    for (size_t i = 1; i < raw.size(); ++i) {
-        InputRow r;
-        for (size_t j = 0; j < raw[0].size(); ++j)
-            r[raw[0][j]] = j < raw[i].size() ? raw[i][j] : "";
-        rows.push_back(r);
-    }
-    return rows;
-}
-using Groups = std::map<double, std::vector<InputRow>>;
-inline Groups group_rows(const std::vector<InputRow> &rows) {
-    Groups g;
-    for (const auto &r : rows) {
-        double id = number(r, "frame_id");
-        if (!std::isnan(id))
-            g[id].push_back(r);
-    }
-    return g;
-}
-inline const InputRow &closest(const std::vector<InputRow> &rows) {
-    return *std::min_element(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
-        double x = number(a, "distance"), y = number(b, "distance");
-        return !std::isnan(x) && (std::isnan(y) || x < y);
-    });
-}
-// Missing tags identify legacy camera-frame CSVs. Never mix frames in one run.
-inline bool input_is_base(const std::vector<InputRow> &data) {
-    std::string frame;
-    for (const auto &row : data) {
-        const auto it = row.find("coordinate_frame");
-        const std::string current = it == row.end() ? "camera" : it->second;
-        if (current != "camera" && current != "base")
+Input load(const fs::path &path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream)
+        throw std::runtime_error("Cannot read " + path.string());
+    std::vector<std::string> header, row;
+    if (!read_record(stream, header))
+        throw std::invalid_argument("No columns to parse from file");
+    if (header[0].compare(0, 3, "\xef\xbb\xbf") == 0)
+        header[0].erase(0, 3);
+    auto column = [&](const char *name) {
+        const auto it = std::find(header.begin(), header.end(), name);
+        if (it == header.end())
+            throw std::invalid_argument(std::string("Missing CSV column: ") + name);
+        return static_cast<size_t>(it - header.begin());
+    };
+    std::array<size_t, 8> indices{};
+    for (size_t i = 0; i < indices.size(); ++i)
+        indices[i] = column(input_columns[i]);
+    const auto coordinate = std::find(header.begin(), header.end(), "coordinate_frame");
+    const size_t frame_column = static_cast<size_t>(coordinate - header.begin());
+    std::array<size_t, 4> origin_indices{};
+    Input data;
+    bool first_row = true;
+    while (read_record(stream, row)) {
+        auto cell = [&](size_t index) { return index < row.size() ? row[index] : std::string(); };
+        std::array<double, 8> values{};
+        for (size_t i = 0; i < values.size(); ++i)
+            values[i] = number(cell(indices[i]));
+        if (!std::isfinite(values[0]) || values[0] < 0 || std::floor(values[0]) != values[0] ||
+            !std::isfinite(values[1]) || values[1] < 0)
+            throw std::invalid_argument("Invalid frame_id or timestamp");
+        const std::string frame = coordinate == header.end() ? "camera" : cell(frame_column);
+        if (frame != "camera" && frame != "base")
             throw std::invalid_argument("Unknown input coordinate_frame");
-        if (!frame.empty() && frame != current)
+        if (!first_row && data.base != (frame == "base"))
             throw std::invalid_argument("Mixed coordinate frames in input");
-        if (current == "base") {
-            for (const char *key : {"base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"}) {
-                const double value = number(row, key), first = number(data.front(), key);
-                if (!std::isfinite(value) || value != first)
+        data.base = frame == "base";
+        if (data.base) {
+            if (first_row)
+                for (size_t i = 0; i < origin_indices.size(); ++i)
+                    origin_indices[i] = column(origin_columns[i]);
+            for (size_t i = 0; i < data.origin.size(); ++i) {
+                const double value = number(cell(origin_indices[i]));
+                if (!std::isfinite(value) || (!first_row && value != data.origin[i]) || (i == 0 && value < 0))
                     throw std::invalid_argument("Missing or mixed base origin metadata; regenerate base CSV");
+                data.origin[i] = value;
             }
-            if (number(row, "base_reference_timestamp_ms") < 0)
-                throw std::invalid_argument("Invalid base reference timestamp");
         }
-        frame = current;
+        first_row = false;
+        const Sample sample{values[1], {values[2], values[3], values[4]}, {values[5], values[6], values[7]}};
+        if (!sample.position.allFinite() || !SinglePlateEKF::valid_observation(sample.observation))
+            continue;
+        auto [it, inserted] = data.frames.try_emplace(values[0], sample);
+        if (!inserted && sample.observation(2) < it->second.observation(2))
+            it->second = sample;
     }
-    return frame == "base";
+    return data;
 }
-inline void mark_base(Table &table, const InputRow &reference) {
-    table.columns.push_back("coordinate_frame");
-    for (auto &row : table.rows) row.push_back({"coordinate_frame", std::string("base")});
-    for (const char *key : {"base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"}) {
-        table.columns.push_back(key);
-        for (auto &row : table.rows) row.push_back({key, number(reference, key)});
+void run_predict(const fs::path &input, const fs::path &output, const std::string &suffix) {
+    const Input data = load(input);
+    if (data.frames.size() < 2) {
+        std::cout << "No prediction exported: at least two detected frames are required.\n";
+        return;
     }
-}
-inline void empty_message() {
-    std::cout << "No prediction exported: at least two detected frames are required.\n";
-}
-inline double rmse(const Table &t, const std::string &name) {
-    double sum = 0;
-    size_t count = 0;
-    for (const auto &r : t.rows)
-        for (const auto &kv : r)
-            if (kv.first == name) {
-                double v = std::get<double>(kv.second);
-                if (!std::isnan(v)) {
-                    sum += v * v;
-                    ++count;
-                }
-            }
-    return count ? std::sqrt(sum / count) : std::numeric_limits<double>::quiet_NaN();
-}
-inline void metrics(const Table &t, const fs::path &p, const std::vector<std::string> &errors,
-                    const std::vector<std::string> &names, const std::vector<std::string> &units,
-                    bool armor = false) {
-    std::ofstream f(p);
-    if (!f)
-        throw std::runtime_error("Cannot write " + p.string());
-    if (armor)
-        f << "Metrics: prior residuals of accepted observations only; not ground-truth error.\n";
-    f << std::fixed << std::setprecision(6);
-    for (size_t i = 0; i < errors.size(); ++i)
-        f << names[i] << ": " << rmse(t, errors[i]) << ' ' << units[i] << '\n';
-}
-} // namespace
-
-std::optional<Table> run_predict(const fs::path &p, const fs::path &out,
-                                 const std::string &suffix) {
-    fs::create_directories(out);
-    auto data = load(p);
-    const bool base_frame = input_is_base(data);
-    auto groups = group_rows(data);
-    BasicPredictor b;
-    Table results;
-    std::optional<double> last;
-    for (const auto &[id, g] : groups) {
-        const auto &r = closest(g);
-        double x = number(r, "x"), y = number(r, "y"), z = number(r, "z"),
-               yaw = number(r, "target_yaw"), dist = number(r, "distance"),
-               ts = number(r, "timestamp"), dt = last ? (ts - *last) / 1000 : 1 / FPS;
-        if (dt <= 0)
-            dt = 1 / FPS;
-        last = ts;
-        if (!b.is_initialized) {
-            b.state = BasicPredictor::make_vector({x, 0, y, 0, z, 0});
-            b.is_initialized = true;
+    fs::create_directories(output);
+    const fs::path csv_path = output / ("prediction_result_" + suffix + ".csv"),
+                   metrics_path = output / ("rmse_result_" + suffix + ".txt");
+    std::ofstream csv(csv_path);
+    if (!csv)
+        throw std::runtime_error("Cannot write " + csv_path.string());
+    csv << "frame_id,predicted_x,observed_x,error_x,predicted_z,observed_z,error_z,"
+           "predicted_yaw,observed_yaw,error_yaw,predicted_distance,observed_distance,error_distance";
+    if (data.base) {
+        csv << ",coordinate_frame";
+        for (const auto *name : origin_columns)
+            csv << ',' << name;
+    }
+    csv << '\n' << std::setprecision(17);
+    SinglePlateEKF filter;
+    double last_timestamp = 0;
+    std::array<double, 4> squared_errors{};
+    for (const auto &[frame_id, sample] : data.frames) {
+        if (!filter.initialized()) {
+            filter.initialize(sample.observation);
+            last_timestamp = sample.timestamp;
             continue;
         }
-        auto [s, P] = b.predict(dt);
-        double pyaw = std::atan2(s(0), s(4)),
-               pd = std::sqrt(s(0) * s(0) + s(2) * s(2) + s(4) * s(4));
-        results.append({{"frame_id", id},
-                        {"predicted_x", s(0)},
-                        {"observed_x", x},
-                        {"error_x", s(0) - x},
-                        {"predicted_z", s(4)},
-                        {"observed_z", z},
-                        {"error_z", s(4) - z},
-                        {"predicted_yaw", pyaw},
-                        {"observed_yaw", yaw},
-                        {"error_yaw", BasicPredictor::wrap_to_pi(pyaw - yaw)},
-                        {"predicted_distance", pd},
-                        {"observed_distance", dist},
-                        {"error_distance", pd - dist}});
-        b.update(BasicPredictor::make_vector({x, y, z}), s, P);
+        double dt = (sample.timestamp - last_timestamp) / 1000;
+        if (dt <= 0)
+            dt = 1. / 30;
+        last_timestamp = sample.timestamp;
+        filter.predict(dt);
+        const auto &s = filter.state();
+        const auto predicted = SinglePlateEKF::h(s);
+        const std::array<double, 4> errors = {
+            s(0) - sample.position(0), s(4) - sample.position(2),
+            SinglePlateEKF::wrap_to_pi(predicted(0) - sample.observation(0)),
+            predicted(2) - sample.observation(2)};
+        const std::array<double, 13> result = {
+            frame_id, s(0), sample.position(0), errors[0], s(4), sample.position(2), errors[1],
+            predicted(0), sample.observation(0), errors[2], predicted(2), sample.observation(2), errors[3]};
+        for (size_t i = 0; i < result.size(); ++i)
+            csv << (i ? "," : "") << result[i];
+        if (data.base) {
+            csv << ",base";
+            for (double value : data.origin)
+                csv << ',' << value;
+        }
+        csv << '\n';
+        for (size_t i = 0; i < errors.size(); ++i)
+            squared_errors[i] += errors[i] * errors[i];
+        filter.update(sample.observation);
     }
-    if (results.rows.empty()) {
-        empty_message();
-        return std::nullopt;
-    }
-    auto csv = out / ("prediction_result_" + suffix + ".csv"),
-         txt = out / ("rmse_result_" + suffix + ".txt");
-    if (base_frame) mark_base(results, data.front());
-    results.to_csv(csv);
-    std::cout << "已输出预测结果: " << csv.string() << '\n';
-    metrics(results, txt, {"error_x", "error_z", "error_yaw", "error_distance"},
-            {"RMSE_x", "RMSE_z", "RMSE_yaw", "RMSE_distance"}, {"m", "m", "rad", "m"});
-    std::cout << "已计算RMSE: " << txt.string() << '\n';
-    return results;
+    std::ofstream metrics(metrics_path);
+    if (!metrics)
+        throw std::runtime_error("Cannot write " + metrics_path.string());
+    constexpr std::array<const char *, 4> names = {"RMSE_x", "RMSE_z", "RMSE_yaw", "RMSE_distance"},
+                                         units = {"m", "m", "rad", "m"};
+    metrics << std::fixed << std::setprecision(6);
+    for (size_t i = 0; i < names.size(); ++i)
+        metrics << names[i] << ": " << std::sqrt(squared_errors[i] / static_cast<double>(data.frames.size() - 1))
+                << ' ' << units[i] << '\n';
+    csv.flush();
+    metrics.flush();
+    if (!csv || !metrics)
+        throw std::runtime_error("Prediction output write failed");
+    std::cout << "已输出预测结果: " << csv_path.string() << '\n'
+              << "已计算RMSE: " << metrics_path.string() << '\n';
 }
-} // namespace predictor
+} // namespace
 
 #ifndef PREDICTOR_DEFAULT_ROOT
 #define PREDICTOR_DEFAULT_ROOT "."
 #endif
 int main(int argc, char **argv) {
-    using namespace predictor;
-    namespace fs = std::filesystem;
     std::string suffix = "2";
     fs::path root = PREDICTOR_DEFAULT_ROOT, input, output;
-    double horizon = 50;
     try {
         for (int i = 1; i < argc; ++i) {
-            std::string a = argv[i];
+            const std::string argument = argv[i];
             auto value = [&]() {
                 if (i + 1 >= argc)
-                    throw std::invalid_argument("Missing value for " + a);
+                    throw std::invalid_argument("Missing value for " + argument);
                 return std::string(argv[++i]);
             };
-            if (a == "--suffix")
+            if (argument == "--suffix")
                 suffix = value();
-            else if (a == "--input")
+            else if (argument == "--input")
                 input = fs::u8path(value());
-            else if (a == "--output-dir")
+            else if (argument == "--output-dir")
                 output = fs::u8path(value());
-            else if (a == "--root")
+            else if (argument == "--root")
                 root = fs::u8path(value());
-            else if (a == "--fixed-noise")
-                (void)0; // Accepted for CLI compatibility; only Armor uses adaptive noise.
-            else if (a == "--prediction-horizon-ms") {
-                std::string s = value();
-                size_t n;
-                horizon = std::stod(s, &n);
-                if (n != s.size())
-                    throw std::invalid_argument("Invalid horizon");
-            } else if (a == "--help" || a == "-h") {
-                std::cout << "Options: --suffix VALUE --input CSV --output-dir DIR --fixed-noise "
-                             "--prediction-horizon-ms MS --root DIR\n";
+            else if (argument == "--help" || argument == "-h") {
+                std::cout << "Options: --suffix VALUE --input CSV --output-dir DIR --root DIR\n";
                 return 0;
             } else
-                throw std::invalid_argument("Unknown argument: " + a);
+                throw std::invalid_argument("Unknown argument: " + argument);
         }
-        if (!std::isfinite(horizon) || horizon < 0)
-            throw std::invalid_argument("--prediction-horizon-ms must be finite and nonnegative");
         if (input.empty())
             input = root / "data" / ("pose_raw_" + suffix + ".csv");
         if (output.empty())
             output = root / "results";
         if (!fs::is_regular_file(input))
             throw std::invalid_argument("Input CSV does not exist or is not a file: " + input.string());
-        predictor::run_predict(input, output, suffix);
+        run_predict(input, output, suffix);
         return 0;
-    } catch (const std::exception &e) {
-        std::cerr << "error: " << e.what() << '\n';
+    } catch (const std::exception &error) {
+        std::cerr << "error: " << error.what() << '\n';
         return 2;
     }
 }

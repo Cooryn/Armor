@@ -20,15 +20,35 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
 
     os.makedirs(output_dir, exist_ok=True)
     data = pd.read_csv(csv_input_path)
+    required = ['frame_id', 'timestamp', 'target_yaw', 'target_pitch', 'distance', 'armor_orientation_yaw']
+    if not set(required) <= set(data):
+        raise ValueError('Missing required observation columns')
+    data[required] = data[required].apply(pd.to_numeric, errors='raise').astype(float)
+    origin = {}
+    base = False
+    if 'coordinate_frame' in data and not data.empty:
+        frames = set(data.coordinate_frame)
+        if not frames <= {'camera', 'base'} or len(frames) != 1:
+            raise ValueError('Unknown or mixed coordinate frames')
+        base = frames == {'base'}
+        if base:
+            names = ['base_reference_timestamp_ms', 'base_origin_x_m', 'base_origin_y_m', 'base_origin_z_m']
+            if not set(names) <= set(data):
+                raise ValueError('Missing base origin metadata')
+            values = data[names].apply(pd.to_numeric, errors='raise').to_numpy()
+            if not np.isfinite(values).all() or not (values == values[0]).all() or values[0, 0] < 0:
+                raise ValueError('Missing or mixed base origin metadata')
+            origin = dict(zip(names, values[0]))
 
     # CSV has no rows for missed detections. Interpolate only the video clock,
     # never observations, and expose every internal missing frame as prediction-only.
+    if (not np.isfinite(data[['frame_id', 'timestamp']].to_numpy()).all()
+            or (data.frame_id < 0).any() or (data.frame_id % 1 != 0).any()
+            or (data.frame_id >= float(np.iinfo(np.int64).max)).any() or (data.timestamp < 0).any()):
+        raise ValueError("Frame IDs and timestamps must be finite, valid video times")
     if data.frame_id.nunique() < 2:
         print("No prediction exported: at least two detected frames are required.")
         return
-    if (not np.isfinite(data[['frame_id', 'timestamp']].to_numpy()).all()
-            or (data.frame_id < 0).any() or (data.frame_id % 1 != 0).any()):
-        raise ValueError("Frame IDs and timestamps must be finite, valid video times")
     groups = dict(tuple(data.groupby('frame_id', sort=True)))
     frame_ids = np.array(sorted(groups), dtype=int)
     timestamps = np.array([groups[f].timestamp.iloc[0] for f in frame_ids])
@@ -37,6 +57,7 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
     if any(g.timestamp.nunique() != 1 for g in groups.values()):
         raise ValueError("All observations of a frame must share its timestamp")
     ekf = ArmorEKF()
+    ekf.base_frame = base
     results, observation_log, future_results = [], [], []
     last_timestamp = None
     for frame_id in range(frame_ids[0], frame_ids[-1] + 1):
@@ -47,19 +68,19 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
                    for _, row in group.iterrows()]
         valid = [o for o in all_obs if ekf.valid_observation(o['Z_obs'])]
         if not ekf.is_initialized:
-            if not valid:
-                for index in range(len(all_obs)):
-                    observation_log.append(dict(frame_id=frame_id, observation_index=index,
-                                                accepted=False, armor_id=-1, nis=np.nan, reason='invalid'))
-                continue
             # One seed only; do not re-use it in a Kalman update.
-            seed = min(valid, key=lambda o: o['Z_obs'][2, 0])
-            ekf.initialize(seed['Z_obs'])
-            last_timestamp = timestamp
+            seed = min(valid, key=lambda o: o['Z_obs'][2, 0]) if valid else None
+            if seed is not None:
+                ekf.initialize(seed['Z_obs'])
+                last_timestamp = timestamp
             for index, obs in enumerate(all_obs):
                 observation_log.append(dict(frame_id=frame_id, observation_index=index,
                                             accepted=obs is seed, armor_id=0 if obs is seed else -1,
-                                            nis=np.nan, reason='initialization' if obs is seed else 'initialization_unused'))
+                                            nis=np.nan, reason=('invalid' if seed is None else
+                                                'initialization' if obs is seed else 'initialization_unused'),
+                                            timestamp=timestamp, observed_distance=obs['Z_obs'][2, 0],
+                                            observed_armor_yaw=obs['Z_obs'][3, 0],
+                                            best_candidate_id=-1, distance_residual=np.nan))
             continue
         ekf.predict((timestamp - last_timestamp) / 1000.)
         last_timestamp = timestamp
@@ -78,9 +99,8 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
             errors = -match['residual'][:, 0]
             obs_yaw = match['Z_obs'][3, 0]
         else:
-            # Show the nearest predicted plate, with NO fabricated observation error.
-            best_id = min(range(4), key=lambda aid: ekf.h(prior, aid)[2, 0])
-            Z_pred = ekf.h(prior, best_id)
+            best_id = -1
+            Z_pred = np.full((4, 1), np.nan)
             errors = np.full(4, np.nan)
             obs_yaw = np.nan
         r_i = prior[8, 0] + (prior[9, 0] if best_id % 2 else 0)
@@ -113,7 +133,18 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
         print("No prediction exported: at least two detected frames are required.")
         return
     res_df = pd.DataFrame(results)
-    pd.DataFrame(observation_log).to_csv(
+    diagnostics_df = pd.DataFrame(observation_log)
+    futures_df = pd.DataFrame(future_results)
+    if base:
+        for table in (res_df, diagnostics_df, futures_df):
+            table['coordinate_frame'] = 'base'
+            for name, value in origin.items():
+                table[name] = value
+        futures_df['qw'] = np.cos(futures_df.armor_orientation_yaw / 2)
+        futures_df['qx'] = 0.0
+        futures_df['qy'] = -np.sin(futures_df.armor_orientation_yaw / 2)
+        futures_df['qz'] = 0.0
+    diagnostics_df.to_csv(
         os.path.join(output_dir, f"armor_observation_diagnostics_{suffix}.csv"), index=False)
 
     # ==========================================
@@ -121,7 +152,7 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
     # ==========================================
     csv_out_path = os.path.join(output_dir, f'armor_prediction_result_{suffix}.csv')
     res_df.to_csv(csv_out_path, index=False)
-    pd.DataFrame(future_results).to_csv(
+    futures_df.to_csv(
         os.path.join(output_dir, f'armor_future_prediction_{suffix}.csv'), index=False)
 
     # 2. 导出误差文本 RMSE TXT

@@ -1,4 +1,10 @@
 #include "predictor_polar.hpp"
+#include <algorithm>
+#include <optional>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
 #include <filesystem>
 #include <variant>
 #include <fstream>
@@ -162,9 +168,9 @@ inline const InputRow &closest(const std::vector<InputRow> &rows) {
         return !std::isnan(x) && (std::isnan(y) || x < y);
     });
 }
-inline Eigen::MatrixXd observation(const InputRow &r) {
-    return PolarEKF::make_vector({number(r, "target_yaw"), number(r, "target_pitch"),
-                           number(r, "distance"), number(r, "armor_orientation_yaw")});
+inline PolarEKF::Observation observation(const InputRow &r) {
+    return {number(r, "target_yaw"), number(r, "target_pitch"),
+            number(r, "distance"), number(r, "armor_orientation_yaw")};
 }
 // Missing tags identify legacy camera-frame CSVs. Never mix frames in one run.
 inline bool input_is_base(const std::vector<InputRow> &data) {
@@ -239,20 +245,20 @@ std::optional<Table> run_predict_polar(const fs::path &p, const fs::path &out,
     std::optional<double> last;
     for (const auto &[id, g] : groups) {
         const auto &r = closest(g);
-        Eigen::MatrixXd z = observation(r);
+        const PolarEKF::Observation z = observation(r);
         double ts = number(r, "timestamp"), dt = last ? (ts - *last) / 1000 : 1 / 30.;
         if (dt <= 0)
             dt = 1 / 30.;
         last = ts;
         if (!b.is_initialized) {
-            b.X = PolarEKF::make_vector({number(r, "x") + .26 * std::sin(z(3)), 0, number(r, "y"), 0,
-                                  number(r, "z") + .26 * std::cos(z(3)), 0, z(3), 0, .26});
+            b.X << number(r, "x") + .26 * std::sin(z(3)), 0, number(r, "y"), 0,
+                   number(r, "z") + .26 * std::cos(z(3)), 0, z(3), 0, .26;
             b.is_initialized = true;
             continue;
         }
         b.predict(dt);
         int aid = PolarEKF::round_even(PolarEKF::wrap_to_pi(z(3) - b.X(6)) / (PolarEKF::pi / 2));
-        Eigen::MatrixXd e = PolarEKF::angular_residual(b.h(b.X, aid), z);
+        const PolarEKF::Observation e = PolarEKF::angular_residual(b.h(b.X, aid), z);
         b.update(z);
         results.append({{"frame_id", id},
                         {"xc", b.X(0)},
@@ -313,7 +319,7 @@ int main(int argc, char **argv) {
             else if (a == "--root")
                 root = fs::u8path(value());
             else if (a == "--fixed-noise")
-                (void)0; // Accepted for CLI compatibility; only Armor uses adaptive noise.
+                (void)0; // Accepted for CLI compatibility; observation noise is always fixed.
             else if (a == "--prediction-horizon-ms") {
                 std::string s = value();
                 size_t n;

@@ -1,477 +1,330 @@
 #include "predictor_armor.hpp"
+#include <array>
 #include <filesystem>
-#include <variant>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <map>
-#include <sstream>
 
-namespace predictor {
 namespace {
 namespace fs = std::filesystem;
-using Cell = std::variant<double, std::string, bool>;
-using Row = std::vector<std::pair<std::string, Cell>>;
-// DataFrame replacement: preserves insertion order, named columns and missing cells.
-struct Table {
-    std::vector<std::string> columns;
-    std::vector<Row> rows;
-    void append(Row row);
-    void to_csv(const std::filesystem::path &path) const;
+using predictor::ArmorEKF;
+using predictor::Diagnostic;
+using predictor::Observation;
+constexpr double missing = std::numeric_limits<double>::quiet_NaN();
+constexpr std::array<const char *, 6> input_columns = {
+    "frame_id", "timestamp", "target_yaw", "target_pitch", "distance", "armor_orientation_yaw"};
+constexpr std::array<const char *, 4> origin_columns = {
+    "base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"};
+struct Frame {
+    double timestamp;
+    std::vector<Observation> observations;
+};
+struct Input {
+    std::map<long long, Frame> frames;
+    bool base = false;
+    std::array<double, 4> origin{};
 };
 
-inline void Table::append(Row row) {
-    for (const auto &kv : row)
-        if (std::find(columns.begin(), columns.end(), kv.first) == columns.end())
-            columns.push_back(kv.first);
-    rows.push_back(std::move(row));
-}
-inline std::string quoted(const std::string &s) {
-    if (s.find_first_of(",\"\r\n") == std::string::npos)
-        return s;
-    std::string r = "\"";
-    for (char c : s) {
-        r += c;
-        if (c == '\"')
-            r += c;
-    }
-    return r + '\"';
-}
-inline void Table::to_csv(const fs::path &p) const {
-    std::ofstream out(p);
-    if (!out)
-        throw std::runtime_error("Cannot write " + p.string());
-    for (size_t i = 0; i < columns.size(); ++i)
-        out << (i ? "," : "") << quoted(columns[i]);
-    out << '\n' << std::setprecision(17);
-    for (const auto &row : rows) {
-        for (size_t i = 0; i < columns.size(); ++i) {
-            if (i)
-                out << ',';
-            auto it = std::find_if(row.begin(), row.end(),
-                                   [&](const auto &kv) { return kv.first == columns[i]; });
-            if (it == row.end())
-                continue;
-            const auto &v = it->second;
-            if (auto d = std::get_if<double>(&v)) {
-                if (!std::isnan(*d))
-                    out << *d;
-            } else if (auto b = std::get_if<bool>(&v))
-                out << (*b ? "True" : "False");
-            else
-                out << quoted(std::get<std::string>(v));
-        }
-        out << '\n';
-    }
-    if (!out)
-        throw std::runtime_error("CSV write failed");
-}
-using InputRow = std::map<std::string, std::string>;
-inline std::vector<std::vector<std::string>> read_csv(const fs::path &p) {
-    std::ifstream f(p, std::ios::binary);
-    if (!f)
-        throw std::runtime_error("Cannot read " + p.string());
-    std::vector<std::vector<std::string>> rows;
-    std::vector<std::string> row;
+bool read_record(std::istream &input, std::vector<std::string> &fields) {
+    fields.clear();
     std::string field;
-    bool in_quote = false;
+    bool quoted = false;
     char c;
-    while (f.get(c)) {
-        if (c == '\"') {
-            if (in_quote && f.peek() == '\"') {
-                f.get(c);
-                field += '\"';
+    while (input.get(c)) {
+        if (c == '"') {
+            if (quoted && input.peek() == '"') {
+                input.get(c);
+                field += '"';
             } else
-                in_quote = !in_quote;
-        } else if (!in_quote && (c == ',' || c == '\n' || c == '\r')) {
-            row.push_back(field);
+                quoted = !quoted;
+        } else if (!quoted && (c == ',' || c == '\n' || c == '\r')) {
+            fields.push_back(std::move(field));
             field.clear();
             if (c != ',') {
-                if (c == '\r' && f.peek() == '\n')
-                    f.get(c);
-                if (row.size() > 1 || !row[0].empty())
-                    rows.push_back(row);
-                row.clear();
+                if (c == '\r' && input.peek() == '\n') input.get(c);
+                if (fields.size() > 1 || !fields[0].empty()) return true;
+                fields.clear();
             }
         } else
             field += c;
     }
-    if (in_quote)
-        throw std::invalid_argument("Unclosed CSV quote");
-    if (!field.empty() || !row.empty()) {
-        row.push_back(field);
-        rows.push_back(row);
-    }
-    if (rows.empty())
-        throw std::invalid_argument("No columns to parse from file");
-    if (rows[0][0].compare(0, 3, "\xef\xbb\xbf") == 0)
-        rows[0][0].erase(0, 3);
-    return rows;
+    if (quoted) throw std::invalid_argument("Unclosed CSV quote");
+    if (input.bad()) throw std::runtime_error("CSV read failed");
+    if (fields.empty() && field.empty()) return false;
+    fields.push_back(std::move(field));
+    return true;
 }
-inline double number(const InputRow &r, const std::string &key, bool optional = false) {
-    auto it = r.find(key);
-    if (it == r.end()) {
-        if (optional)
-            return std::numeric_limits<double>::quiet_NaN();
-        throw std::invalid_argument("Missing CSV column: " + key);
-    }
-    auto s = it->second;
-    auto first = s.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos)
-        return std::numeric_limits<double>::quiet_NaN();
-    s = s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
-    if (s == "NA" || s == "N/A" || s == "NULL" || s == "null" || s == "None" ||
-        s == "NaN" || s == "nan" || s == "<NA>")
-        return std::numeric_limits<double>::quiet_NaN();
-    try {
-        size_t n;
-        double v = std::stod(s, &n);
-        if (n != s.size())
-            throw std::invalid_argument("trailing characters");
-        return v;
-    } catch (...) {
-        if (optional)
-            return std::numeric_limits<double>::quiet_NaN();
-        throw std::invalid_argument("Invalid numeric CSV value in " + key + ": " + s);
-    }
+double number(const std::string &text) {
+    const auto first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return missing;
+    const auto value = text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+    if (value == "NA" || value == "N/A" || value == "NULL" || value == "null" ||
+        value == "None" || value == "NaN" || value == "nan" || value == "<NA>") return missing;
+    size_t parsed;
+    const double result = std::stod(value, &parsed);
+    if (parsed != value.size()) throw std::invalid_argument("Invalid numeric CSV value: " + value);
+    return result;
 }
-inline std::vector<InputRow> load(const fs::path &p) {
-    auto raw = read_csv(p);
-    std::vector<InputRow> rows;
-    for (size_t i = 1; i < raw.size(); ++i) {
-        InputRow r;
-        for (size_t j = 0; j < raw[0].size(); ++j)
-            r[raw[0][j]] = j < raw[i].size() ? raw[i][j] : "";
-        rows.push_back(r);
-    }
-    return rows;
-}
-using Groups = std::map<double, std::vector<InputRow>>;
-inline Groups group_rows(const std::vector<InputRow> &rows) {
-    Groups g;
-    for (const auto &r : rows) {
-        double id = number(r, "frame_id");
-        if (!std::isnan(id))
-            g[id].push_back(r);
-    }
-    return g;
-}
-inline Eigen::MatrixXd observation(const InputRow &r) {
-    return ArmorEKF::make_vector({number(r, "target_yaw"), number(r, "target_pitch"),
-                           number(r, "distance"), number(r, "armor_orientation_yaw")});
-}
-// Missing tags identify legacy camera-frame CSVs. Never mix frames in one run.
-inline bool input_is_base(const std::vector<InputRow> &data) {
-    std::string frame;
-    for (const auto &row : data) {
-        const auto it = row.find("coordinate_frame");
-        const std::string current = it == row.end() ? "camera" : it->second;
-        if (current != "camera" && current != "base")
-            throw std::invalid_argument("Unknown input coordinate_frame");
-        if (!frame.empty() && frame != current)
-            throw std::invalid_argument("Mixed coordinate frames in input");
-        if (current == "base") {
-            for (const char *key : {"base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"}) {
-                const double value = number(row, key), first = number(data.front(), key);
-                if (!std::isfinite(value) || value != first)
+Input load(const fs::path &path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) throw std::runtime_error("Cannot read " + path.string());
+    std::vector<std::string> header, row;
+    if (!read_record(stream, header)) throw std::invalid_argument("No columns to parse from file");
+    if (header[0].compare(0, 3, "\xef\xbb\xbf") == 0) header[0].erase(0, 3);
+    auto column = [&](const char *name) {
+        const auto it = std::find(header.begin(), header.end(), name);
+        if (it == header.end()) throw std::invalid_argument(std::string("Missing CSV column: ") + name);
+        return static_cast<size_t>(it - header.begin());
+    };
+    std::array<size_t, 6> indices{};
+    for (size_t i = 0; i < indices.size(); ++i) indices[i] = column(input_columns[i]);
+    const auto coordinate = std::find(header.begin(), header.end(), "coordinate_frame");
+    const size_t frame_column = static_cast<size_t>(coordinate - header.begin());
+    std::array<size_t, 4> origin_indices{};
+    Input data;
+    bool first_row = true;
+    while (read_record(stream, row)) {
+        auto cell = [&](size_t index) { return index < row.size() ? row[index] : std::string(); };
+        std::array<double, 6> values{};
+        for (size_t i = 0; i < values.size(); ++i) values[i] = number(cell(indices[i]));
+        if (!std::isfinite(values[0]) || values[0] < 0 || std::floor(values[0]) != values[0] ||
+            values[0] >= double(std::numeric_limits<long long>::max()) ||
+            !std::isfinite(values[1]) || values[1] < 0)
+            throw std::invalid_argument("Invalid frame_id or timestamp");
+        // The detector's legacy CSV has no tag; its documented frame is camera.
+        const std::string frame = coordinate == header.end() ? "camera" : cell(frame_column);
+        if (frame != "camera" && frame != "base") throw std::invalid_argument("Unknown coordinate_frame");
+        if (!first_row && data.base != (frame == "base")) throw std::invalid_argument("Mixed coordinate frames");
+        data.base = frame == "base";
+        if (data.base) {
+            if (first_row)
+                for (size_t i = 0; i < origin_indices.size(); ++i) origin_indices[i] = column(origin_columns[i]);
+            for (size_t i = 0; i < data.origin.size(); ++i) {
+                const double value = number(cell(origin_indices[i]));
+                if (!std::isfinite(value) || (!first_row && value != data.origin[i]) || (i == 0 && value < 0))
                     throw std::invalid_argument("Missing or mixed base origin metadata; regenerate base CSV");
+                data.origin[i] = value;
             }
-            if (number(row, "base_reference_timestamp_ms") < 0)
-                throw std::invalid_argument("Invalid base reference timestamp");
         }
-        frame = current;
+        first_row = false;
+        auto [it, inserted] = data.frames.try_emplace(static_cast<long long>(values[0]), Frame{values[1], {}});
+        if (!inserted && it->second.timestamp != values[1])
+            throw std::invalid_argument("All observations of a frame must share its timestamp");
+        it->second.observations.push_back({Eigen::Vector4d(values[2], values[3], values[4], values[5])});
     }
-    return frame == "base";
+    for (auto it = data.frames.begin(); it != data.frames.end(); ++it)
+        if (it != data.frames.begin() && it->second.timestamp <= std::prev(it)->second.timestamp)
+            throw std::invalid_argument("Timestamps must increase between frames");
+    return data;
 }
-inline void mark_base(Table &table, const InputRow &reference) {
-    table.columns.push_back("coordinate_frame");
-    for (auto &row : table.rows) row.push_back({"coordinate_frame", std::string("base")});
-    for (const char *key : {"base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"}) {
-        table.columns.push_back(key);
-        for (auto &row : table.rows) row.push_back({key, number(reference, key)});
-    }
-}
-inline void empty_message() {
-    std::cout << "No prediction exported: at least two detected frames are required.\n";
-}
-inline double rmse(const Table &t, const std::string &name) {
-    double sum = 0;
-    size_t count = 0;
-    for (const auto &r : t.rows)
-        for (const auto &kv : r)
-            if (kv.first == name) {
-                double v = std::get<double>(kv.second);
-                if (!std::isnan(v)) {
-                    sum += v * v;
-                    ++count;
-                }
-            }
-    return count ? std::sqrt(sum / count) : std::numeric_limits<double>::quiet_NaN();
-}
-inline void metrics(const Table &t, const fs::path &p, const std::vector<std::string> &errors,
-                    const std::vector<std::string> &names, const std::vector<std::string> &units,
-                    bool armor = false) {
-    std::ofstream f(p);
-    if (!f)
-        throw std::runtime_error("Cannot write " + p.string());
-    if (armor)
-        f << "Metrics: prior residuals of accepted observations only; not ground-truth error.\n";
-    f << std::fixed << std::setprecision(6);
-    for (size_t i = 0; i < errors.size(); ++i)
-        f << names[i] << ": " << rmse(t, errors[i]) << ' ' << units[i] << '\n';
-}
-} // namespace
 
-std::optional<Table> run_predict_armor(const fs::path &p, const fs::path &out,
-                                       const std::string &suffix, double horizon) {
-    fs::create_directories(out);
-    auto data = load(p);
-    const bool base_frame = input_is_base(data);
-    auto groups = group_rows(data);
-    if (groups.size() < 2) {
-        empty_message();
-        return std::nullopt;
-    }
-    for (const auto &r : data) {
-        double id = number(r, "frame_id"), ts = number(r, "timestamp");
-        if (!std::isfinite(id) || !std::isfinite(ts) || id < 0 || std::floor(id) != id ||
-            id >= double(std::numeric_limits<long long>::max()))
-            throw std::invalid_argument(
-                "Frame IDs and timestamps must be finite, valid video times");
-    }
-    std::optional<double> previous;
-    for (const auto &[id, g] : groups) {
-        (void)id;
-        double ts = number(g[0], "timestamp");
-        if (previous && ts <= *previous)
-            throw std::invalid_argument(
-                "Timestamps must increase between frames; regenerate legacy CSV");
-        previous = ts;
-        for (const auto &r : g)
-            if (number(r, "timestamp") != ts)
-                throw std::invalid_argument("All observations of a frame must share its timestamp");
-    }
-    ArmorEKF b;
-    b.base_frame = base_frame;
-    Table results, logs, futures;
-    double last = 0;
-    auto right = groups.begin();
-    for (long long frame = static_cast<long long>(groups.begin()->first),
-                   end = static_cast<long long>(groups.rbegin()->first);
-         frame <= end; ++frame) {
-        double id = static_cast<double>(frame);
-        while (right->first < id)
-            ++right;
-        double ts = number(right->second[0], "timestamp");
-        if (right->first != id) {
-            auto left = std::prev(right);
-            double t0 = number(left->second[0], "timestamp");
-            ts = t0 + (ts - t0) / (right->first - left->first) * (id - left->first);
+// Fixed schemas: numbers and the program's own status/reason strings only.
+class CsvOutput {
+    std::ofstream stream_;
+    const Input &data_;
+    bool first_ = true;
+  public:
+    CsvOutput(const fs::path &path, const char *header, const Input &data, bool quaternion)
+        : stream_(path), data_(data) {
+        if (!stream_) throw std::runtime_error("Cannot write " + path.string());
+        stream_ << header;
+        if (data.base) {
+            stream_ << ",coordinate_frame";
+            for (const auto *name : origin_columns) stream_ << ',' << name;
+            if (quaternion) stream_ << ",qw,qx,qy,qz";
         }
-        const std::vector<InputRow> empty_group;
-        const auto &group = right->first == id ? right->second : empty_group;
-        std::vector<Observation> obs;
-        for (const auto &r : group)
-            obs.push_back({observation(r)});
-        if (!b.is_initialized) {
+        stream_ << '\n' << std::setprecision(17);
+    }
+    void text(const std::string &value) {
+        stream_ << (first_ ? "" : ",") << value;
+        first_ = false;
+    }
+    void numbers(std::initializer_list<double> values) {
+        for (double value : values) {
+            stream_ << (first_ ? "" : ",");
+            if (!std::isnan(value)) stream_ << value;
+            first_ = false;
+        }
+    }
+    void metadata() {
+        if (data_.base) {
+            text("base");
+            numbers({data_.origin[0], data_.origin[1], data_.origin[2], data_.origin[3]});
+        }
+    }
+    void end_row() { stream_ << '\n'; first_ = true; }
+    void finish() {
+        stream_.flush();
+        if (!stream_) throw std::runtime_error("CSV write failed");
+    }
+};
+void write_diagnostics(CsvOutput &out, double frame, double timestamp,
+                       const std::vector<Observation> &obs, const std::vector<Diagnostic> &diagnostics) {
+    for (const auto &d : diagnostics) {
+        const auto &z = obs[d.observation_index].Z_obs;
+        out.numbers({frame, double(d.observation_index)});
+        out.text(d.accepted ? "True" : "False");
+        out.numbers({double(d.armor_id), d.nis});
+        out.text(d.reason);
+        out.numbers({timestamp, z(2), z(3), double(d.best_candidate_id), d.distance_residual});
+        out.metadata();
+        out.end_row();
+    }
+}
+void run_predict_armor(const fs::path &path, const fs::path &output, const std::string &suffix, double horizon) {
+    const Input data = load(path);
+    ArmorEKF filter;
+    filter.base_frame = data.base;
+    auto usable = [&](const auto &frame) {
+        return std::any_of(frame.second.observations.begin(), frame.second.observations.end(),
+                           [&](const auto &o) { return filter.valid_observation(o.Z_obs); });
+    };
+    const auto first_valid = std::find_if(data.frames.begin(), data.frames.end(), usable);
+    if (data.frames.size() < 2 || first_valid == data.frames.end() || first_valid == std::prev(data.frames.end())) {
+        std::cout << "No prediction exported: at least two detected frames are required.\n";
+        return;
+    }
+    fs::create_directories(output);
+    CsvOutput results(output / ("armor_prediction_result_" + suffix + ".csv"),
+        "frame_id,timestamp,prediction_horizon_ms,prediction_timestamp,future_xc,future_yc,future_zc,"
+        "future_body_yaw,xc,yc,zc,vxc,vyc,vzc,w,xa,za,armor_id,body_yaw,pred_armor_yaw,obs_armor_yaw,"
+        "err_target_yaw,err_target_pitch,err_distance,err_armor_yaw,r,dl,dh,observation_count,accepted_count,"
+        "rejected_count,status", data, false);
+    CsvOutput logs(output / ("armor_observation_diagnostics_" + suffix + ".csv"),
+        "frame_id,observation_index,accepted,armor_id,nis,reason,timestamp,observed_distance,"
+        "observed_armor_yaw,best_candidate_id,distance_residual", data, false);
+    CsvOutput futures(output / ("armor_future_prediction_" + suffix + ".csv"),
+        "frame_id,timestamp,prediction_timestamp,prediction_horizon_ms,armor_id,x,y,z,"
+        "armor_orientation_yaw,source_status", data, true);
+    std::array<double, 4> squared_errors{};
+    std::array<size_t, 4> error_counts{};
+    double last = 0;
+    const std::vector<Observation> empty;
+    auto right = data.frames.begin();
+    for (long long frame = right->first, end = data.frames.rbegin()->first; frame <= end; ++frame) {
+        while (right->first < frame) ++right;
+        double timestamp = right->second.timestamp;
+        if (right->first != frame) {
+            const auto left = std::prev(right);
+            timestamp = left->second.timestamp + (timestamp - left->second.timestamp) *
+                double(frame - left->first) / double(right->first - left->first);
+        }
+        const auto &obs = right->first == frame ? right->second.observations : empty;
+        const double id = static_cast<double>(frame);
+        if (!filter.is_initialized) {
             int seed = -1;
             for (size_t i = 0; i < obs.size(); ++i)
-                if (b.valid_observation(obs[i].Z_obs) &&
-                    (seed < 0 || obs[i].Z_obs(2) < obs[seed].Z_obs(2)))
+                if (filter.valid_observation(obs[i].Z_obs) && (seed < 0 || obs[i].Z_obs(2) < obs[seed].Z_obs(2)))
                     seed = static_cast<int>(i);
-            if (seed < 0) {
-                for (size_t i = 0; i < obs.size(); ++i)
-                    logs.append({{"frame_id", id},
-                                 {"observation_index", double(i)},
-                                 {"accepted", false},
-                                 {"armor_id", -1.},
-                                 {"nis", std::numeric_limits<double>::quiet_NaN()},
-                                 {"reason", std::string("invalid")}});
-                continue;
+            if (seed >= 0) {
+                filter.initialize(obs[seed].Z_obs);
+                last = timestamp;
             }
-            b.initialize(obs[seed].Z_obs);
-            last = ts;
+            std::vector<Diagnostic> diagnostics(obs.size());
             for (size_t i = 0; i < obs.size(); ++i) {
-                bool selected = static_cast<int>(i) == seed;
-                logs.append({{"frame_id", id},
-                             {"observation_index", double(i)},
-                             {"accepted", selected},
-                             {"armor_id", selected ? 0. : -1.},
-                             {"nis", std::numeric_limits<double>::quiet_NaN()},
-                             {"reason",
-                              std::string(selected ? "initialization" : "initialization_unused")}});
+                auto &d = diagnostics[i];
+                d.observation_index = i;
+                d.accepted = static_cast<int>(i) == seed;
+                d.armor_id = d.accepted ? 0 : -1;
+                d.reason = seed < 0 ? "invalid" : (d.accepted ? "initialization" : "initialization_unused");
             }
+            write_diagnostics(logs, id, timestamp, obs, diagnostics);
             continue;
         }
-        b.predict((ts - last) / 1000);
-        last = ts;
-        Eigen::MatrixXd prior = b.X;
-        auto [matches, diagnostics] = b.update_multi(obs);
-        for (const auto &d : diagnostics) {
-            const auto &r = group[d.observation_index];
-            Row row = {{"frame_id", id},
-                       {"timestamp", ts},
-                       {"observed_distance", number(r, "distance")},
-                       {"observed_armor_yaw", number(r, "armor_orientation_yaw")},
-                       {"observation_index", double(d.observation_index)},
-                       {"accepted", d.accepted},
-                       {"armor_id", double(d.armor_id)},
-                       {"nis", d.nis},
-                       {"reason", d.reason},
-                       {"best_candidate_id", double(d.best_candidate_id)},
-                       {"distance_residual", d.distance_residual}};
-            logs.append(row);
-        }
-        int aid = 0;
-        Eigen::MatrixXd pred, errors = Eigen::MatrixXd::Constant(4, 1, std::numeric_limits<double>::quiet_NaN());
-        double obs_yaw = std::numeric_limits<double>::quiet_NaN();
+        filter.predict((timestamp - last) / 1000);
+        last = timestamp;
+        const ArmorEKF::State prior = filter.X;
+        const auto [matches, diagnostics] = filter.update_multi(obs);
+        write_diagnostics(logs, id, timestamp, obs, diagnostics);
+        int armor_id = -1;
+        Eigen::Vector4d plate = Eigen::Vector4d::Constant(missing), errors = plate;
+        double observed_yaw = missing;
         if (!matches.empty()) {
-            const auto &m =
-                *std::min_element(matches.begin(), matches.end(), [](const auto &a, const auto &c) {
-                    return a.Z_obs(2) < c.Z_obs(2);
-                });
-            aid = m.armor_id;
-            pred = m.predicted;
-            errors = m.residual * (-1);
-            obs_yaw = m.Z_obs(3);
-        } else {
-            pred = b.h(prior, 0);
-            for (int i = 1; i < 4; ++i) {
-                auto candidate = b.h(prior, i);
-                if (candidate(2) < pred(2)) {
-                    aid = i;
-                    pred = std::move(candidate);
-                }
-            }
+            const auto &match = *std::min_element(matches.begin(), matches.end(),
+                [](const auto &a, const auto &b) { return a.Z_obs(2) < b.Z_obs(2); });
+            armor_id = match.armor_id;
+            plate = filter.plate_pose(prior, armor_id);
+            errors = -match.residual;
+            observed_yaw = match.Z_obs(3);
         }
-        double ri = prior(8) + (aid % 2 ? prior(9) : 0);
-        auto forecast = b.forecast(horizon / 1000);
+        const auto forecast = filter.forecast(horizon / 1000);
         const auto &f = forecast.state;
-        std::string status = matches.empty() ? "prediction_only" : "updated";
-        for (int i = 0; i < 4; ++i)
-            futures.append({{"frame_id", id},
-                            {"timestamp", ts},
-                            {"prediction_timestamp", ts + horizon},
-                            {"prediction_horizon_ms", horizon},
-                            {"armor_id", double(i)},
-                            {"x", forecast.plates(i, 0)},
-                            {"y", forecast.plates(i, 1)},
-                            {"z", forecast.plates(i, 2)},
-                            {"armor_orientation_yaw", forecast.plates(i, 3)},
-                            {"source_status", status}});
-        results.append({{"frame_id", id},
-                        {"timestamp", ts},
-                        {"prediction_horizon_ms", horizon},
-                        {"prediction_timestamp", ts + horizon},
-                        {"future_xc", f(0)},
-                        {"future_yc", f(2)},
-                        {"future_zc", f(4)},
-                        {"future_body_yaw", f(6)},
-                        {"xc", b.X(0)},
-                        {"yc", b.X(2)},
-                        {"zc", b.X(4)},
-                        {"vxc", b.X(1)},
-                        {"vyc", b.X(3)},
-                        {"vzc", b.X(5)},
-                        {"w", b.X(7)},
-                        {"xa", prior(0) + ri * std::sin(pred(3))},
-                        {"za", prior(4) - ri * std::cos(pred(3))},
-                        {"armor_id", double(aid)},
-                        {"body_yaw", b.X(6)},
-                        {"pred_armor_yaw", pred(3)},
-                        {"obs_armor_yaw", obs_yaw},
-                        {"err_target_yaw", errors(0)},
-                        {"err_target_pitch", errors(1)},
-                        {"err_distance", errors(2)},
-                        {"err_armor_yaw", errors(3)},
-                        {"r", b.X(8)},
-                        {"dl", b.X(9)},
-                        {"dh", b.X(10)},
-                        {"observation_count", double(obs.size())},
-                        {"accepted_count", double(matches.size())},
-                        {"rejected_count", double(obs.size() - matches.size())},
-                        {"status", status}});
-    }
-    if (results.rows.empty()) {
-        empty_message();
-        return std::nullopt;
-    }
-    if (base_frame) {
-        mark_base(results, data.front());
-        mark_base(logs, data.front());
-        mark_base(futures, data.front());
-        futures.columns.insert(futures.columns.end(), {"qw", "qx", "qy", "qz"});
-        for (auto &row : futures.rows) {
-            const auto angle = std::find_if(row.begin(), row.end(),
-                [](const auto &v) { return v.first == "armor_orientation_yaw"; });
-            const double yaw = std::get<double>(angle->second);
-            row.push_back({"qw", std::cos(yaw / 2)});
-            row.push_back({"qx", 0.});
-            row.push_back({"qy", -std::sin(yaw / 2)});
-            row.push_back({"qz", 0.});
+        const auto &s = filter.X;
+        const std::string status = matches.empty() ? "prediction_only" : "updated";
+        for (int i = 0; i < 4; ++i) {
+            const double yaw = forecast.plates(i, 3);
+            futures.numbers({id, timestamp, timestamp + horizon, horizon, double(i), forecast.plates(i, 0),
+                             forecast.plates(i, 1), forecast.plates(i, 2), yaw});
+            futures.text(status);
+            futures.metadata();
+            if (data.base) futures.numbers({std::cos(yaw / 2), 0, -std::sin(yaw / 2), 0});
+            futures.end_row();
         }
+        results.numbers({id, timestamp, horizon, timestamp + horizon, f(0), f(2), f(4), f(6),
+                        s(0), s(2), s(4), s(1), s(3), s(5), s(7), plate(0), plate(2), double(armor_id),
+                        s(6), plate(3), observed_yaw, errors(0), errors(1), errors(2), errors(3),
+                        s(8), s(9), s(10), double(obs.size()), double(matches.size()), double(obs.size() - matches.size())});
+        results.text(status);
+        results.metadata();
+        results.end_row();
+        for (size_t i = 0; i < squared_errors.size(); ++i)
+            if (!std::isnan(errors(static_cast<Eigen::Index>(i)))) {
+                squared_errors[i] += errors(static_cast<Eigen::Index>(i)) * errors(static_cast<Eigen::Index>(i));
+                ++error_counts[i];
+            }
     }
-    logs.to_csv(out / ("armor_observation_diagnostics_" + suffix + ".csv"));
-    results.to_csv(out / ("armor_prediction_result_" + suffix + ".csv"));
-    futures.to_csv(out / ("armor_future_prediction_" + suffix + ".csv"));
-    metrics(results, out / ("armor_rmse_result_" + suffix + ".txt"),
-            {"err_target_yaw", "err_target_pitch", "err_distance", "err_armor_yaw"},
-            {"RMSE_target_yaw", "RMSE_target_pitch", "RMSE_distance", "RMSE_armor_yaw"},
-            {"rad", "rad", "m", "rad"}, true);
-    return results;
+    results.finish();
+    logs.finish();
+    futures.finish();
+    std::ofstream metrics(output / ("armor_rmse_result_" + suffix + ".txt"));
+    if (!metrics) throw std::runtime_error("Cannot write RMSE file");
+    metrics << "Metrics: prior residuals of accepted observations only; not ground-truth error.\n"
+            << std::fixed << std::setprecision(6);
+    constexpr std::array<const char *, 4> names = {"RMSE_target_yaw", "RMSE_target_pitch", "RMSE_distance", "RMSE_armor_yaw"},
+                                         units = {"rad", "rad", "m", "rad"};
+    for (size_t i = 0; i < names.size(); ++i)
+        metrics << names[i] << ": " << (error_counts[i] ? std::sqrt(squared_errors[i] / double(error_counts[i])) : missing)
+                << ' ' << units[i] << '\n';
+    metrics.flush();
+    if (!metrics) throw std::runtime_error("RMSE write failed");
 }
-} // namespace predictor
+} // namespace
 
 #ifndef PREDICTOR_DEFAULT_ROOT
 #define PREDICTOR_DEFAULT_ROOT "."
 #endif
 int main(int argc, char **argv) {
-    using namespace predictor;
-    namespace fs = std::filesystem;
     std::string suffix = "1";
     fs::path root = PREDICTOR_DEFAULT_ROOT, input, output;
     double horizon = 50;
     try {
         for (int i = 1; i < argc; ++i) {
-            std::string a = argv[i];
+            const std::string argument = argv[i];
             auto value = [&]() {
-                if (i + 1 >= argc)
-                    throw std::invalid_argument("Missing value for " + a);
+                if (i + 1 >= argc) throw std::invalid_argument("Missing value for " + argument);
                 return std::string(argv[++i]);
             };
-            if (a == "--suffix")
-                suffix = value();
-            else if (a == "--input")
-                input = fs::u8path(value());
-            else if (a == "--output-dir")
-                output = fs::u8path(value());
-            else if (a == "--root")
-                root = fs::u8path(value());
-            else if (a == "--prediction-horizon-ms") {
-                std::string s = value();
-                size_t n;
-                horizon = std::stod(s, &n);
-                if (n != s.size())
-                    throw std::invalid_argument("Invalid horizon");
-            } else if (a == "--help" || a == "-h") {
-                std::cout << "Options: --suffix VALUE --input CSV --output-dir DIR "
-                             "--prediction-horizon-ms MS --root DIR\n";
+            if (argument == "--suffix") suffix = value();
+            else if (argument == "--input") input = fs::u8path(value());
+            else if (argument == "--output-dir") output = fs::u8path(value());
+            else if (argument == "--root") root = fs::u8path(value());
+            else if (argument == "--prediction-horizon-ms") horizon = number(value());
+            else if (argument == "--help" || argument == "-h") {
+                std::cout << "Options: --suffix VALUE --input CSV --output-dir DIR --prediction-horizon-ms MS --root DIR\n";
                 return 0;
-            } else
-                throw std::invalid_argument("Unknown argument: " + a);
+            } else throw std::invalid_argument("Unknown argument: " + argument);
         }
         if (!std::isfinite(horizon) || horizon < 0)
             throw std::invalid_argument("--prediction-horizon-ms must be finite and nonnegative");
-        if (input.empty())
-            input = root / "data" / ("pose_raw_" + suffix + ".csv");
-        if (output.empty())
-            output = root / "results";
-        if (!fs::is_regular_file(input))
-            throw std::invalid_argument("Input CSV does not exist or is not a file: " + input.string());
-        predictor::run_predict_armor(input, output, suffix, horizon);
+        if (input.empty()) input = root / "data" / ("pose_raw_" + suffix + ".csv");
+        if (output.empty()) output = root / "results";
+        if (!fs::is_regular_file(input)) throw std::invalid_argument("Input CSV does not exist or is not a file: " + input.string());
+        run_predict_armor(input, output, suffix, horizon);
         return 0;
-    } catch (const std::exception &e) {
-        std::cerr << "error: " << e.what() << '\n';
+    } catch (const std::exception &error) {
+        std::cerr << "error: " << error.what() << '\n';
         return 2;
     }
 }

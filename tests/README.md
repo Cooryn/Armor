@@ -57,6 +57,12 @@ EKF 统计窗口：视频 1 为 2–25 秒，视频 2 为 2–10 秒；
 `test_*.py` 的滤波器测试验证参考实现；原生 C++ 行为由 `tests/test_predictors.cpp`
 及 `verify_predictor_equivalence.py` 联合验证。`run.ps1` 会运行全部三部分。
 
+基础预测器的参考实现已同步为六维 `SinglePlateEKF`。原生测试用有限差分检查解析雅可比，
+并验证球坐标初始化、零创新、角度跨界、变步长/漏帧轨迹、无效观测和协方差正定性。
+等价验证保留 CSV/TXT 格式检查，基础预测器不再接收噪声模式或预测提前量参数。
+
+三种模型的矩阵尺寸由 Eigen 类型约束。原生测试将 1–4 块板的联合更新、NIS 和极坐标增益与独立的动态矩阵 LU 计算比较，并检查协方差正定性及奇异系统报错；Python 参考保留 NumPy，以独立验证 Eigen 实现。
+
 独立验证（仓库根目录，先构建 predictor 并生成两份 pose_raw CSV）：
 
 ```powershell

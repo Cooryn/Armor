@@ -122,8 +122,16 @@ class ArmorTrackingTests(unittest.TestCase):
                 row = result[result.frame_id == frame].iloc[0]
                 self.assertEqual(row.status, 'prediction_only')
                 self.assertTrue(np.isnan(row.err_distance))
+                self.assertEqual(row.armor_id, -1)
+                self.assertTrue(row[['xa', 'za', 'pred_armor_yaw', 'obs_armor_yaw']].isna().all())
             diagnostics = pd.read_csv(Path(root) / 'armor_observation_diagnostics_1.csv')
             self.assertFalse(diagnostics[diagnostics.frame_id == 5].accepted.iloc[0])
+            initial = diagnostics[diagnostics.frame_id == 0].iloc[0]
+            self.assertEqual(initial.timestamp, 0)
+            self.assertAlmostEqual(initial.observed_distance, measurement(0)[2, 0])
+            future = pd.read_csv(Path(root) / 'armor_future_prediction_1.csv')
+            self.assertTrue((future.groupby('frame_id').armor_id.nunique() == 4).all())
+            self.assertTrue(np.isfinite(future[['x', 'y', 'z', 'armor_orientation_yaw']]).all().all())
 
 
 if __name__ == '__main__':

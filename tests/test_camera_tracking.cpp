@@ -7,7 +7,8 @@ int main() {
     try {
         CameraTracking live;
         predictor::ArmorEKF reference;
-        const auto state = predictor::ArmorEKF::make_vector({.1,0,.2,0,3,0,0,0,.26,0,0});
+        predictor::ArmorEKF::State state;
+        state << .1,0,.2,0,3,0,0,0,.26,0,0;
         const auto observation = reference.h(state,0);
         live.update({},0);
         check(!live.visible() && !live.command().control_valid, "empty first frame");

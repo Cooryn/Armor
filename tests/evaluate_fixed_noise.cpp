@@ -8,7 +8,7 @@
 using namespace predictor;
 struct Frame {
     double time;
-    Eigen::MatrixXd truth;
+    ArmorEKF::State truth = ArmorEKF::State::Zero();
     std::vector<Observation> observations;
 };
 struct Sequence { std::string name; bool synthetic; std::vector<Frame> frames; };
@@ -32,11 +32,10 @@ int main(int argc, char **argv) {
                 int n;
                 input >> f.time >> n;
                 if (s.synthetic) {
-                    f.truth = Eigen::MatrixXd::Zero(11, 1);
                     for (int i = 0; i < 11; ++i) input >> f.truth(i);
                 }
                 for (int k = 0; k < n; ++k) {
-                    Eigen::MatrixXd z(4, 1);
+                    ArmorEKF::Measurement z = ArmorEKF::Measurement::Zero();
                     for (int j = 0; j < 4; ++j) input >> z(j);
                     f.observations.push_back({z});
                 }
@@ -50,9 +49,9 @@ int main(int argc, char **argv) {
         while (candidates >> name >> v0 >> v1 >> v2 >> v3) {
             for (const auto &s : sequences) {
                 ArmorEKF b;
-                b.R = ArmorEKF::diagonal({v0, v1, v2, v3});
+                b.R = Eigen::Vector4d(v0, v1, v2, v3).asDiagonal();
                 std::array<Stats, 2> stats{};
-                Eigen::MatrixXd previous;
+                std::optional<ArmorEKF::State> previous;
                 double last = 0;
                 for (size_t i = 0; i < s.frames.size(); ++i) {
                     const auto &f = s.frames[i];
@@ -70,11 +69,11 @@ int main(int argc, char **argv) {
                     m.accepted += static_cast<int>(result.first.size());
                     m.rejected += static_cast<int>(f.observations.size() - result.first.size());
                     if (i > 30) {
-                        if (previous.size()) {
+                        if (previous) {
                             double distance = 0;
-                            for (int axis : {0, 2, 4}) distance += std::pow(b.X(axis) - previous(axis), 2);
+                            for (int axis : {0, 2, 4}) distance += std::pow(b.X(axis) - (*previous)(axis), 2);
                             m.center_step += distance;
-                            m.w_step += std::pow(b.X(7) - previous(7), 2);
+                            m.w_step += std::pow(b.X(7) - (*previous)(7), 2);
                             ++m.steps;
                         }
                         size_t future = i + 1;
@@ -84,7 +83,7 @@ int main(int argc, char **argv) {
                             auto forecast = b.forecast(target.time - f.time);
                             for (const auto &o : target.observations) {
                                 if (!b.valid_observation(o.Z_obs)) continue;
-                                Eigen::MatrixXd residual;
+                                ArmorEKF::Measurement residual;
                                 double smallest = std::numeric_limits<double>::infinity();
                                 for (int id = 0; id < 4; ++id) {
                                     auto r = ArmorEKF::angular_residual(o.Z_obs, b.h(forecast.state, id));
@@ -100,7 +99,7 @@ int main(int argc, char **argv) {
                                 // Ground truth is scored at exactly 50 ms; recordings use the next available image.
                                 const auto &left = s.frames[future - 1];
                                 double fraction = (f.time + .05 - left.time) / (target.time - left.time);
-                                Eigen::MatrixXd truth = left.truth + fraction * (target.truth - left.truth);
+                                const ArmorEKF::State truth = left.truth + fraction * (target.truth - left.truth);
                                 const auto lead = b.forecast(.05);
                                 for (int axis : {0, 2, 4}) m.center_truth += std::pow(lead.state(axis) - truth(axis), 2);
                                 double error = 0;

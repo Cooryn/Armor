@@ -361,10 +361,14 @@ PnP 与叠加边框采用灯条中心间距 **135 mm**、灯条长度 **56 mm**�
 
 三个预测程序均可单独编译一个 `.cpp` 后运行，无需链接共用预测器库。也可在自己的程序中直接使用 Eigen 滤波器头文件：
 
+三个模型的状态、协方差、观测和雅可比均使用固定尺寸 Eigen 类型：基础单板为 6 维状态 / 3 维观测，极坐标为 9 维状态 / 4 维观测，装甲板为 11 维状态 / 4 维单板观测。四板联合更新按实际关联数量组合 4–16 维观测，矩阵存储上限固定为 16；卡尔曼增益和 NIS 直接通过 Eigen LDLT 求解，不构造逆矩阵，也不切换备用求解器。向量初始化使用 Eigen 构造函数或 `<<`，对角矩阵使用 `asDiagonal()`。
+
 ```cpp
 #include "predictor_armor.hpp"
 
 predictor::ArmorEKF ekf; // 默认使用固定观测噪声
+predictor::ArmorEKF::Measurement z(0, 0, 3, 0); // yaw, pitch, distance, plate yaw
+ekf.initialize(z);
 // 纯滤波器：initialize / predict / update_multi / forecast
 // CSV 批处理通过 predictor_armor.exe --suffix 1 运行。
 ```
@@ -510,6 +514,11 @@ predictor::ArmorEKF ekf; // 默认使用固定观测噪声
 
 ## 9. 离线视频画面说明
 
+离线 `predictor_armor` 在 `prediction_only` 帧中不再挑选一块最近预测板填充关联结果：
+`armor_id=-1`，`xa,za,pred_armor_yaw,obs_armor_yaw` 和观测残差留空。
+车体状态和 `armor_future_prediction_*.csv` 的四块板仍按模型正常预测。
+初始化诊断也记录实际时间戳、观测距离和板朝向，便于与原始数据对齐。
+
 `armor_video_*.mp4` 保留原画面尺寸和帧率，右侧增加 340 像素信息栏，不复制音轨。支持的画面尺寸下，侧栏底部显示目标局部放大图。
 
 | 标记 | 含义 |
@@ -530,7 +539,7 @@ predictor::ArmorEKF ekf; // 默认使用固定观测噪声
 
 | 模型 | 状态 | 运行 / 绘图 |
 | --- | --- | --- |
-| 基础 6 维模型 | 位置和速度 `[x, vx, y, vy, z, vz]` | `include/predictor.hpp` / `plot.basic` |
+| 单板 6 维 EKF | 板的位置和速度 `[x, vx, y, vy, z, vz]` | `include/predictor.hpp` / `plot.basic` |
 | 极坐标 9 维模型 | 中心、速度、车体朝向、角速度、半径 | `include/predictor_polar.hpp` / `plot.polar` |
 
 两个 C++ 程序默认使用编号 `2`，可通过 `--suffix`、`--input`、`--output-dir` 指定输入与输出。Python 的 `plot.basic` 和 `plot.polar` 仅负责读取结果并绘图。
@@ -544,6 +553,18 @@ predictor::ArmorEKF ekf; // 默认使用固定观测噪声
 ```
 
 基础模型导出 `prediction_result_*.csv`、`rmse_result_*.txt`；极坐标模型导出 `polar_prediction_result_*.csv`、`polar_rmse_result_*.txt`。基础模型与完整装甲板模型的俯视图同名，比较时应指定不同图像输出目录。
+
+`predictor.exe` 使用单板匀速 EKF，观测为 `target_yaw,target_pitch,distance`，单位分别为 rad、rad、m；
+通过非线性球坐标观测、解析雅可比及 Joseph 协方差更新估计位置和速度。首次有效观测初始化位置，速度置零。
+固定观测协方差为 `diag(0.0016,0.0016,0.16)`，是新模型的初值，并非该单板模型的独立调优结论。
+过程噪声 `q=0.01`，每轴 `[位置,速度]` 的噪声块为 `q * [[dt⁴/4,dt³/2],[dt³/2,dt²]]`，初始协方差为 `10I`。
+
+每帧只使用距离最近的有效观测，距离相同保留第一条；这可能在不同实体板之间切换，不提供目标身份关联。
+无效观测被跳过，非法帧号或时间戳报错；缺帧使用源时间戳的实际间隔，非正间隔使用 `1/30` 秒。
+结果记录当前帧观测更新前的预测，RMSE 表示预测与观测的残差，不是定位真值误差。
+`x,y,z` 保留用于误差统计，`target_pitch` 现在也是必需输入列；现有检测 CSV 无需转换。
+基础预测器支持 `--suffix`、`--input`、`--output-dir`、`--root`，已移除无作用的 `--fixed-noise` 和 `--prediction-horizon-ms`。
+实时 `camera_tracking` 仍使用完整装甲板 EKF。
 
 ## 11. 测试与常见问题
 

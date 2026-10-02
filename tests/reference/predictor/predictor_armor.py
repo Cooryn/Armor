@@ -31,6 +31,7 @@ class ArmorEKF:
         self.pair_yaw_tolerance = pair_yaw_tolerance
         self.max_distance_error = max_distance_error
         self.is_initialized = False
+        self.base_frame = False
 
     def predict(self, dt):
         """1. 建立车体中心运动模型（过程噪声按 dt 缩放）"""
@@ -144,11 +145,10 @@ class ArmorEKF:
         residual[[0, 1, 3], 0] = wrap_to_pi(residual[[0, 1, 3], 0])
         return residual
 
-    @staticmethod
-    def valid_observation(z):
+    def valid_observation(self, z):
         return (z.shape == (4, 1) and np.isfinite(z).all()
                 and z[2, 0] > 0 and abs(z[1, 0]) < np.pi / 2
-                and abs(z[0, 0]) < np.pi / 2)
+                and (self.base_frame or abs(z[0, 0]) < np.pi / 2))
 
     def initialize(self, z):
         if not self.valid_observation(z):

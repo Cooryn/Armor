@@ -1,167 +1,185 @@
-import pandas as pd
+"""Independent NumPy reference for the six-state single-plate EKF."""
+from pathlib import Path
+
 import numpy as np
-import os
+import pandas as pd
 
-FPS = 30.0  # 视频帧率，与 main.cpp 的 VideoWriter 一致
+FPS = 30.0
+INPUT_COLUMNS = ["frame_id", "timestamp", "x", "y", "z", "target_yaw", "target_pitch", "distance"]
+ORIGIN_COLUMNS = ["base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"]
 
-# 角度归一化到 [-pi, pi]
+
 def wrap_to_pi(angle):
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
-class BasicPredictor:
+
+class SinglePlateEKF:
+    geometry_epsilon = 1e-6
+
     def __init__(self):
-        # state = [x, vx, y, vy, z, vz]
-        self.state = np.zeros((6, 1))
-        
-        # 状态转移矩阵 F (匀速模型)
-        self.F = np.eye(6)
-        
-        # 观测矩阵 H
-        self.H = np.array([
-            [1, 0, 0, 0, 0, 0],
-            [0, 0, 1, 0, 0, 0],
-            [0, 0, 0, 0, 1, 0]
-        ])
-        
+        self.state = np.zeros(6)
         self.P = np.eye(6) * 10.0
-        self.q = 0.01                # 加速度噪声方差 (m/s^2)^2；本数据目标近乎静止，取小值更平滑
-        self.Q = np.zeros((6, 6))    # 占位，predict 时按标准 CV 模型重建
-        self.R = np.eye(3) * 0.1     # 观测噪声；一步预测误差指标下，偏大 R 平滑后误差更小
+        self.R = np.diag([0.0016, 0.0016, 0.16])
         self.is_initialized = False
 
+    @classmethod
+    def valid_observation(cls, observation):
+        z = np.asarray(observation)
+        return (z.shape == (3,) and np.isfinite(z).all() and z[2] > cls.geometry_epsilon
+                and abs(z[1]) < np.pi / 2 and z[2] * np.cos(z[1]) > cls.geometry_epsilon)
+
+    @classmethod
+    def valid_geometry(cls, state):
+        return (np.isfinite(state).all() and np.hypot(state[0], state[4]) > cls.geometry_epsilon
+                and np.hypot(np.hypot(state[0], state[4]), state[2]) > cls.geometry_epsilon)
+
+    @staticmethod
+    def h(state):
+        x, y, z = state[::2]
+        horizontal = np.hypot(x, z)
+        return np.array([np.arctan2(x, z), np.arctan2(y, horizontal), np.hypot(horizontal, y)])
+
+    @classmethod
+    def jacobian(cls, state):
+        if not cls.valid_geometry(state):
+            raise ValueError("Singular single-plate observation geometry")
+        x, y, z = state[::2]
+        horizontal = np.hypot(x, z)
+        distance = np.hypot(horizontal, y)
+        # First differentiate in xyz, then place the columns into the six-state Jacobian.
+        position_jacobian = np.array([
+            [z / horizontal**2, 0.0, -x / horizontal**2],
+            [-x * y / (horizontal * distance**2), horizontal / distance**2,
+             -y * z / (horizontal * distance**2)],
+            [x / distance, y / distance, z / distance],
+        ])
+        H = np.zeros((3, 6))
+        H[:, ::2] = position_jacobian
+        return H
+
+    def initialize(self, observation):
+        if not self.valid_observation(observation):
+            raise ValueError("Invalid single-plate initialization observation")
+        yaw, pitch, distance = observation
+        horizontal = distance * np.cos(pitch)
+        self.state = np.array([horizontal * np.sin(yaw), 0.0, distance * np.sin(pitch), 0.0,
+                               horizontal * np.cos(yaw), 0.0])
+        self.P = np.eye(6) * 10.0
+        self.is_initialized = True
+
     def predict(self, dt):
-        self.F[0, 1] = dt
-        self.F[2, 3] = dt
-        self.F[4, 5] = dt
-
-        # 标准 CV（白噪声加速度）模型的过程噪声，随 dt 变化：
-        # 每个轴 [x, vx] 分块 Q_axis = q * [[dt^4/4, dt^3/2], [dt^3/2, dt^2]]
+        if not self.is_initialized or not np.isfinite(dt) or dt < 0:
+            raise ValueError("Prediction requires initialization and finite nonnegative dt")
+        F = np.eye(6)
+        F[np.arange(0, 6, 2), np.arange(1, 6, 2)] = dt
         dt2 = dt * dt
-        dt3 = dt2 * dt
-        dt4 = dt2 * dt2
-        block = np.array([[dt4 / 4.0, dt3 / 2.0],
-                          [dt3 / 2.0, dt2]]) * self.q
-        self.Q[:] = 0.0
-        self.Q[0:2, 0:2] = block
-        self.Q[2:4, 2:4] = block
-        self.Q[4:6, 4:6] = block
+        block = 0.01 * np.array([[dt2 * dt2 / 4, dt2 * dt / 2], [dt2 * dt / 2, dt2]])
+        state = F @ self.state
+        covariance = F @ self.P @ F.T + np.kron(np.eye(3), block)
+        if not np.isfinite(state).all() or not np.isfinite(covariance).all():
+            raise ValueError("Non-finite single-plate prediction")
+        self.state, self.P = state, covariance
 
-        predicted_state = np.dot(self.F, self.state)
-        predicted_P = np.dot(np.dot(self.F, self.P), self.F.T) + self.Q
-        return predicted_state, predicted_P
+    def update(self, observation):
+        if (not self.is_initialized or not self.valid_observation(observation)
+                or not self.valid_geometry(self.state)):
+            return False
+        H = self.jacobian(self.state)
+        residual = observation - self.h(self.state)
+        residual[:2] = wrap_to_pi(residual[:2])
+        S = H @ self.P @ H.T + self.R
+        try:
+            np.linalg.cholesky(S)
+            K = np.linalg.solve(S, H @ self.P).T
+        except np.linalg.LinAlgError:
+            return False
+        state = self.state + K @ residual
+        A = np.eye(6) - K @ H
+        covariance = A @ self.P @ A.T + K @ self.R @ K.T
+        covariance = (covariance + covariance.T) / 2
+        if not np.isfinite(state).all() or not np.isfinite(covariance).all():
+            return False
+        self.state, self.P = state, covariance
+        return True
 
-    def update(self, Z, predicted_state, predicted_P):
-        S = np.dot(np.dot(self.H, predicted_P), self.H.T) + self.R
-        # K = P H^T S^-1，等价于解 S K^T = H P，避免直接求逆
-        K = np.linalg.solve(S, np.dot(self.H, predicted_P)).T
-        y = Z - np.dot(self.H, predicted_state)
-        self.state = predicted_state + np.dot(K, y)
-        I = np.eye(6)
-        self.P = np.dot((I - np.dot(K, self.H)), predicted_P)
 
 def run_predict(csv_input_path, output_dir, suffix="1"):
-    if not os.path.exists(csv_input_path):
-        print(f"错误: 找不到输入文件 {csv_input_path}")
-        return
-
-    os.makedirs(output_dir, exist_ok=True)
     data = pd.read_csv(csv_input_path)
+    missing = set(INPUT_COLUMNS) - set(data)
+    if missing:
+        raise ValueError(f"Missing CSV columns: {sorted(missing)}")
+    data[INPUT_COLUMNS] = data[INPUT_COLUMNS].apply(pd.to_numeric, errors="raise").astype(float)
+    ids = data.frame_id.to_numpy()
+    timestamps = data.timestamp.to_numpy()
+    if (not np.isfinite(ids).all() or (ids < 0).any() or (ids != np.floor(ids)).any()
+            or not np.isfinite(timestamps).all() or (timestamps < 0).any()):
+        raise ValueError("Invalid frame_id or timestamp")
+    base = False
+    origin = {}
+    if "coordinate_frame" in data and not data.empty:
+        frames = set(data.coordinate_frame)
+        if not frames <= {"camera", "base"} or len(frames) != 1:
+            raise ValueError("Unknown or mixed input coordinate_frame")
+        base = frames == {"base"}
+        if base:
+            if not set(ORIGIN_COLUMNS) <= set(data):
+                raise ValueError("Missing base origin metadata")
+            metadata = data[ORIGIN_COLUMNS].apply(pd.to_numeric, errors="raise").to_numpy()
+            if (not np.isfinite(metadata).all() or not (metadata == metadata[0]).all()
+                    or metadata[0, 0] < 0):
+                raise ValueError("Missing or mixed base origin metadata")
+            origin = dict(zip(ORIGIN_COLUMNS, metadata[0]))
 
-    predictor = BasicPredictor()
+    predictor = SinglePlateEKF()
     results = []
     last_timestamp = None
-
-    # 按帧遍历数据
-    for frame_id, group in data.groupby('frame_id'):
-        # 基础处理：如果画面有多块装甲板，只取距离最近的一块作为追踪目标
-        closest_armor = group.sort_values(by='distance').iloc[0]
-
-        observed_x = closest_armor['x']
-        observed_y = closest_armor['y']
-        observed_z = closest_armor['z']
-        observed_yaw = closest_armor['target_yaw']
-        observed_distance = closest_armor['distance']
-
-
-        Z = np.array([[observed_x], [observed_y], [observed_z]])
-
-        # Source-video timestamps in milliseconds; regenerate legacy CSV files.
-        if last_timestamp is None:
-            dt = 1.0 / FPS
-        else:
-            dt = (closest_armor['timestamp'] - last_timestamp) / 1000.0
-            if dt <= 0:
-                dt = 1.0 / FPS
-        last_timestamp = closest_armor['timestamp']
-
-        # 初始化第一帧
-        if not predictor.is_initialized:
-            predictor.state = np.array([[observed_x], [0], [observed_y], [0], [observed_z], [0]])
-            predictor.is_initialized = True
+    for frame_id, group in data.groupby("frame_id"):
+        valid = group[np.isfinite(group[["x", "y", "z"]]).all(axis=1)
+                      & group.apply(lambda r: predictor.valid_observation(
+                          r[["target_yaw", "target_pitch", "distance"]].to_numpy(dtype=float)), axis=1)]
+        if valid.empty:
             continue
-
-
-        # 1. 根据第 k 帧状态预测第 k+1 帧状态
-        predicted_state, predicted_P = predictor.predict(dt)
-
-        predicted_x = predicted_state[0, 0]
-        predicted_y = predicted_state[2, 0]
-        predicted_z = predicted_state[4, 0]
-
-        # 根据推导出的三维位置计算偏航角和距离
-        predicted_yaw = np.arctan2(predicted_x, predicted_z)
-        predicted_distance = np.sqrt(predicted_x**2 + predicted_y**2 + predicted_z**2)
-
-        # 2 & 4. 使用第 k+1 帧 PnP 观测进行比较，计算预测误差
-        error_x = predicted_x - observed_x
-        error_z = predicted_z - observed_z
-        error_yaw = wrap_to_pi(predicted_yaw - observed_yaw)
-        error_distance = predicted_distance - observed_distance
-
-        # 3. 输出一帧预测结果
+        row = valid.sort_values("distance", kind="stable").iloc[0]
+        observation = row[["target_yaw", "target_pitch", "distance"]].to_numpy(dtype=float)
+        dt = (row.timestamp - last_timestamp) / 1000 if last_timestamp is not None else 1 / FPS
+        if dt <= 0:
+            dt = 1 / FPS
+        last_timestamp = row.timestamp
+        if not predictor.is_initialized:
+            predictor.initialize(observation)
+            continue
+        predictor.predict(dt)
+        state = predictor.state
+        predicted = predictor.h(state)
         results.append({
-            'frame_id': frame_id,
-            'predicted_x': predicted_x, 'observed_x': observed_x, 'error_x': error_x,
-            'predicted_z': predicted_z, 'observed_z': observed_z, 'error_z': error_z,
-            'predicted_yaw': predicted_yaw, 'observed_yaw': observed_yaw, 'error_yaw': error_yaw,
-            'predicted_distance': predicted_distance, 'observed_distance': observed_distance, 'error_distance': error_distance
+            "frame_id": frame_id,
+            "predicted_x": state[0], "observed_x": row.x, "error_x": state[0] - row.x,
+            "predicted_z": state[4], "observed_z": row.z, "error_z": state[4] - row.z,
+            "predicted_yaw": predicted[0], "observed_yaw": observation[0],
+            "error_yaw": wrap_to_pi(predicted[0] - observation[0]),
+            "predicted_distance": predicted[2], "observed_distance": observation[2],
+            "error_distance": predicted[2] - observation[2],
         })
+        predictor.update(observation)
 
-        # 更新滤波器
-        predictor.update(Z, predicted_state, predicted_P)
-
-    # ==========================================
-    # 结果结算与导出
-    # ==========================================
     if not results:
         print("No prediction exported: at least two detected frames are required.")
-        return
-    res_df = pd.DataFrame(results)
-
-    # 导出 CSV
-    csv_out_path = os.path.join(output_dir, f'prediction_result_{suffix}.csv')
-    res_df.to_csv(csv_out_path, index=False)
-    print(f"已输出预测结果: {csv_out_path}")
-
-    # 5. 计算 RMSE
-    rmse_x = np.sqrt(np.mean(res_df['error_x']**2))
-    rmse_z = np.sqrt(np.mean(res_df['error_z']**2))
-    rmse_yaw = np.sqrt(np.mean(res_df['error_yaw']**2))
-    rmse_distance = np.sqrt(np.mean(res_df['error_distance']**2))
-
-    txt_out_path = os.path.join(output_dir, f'rmse_result_{suffix}.txt')
-    with open(txt_out_path, 'w') as f:
-        f.write(f"RMSE_x: {rmse_x:.6f} m\n")
-        f.write(f"RMSE_z: {rmse_z:.6f} m\n")
-        f.write(f"RMSE_yaw: {rmse_yaw:.6f} rad\n")
-        f.write(f"RMSE_distance: {rmse_distance:.6f} m\n")
-    print(f"已计算RMSE: {txt_out_path}")
-    return res_df
-
-if __name__ == '__main__':
-    suffix = "2"
-
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    input_csv = os.path.join(base_dir, 'data', f'pose_raw_{suffix}.csv')
-    output_directory = os.path.join(base_dir, 'results')
-    run_predict(input_csv, output_directory, suffix)
+        return None
+    result = pd.DataFrame(results)
+    if base:
+        result["coordinate_frame"] = "base"
+        for name, value in origin.items():
+            result[name] = value
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    csv_path = output / f"prediction_result_{suffix}.csv"
+    metrics_path = output / f"rmse_result_{suffix}.txt"
+    result.to_csv(csv_path, index=False)
+    with metrics_path.open("w", encoding="utf-8") as stream:
+        for column, name, unit in zip(
+                ["error_x", "error_z", "error_yaw", "error_distance"],
+                ["RMSE_x", "RMSE_z", "RMSE_yaw", "RMSE_distance"], ["m", "m", "rad", "m"]):
+            stream.write(f"{name}: {np.sqrt(np.mean(result[column]**2)):.6f} {unit}\n")
+    print(f"已输出预测结果: {csv_path}")
+    print(f"已计算RMSE: {metrics_path}")
+    return result

@@ -40,16 +40,16 @@ class RegressionTests(unittest.TestCase):
             self.assertAlmostEqual(result.err_distance.iloc[0], -1.)
 
     def test_elapsed_time_uses_timestamps(self):
-        from tests.reference.predictor.predictor import BasicPredictor
+        from tests.reference.predictor.predictor import SinglePlateEKF
         calls = []
-        original = BasicPredictor.predict
+        original = SinglePlateEKF.predict
         def record(obj, dt):
             calls.append(dt)
             return original(obj, dt)
         with tempfile.TemporaryDirectory() as root:
             csv = Path(root) / "input.csv"
             pd.DataFrame([[0, 0, 0, 0, 3, 0, 0, 3, 0], [1, 100, 0, 0, 3, 0, 0, 3, 0]], columns=COLUMNS).to_csv(csv, index=False)
-            with patch.object(BasicPredictor, "predict", record), contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(SinglePlateEKF, "predict", record), contextlib.redirect_stdout(io.StringIO()):
                 run_predict(csv, root)
         self.assertEqual(calls, [.1])
 
