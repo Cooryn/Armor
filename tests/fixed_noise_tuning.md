@@ -57,9 +57,9 @@ cmake --build tests/build --config Release --target armor_noise_evaluation
 
 测试构建需启用 `BUILD_TESTING`。评估程序只在显式构建该目标时编译，不加入常规测试。
 
-运行正式预测无需噪声模式参数：
+运行正式预测时，在 `src/Armor.cpp` 选择 `PREDICTOR_ARMOR` 及视频路径，重新编译：
 
 ```powershell
-.\predictor_armor.exe --suffix 1
-.\predictor_armor.exe --suffix 2
+cmake --build build --config Release --target Armor
+.\Armor.exe
 ```

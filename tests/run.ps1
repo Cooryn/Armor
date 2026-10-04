@@ -22,17 +22,17 @@ try {
         cmake -S $repoRoot -B "$PSScriptRoot/build" -G 'Visual Studio 17 2022' -A x64 `
             -DBUILD_TESTING=ON "-DOpenCV_DIR=$pythonBase/Library/cmake" "-DCMAKE_PREFIX_PATH=$pythonBase/Library"
         if ($LASTEXITCODE -ne 0) { throw 'Test configuration failed.' }
-        cmake --build "$PSScriptRoot/build" --config Release --target detector_tests predictor_tests camera_gimbal_tests camera_tracking_tests camera_tracking pose_base predictor predictor_polar predictor_armor --parallel
+        cmake --build "$PSScriptRoot/build" --config Release --target camera_filter_replay detector_tests predictor_tests video_predictor_tests camera_gimbal_tests camera_tracking_tests Armor camera_tracking pose_base --parallel
         if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
         ctest --test-dir "$PSScriptRoot/build" -C Release --output-on-failure `
             --output-log "$outputDir/cpp-tests.log"
         if ($LASTEXITCODE -ne 0) { throw 'C++ tests failed.' }
         $comparison = Join-Path $outputDir ('predictor-equivalence-' + [guid]::NewGuid().ToString('N'))
         & $pythonExe -B "$PSScriptRoot/verify_predictor_equivalence.py" --python-root $repoRoot `
-            --bin-dir "$repoRoot" --work-dir $comparison
+            --bin-dir "$PSScriptRoot/build/Release" --work-dir $comparison
         if ($LASTEXITCODE -ne 0) { throw 'Predictor equivalence tests failed.' }
         $cameraSimulation = Join-Path $outputDir ('camera-simulation-' + [guid]::NewGuid().ToString('N'))
-        & $pythonExe -B "$PSScriptRoot/camera_pipeline.py" --work-dir $cameraSimulation
+        & $pythonExe -B "$PSScriptRoot/camera_pipeline.py" --work-dir $cameraSimulation --filter-bin-dir "$PSScriptRoot/build/Release"
         if ($LASTEXITCODE -ne 0) { throw 'Camera coordinate/control simulation failed.' }
     }
 } finally {

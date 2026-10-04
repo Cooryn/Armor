@@ -261,7 +261,7 @@ def render_video(video_path, prediction_csv, raw_csv, output_path, profile='1',
                         'future_xc','future_yc','future_zc','future_body_yaw'}
     if forecast_columns.intersection(pred.columns):
         if not forecast_columns.issubset(pred.columns) or 'timestamp' not in pred:
-            raise ValueError('Incomplete forecast columns; rerun predictor_armor.exe')
+            raise ValueError('Incomplete forecast columns; rerun Armor with PredictorType::Armor')
         if (not np.isfinite(pred[list(forecast_columns)+['timestamp']].to_numpy()).all()
                 or (pred.prediction_horizon_ms < 0).any()
                 or not np.allclose(pred.prediction_timestamp-pred.timestamp,

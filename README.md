@@ -2,7 +2,7 @@
 
 本项目使用 C++ / OpenCV 从视频中检测装甲板，通过 PnP 解算装甲板位姿，再由 C++ / Eigen 扩展卡尔曼滤波器（EKF）估计车体中心、旋转朝向、角速度和装甲板几何参数。支持导出检测视频、原始观测、滤波结果、诊断曲线和状态叠加视频。
 
-主要工作流面向单辆小车的四装甲板跟踪。目前有两个独立视频模块，由同一个 CMake 构建：`Armor.exe` 负责识别与位姿解算，`camera_tracking.exe` 在自己的视频检测流程中接入 EKF、预测显示和相机云台控制。默认逐帧显示视频，模拟实时图像输入；也支持无窗口批处理。
+主要工作流面向单辆小车的四装甲板跟踪。目前有两个独立视频模块，由同一个 CMake 构建：`Armor.exe` 在同一个入口中完成识别、PnP、三种 EKF 中的一种和未来预测叠加；`camera_tracking.exe` 保留自己的 EKF 和相机云台控制流程。默认逐帧显示视频，模拟实时图像输入；也支持无窗口批处理。
 
 目前没有下位机通信或真实云台反馈。手动、自动和归中控制作用于仿真云台，界面标注 `SIMULATION`；录像不会随仿真云台转动而改变。实时预测仍使用相机坐标系，固定基座系转换目前是单独的离线流程。
 
@@ -17,25 +17,19 @@
 | 图表与视频 | 原始观测、EKF 结果、原视频 | 绘制曲线与投影状态 | PNG 图表、MP4 视频 |
 
 ```text
-实时流程（两个程序独立运行）：
-输入视频 → Armor.exe → 检测窗口 + 检测 AVI + 原始观测 CSV
-输入视频 → camera_tracking.exe → 检测/PnP → EKF → 预测与三模式相机控制
-                                               → 预测窗口 + AVI + 观测/控制 CSV
+输入视频 → Armor.exe → 检测/PnP → 所选 EKF → 当前与未来预测窗口 / AVI
+                                 │                │
+                                 ▼                ▼
+                           原始观测 CSV     状态 / 残差 / RMSE
+                                 │                │
+                                 ▼                ▼
+                              plot.raw     plot.basic / polar / armor / video
 
-保留的离线分析流程：
-输入视频 → Armor.exe → data/pose_raw_*.csv → predictor_armor.exe
-              │                 │                    │
-              ▼                 ▼                    ▼
-         检测视频           plot.raw            EKF 结果与诊断
-                                │                    │
-                                ▼                    ▼
-                           原始观测曲线       plot.armor / plot.video
-                                                     │
-                                                     ▼
-                                               EKF 图表与视频
+输入视频 → camera_tracking.exe → 检测/PnP → EKF → 仿真相机控制与独立视频输出
 ```
 
-EKF 核心使用 C++ 和 Eigen；CSV 读写由 C++ 运行程序负责，Python 图表和视频导出由 `plot/` 负责。修改图表样式后可以直接重新绘图，不必重跑检测或滤波。
+Armor 单线程按视频帧号和源 FPS 处理每一帧，不回读观测 CSV。EKF 使用 C++ 和 Eigen；
+Python 的 `plot/` 读取导出文件绘图，修改图表不必重跑视频。
 
 ### 1.1 灯条配对策略
 
@@ -56,14 +50,14 @@ Armor/
 ├── requirements.txt               Python 依赖
 ├── include/                       检测、预测、相机控制与坐标变换头文件
 ├── src/
-│   ├── main.cpp                   输入参数、相机参数、检测流程、文件导出
-│   ├── camera_tracking.cpp        视频预测、自瞄显示与控制；保留离线控制 CSV 转换
+│   ├── Armor.cpp                  源码配置及检测 → PnP → 预测 → 输出调用链
+│   ├── camera_tracking.cpp        共享视频读写与预测绘制、自瞄显示与控制、离线控制转换
 │   ├── pose_base.cpp              离线相机系到固定基座系位姿转换
-│   ├── lightbar_detector.cpp      灯条检测、端点定位、配对与绘制
-│   ├── solver.cpp                 PnP 候选求解、有效性检查、短时姿态关联
-│   ├── predictor.cpp              基础预测器，独立 main 与 CSV 流程
-│   ├── predictor_polar.cpp        极坐标预测器，独立 main 与 CSV 流程
-│   └── predictor_armor.cpp        装甲板预测器，独立 main 与 CSV 流程
+│   ├── lightbar_detector.cpp      灯条检测、装甲板配对及检测结果绘制
+│   ├── solver.cpp                 相机参数、逐帧 PnP、候选检查和短时姿态关联
+│   ├── predictor.cpp              基础单板 EKF、在线预测及 CSV/RMSE 导出
+│   ├── predictor_polar.cpp        极坐标 EKF 实现
+│   └── predictor_armor.cpp        四装甲板联合 EKF 实现
 ├── plot/
 │   ├── raw.py                     原始 PnP 观测曲线
 │   ├── armor.py                   11 维装甲板 EKF 图表
@@ -83,7 +77,7 @@ Armor/
 └── .venv/                         项目 Python 环境
 ```
 
-默认构建输出六个程序到仓库根目录：`Armor.exe`、`camera_tracking.exe`、`predictor.exe`、`predictor_polar.exe`、`predictor_armor.exe`、`pose_base.exe`。其中前两个是视频模块，其他是保留的离线工具。正式输出保存在 `data/`、`results/`；测试脚本和测试产物集中在 `tests/`。补充说明见 [绘图说明](plot/README.md)和[测试说明](tests/README.md)。
+默认构建输出三个程序到仓库根目录：`Armor.exe`、`camera_tracking.exe`、`pose_base.exe`。三个独立 predictor 可执行目标及其旧入口已移除。正式输出保存在 `data/`、`results/`；测试集中在 `tests/`。补充说明见 [绘图说明](plot/README.md)和[测试说明](tests/README.md)。
 
 ## 3. 环境配置
 
@@ -109,7 +103,7 @@ conda activate base
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-`setup.ps1` 使用当前 `python` 创建可复用基础环境包的 `.venv`，安装 Python 依赖，从基础环境的 `Library/cmake` 查找 OpenCV，再通过根目录 CMake 构建上述六个 Release 程序。
+`setup.ps1` 使用当前 `python` 创建可复用基础环境包的 `.venv`，安装 Python 依赖，从基础环境的 `Library/cmake` 查找 OpenCV，再通过根目录 CMake 构建上述三个 Release 程序。
 
 脚本要求 `python`、`cmake` 已能在终端调用，不负责安装 Visual Studio、Conda 或 C++ OpenCV。已有 `.venv` 时会复用它；运行时应使用与其对应的 Conda 基础环境。
 
@@ -132,150 +126,76 @@ Python 命令统一使用 `.\.venv\Scripts\python`，不要求额外激活 `.ven
 
 只构建两个视频模块可使用 `cmake --build build --config Release --target Armor camera_tracking --parallel`。`--config Release` 选择 Release 配置，`--parallel` 启用并行编译；Visual Studio 工程使用该构建命令，不使用 `make`。
 
-## 4. 快速运行
+## 4. 配置、构建与运行 Armor
 
-以下命令在仓库根目录执行。同一编号的检测、滤波、绘图和视频必须配套使用；同名输出会被覆盖。
+在 `src/Armor.cpp` 顶部集中修改：
 
-### 4.1 两个实时视频模块
-
-```powershell
-# 识别与位姿解算
-.\Armor.exe red video_1.avi
-
-# 预测与相机自瞄，不需要先运行 Armor 或 predictor_armor
-.\camera_tracking.exe red video_1.avi
-
-# 无窗口导出预测视频与 CSV
-.\camera_tracking.exe red video_1.avi --headless
+```cpp
+constexpr EnemyColor target_color = ENEMY_RED;
+constexpr const char* video_file = "assets/video/video_2.avi";
+constexpr PredictorType predictor_type = PREDICTOR_ARMOR;
+constexpr bool preview = true;
+constexpr double prediction_horizon_ms = 50;
 ```
 
-预测窗口默认自动模式。窗口获得焦点后使用以下按键：
-
-| 按键 | 功能 |
+| 参数 | 用法 |
 | --- | --- |
-| `1` | 手动模式 |
-| `W/S`、`A/D` | 手动调整 pitch、yaw 目标角度，每次 2° |
-| `2` | 自动跟踪未来 50 ms 的预测装甲板位置 |
-| `3` / `C` | 归中至启动零位 yaw=0、pitch=0，随后保持 |
-| `Esc` / 关闭窗口 | 结束并保留已处理部分的输出 |
+| `target_color` | `ENEMY_RED` 或 `ENEMY_BLUE` |
+| `video_file` | 相对项目根目录的视频路径；视频 2 使用 `assets/video/video_2.avi` |
+| `predictor_type` | `PREDICTOR_SINGLE_PLATE`、`PREDICTOR_POLAR` 或 `PREDICTOR_ARMOR`，见第 10 节 |
+| `preview` | `true` 按源 FPS 显示；`false` 无窗口、不限速处理 |
+| `prediction_horizon_ms` | 非负、有限的提前量，单位 ms，默认 50 |
 
-### 4.2 离线 EKF 与图表
+根据目标颜色选择 `ENEMY_RED` 或 `ENEMY_BLUE`；仓库现有两段视频的目标均为红色。修改配置后重新编译，再运行：
 
 ```powershell
-# 检测视频，导出原始观测
-.\Armor.exe red video_1.avi
+cmake --build build --config Release --target Armor
+.\Armor.exe
+```
 
-# 运行装甲板 EKF
-.\predictor_armor.exe --suffix 1
+Armor 不接收命令行参数。输入与输出路径基于编译时的项目根目录，因此从其他工作目录启动也能找到配置视频。
+按 Esc 或关闭窗口会结束处理，并完成已处理帧的 AVI、CSV 和 RMSE 导出。预览需要带 GUI 的 OpenCV。
+输入、窗口创建和文件写入失败会返回非零退出码并报告原因。
 
-# 绘制原始数据、EKF 结果和视频
+每帧执行检测/PnP、写原始观测、推进/更新 EKF、绘制当前与未来位置，最后显示并写入视频。
+首次有效观测仅初始化；状态行从下一帧起一直写到视频结束，包括连续漏检和末尾漏检。
+无观测帧保留预测状态，观测及残差字段为空。全程没有有效观测或仅处理初始化帧时，
+状态 CSV 只有表头，RMSE 为 `nan`。初始化帧仍可显示当前与未来几何，Armor 模型也记录初始化诊断。
+
+单板模型绘制一个目标点；Polar 和 Armor 绘制中心及四块板。
+圆点和实线表示更新后的当前状态，菱形和虚线表示未来预测。
+误差由更新前预测计算，不能用当前画面的未来标记代替未来时刻的精度评估。
+四块板都绘制，不模拟遮挡。
+
+## 5. 绘图与独立相机跟踪程序
+
+运行 Armor 后，可直接使用对应模型的绘图模块：
+
+```powershell
 .\.venv\Scripts\python -B -m plot.raw --suffix 1
 .\.venv\Scripts\python -B -m plot.armor --suffix 1
 .\.venv\Scripts\python -B -m plot.video --suffix 1
+# SinglePlate 或 Polar 配置生成结果后：
+.\.venv\Scripts\python -B -m plot.basic --suffix 1 --output-dir results/basic
+.\.venv\Scripts\python -B -m plot.polar --suffix 1 --output-dir results/polar
 ```
 
-处理第二段视频时，将输入改为 `video_2.avi`，所有 `--suffix` 改为 `2`。
+静态图支持 `--suffix`、`--data-dir`、`--results-dir`、`--output-dir`。
+`plot.video` 用于 Armor 模型，还支持 `--video`、`--predictions`、`--raw`、`--diagnostics`、
+`--no-diagnostics`、`--camera-profile 1|2`、`--start-frame`、`--max-frames` 和 `--output`。
+它按帧号对齐，缺少状态行时不沿用前一帧。详细参数见 [plot/README.md](plot/README.md)。
 
-### 4.3 批量离线分析两段视频
+`camera_tracking.exe` 继续使用独立入口和原有命令行：
 
 ```powershell
-foreach ($suffix in 1, 2) {
-    .\Armor.exe red "video_$suffix.avi"
-    if ($LASTEXITCODE -ne 0) { throw "检测失败：video_$suffix" }
-    .\predictor_armor.exe --suffix $suffix
-    if ($LASTEXITCODE -ne 0) { throw "EKF 运行失败：$suffix" }
-    foreach ($module in 'raw', 'armor', 'video') {
-        .\.venv\Scripts\python -B -m "plot.$module" --suffix $suffix
-        if ($LASTEXITCODE -ne 0) { throw "导出失败：$module，编号 $suffix" }
-    }
-}
+.\camera_tracking.exe red video_1.avi
+.\camera_tracking.exe blue video_2.avi --headless
 ```
 
-该流程生成检测 AVI、原始观测 CSV、离线 EKF 结果及 Python 图表/MP4，不包含实时模块的控制 CSV。
-
-## 5. 命令参数
-
-### 5.1 视频检测
-
-```powershell
-.\Armor.exe red video_1.avi
-.\Armor.exe blue video_2.avi
-```
-
-程序只处理视频，默认打开实时预览窗口，显示检测框和 PnP 位姿，不包含调参滑动条。
-预览使用 OpenCV HighGUI（Qt 后端），C++ OpenCV 必须是带 GUI 的构建，不能使用 headless 构建。当前环境使用 `opencv=4.13.0=qt*_py313*`。
-`Armor.exe [red|blue] [视频文件] [--headless]` 默认使用 `red video_1.avi`。
-显示按源视频帧率限速，并扣除当前帧处理耗时；处理不及时则播放变慢，不跳帧。CSV 时间戳仍使用源视频时间。
-按 Esc 或关闭窗口可提前结束，保留已处理部分的 AVI 和 CSV。加上 `--headless` 可关闭窗口并不限速处理。
-`Armor.exe` 保持仅显示检测框和 PnP 位姿。预测画面通过独立程序启动：`camera_tracking.exe red video_1.avi`（同样支持末尾添加 `--headless`）。两个程序分别运行各自的视频处理流程，不需要同时启动。
-两个程序的入口分别是 `src/main.cpp` 和 `src/camera_tracking.cpp`，各自负责视频读取、检测、CSV/AVI 输出和窗口处理，由同一个 CMake 分别构建，不使用共用视频流程模块或条件编译切换入口行为。
-预测和相机自瞄统一在 `camera_tracking.cpp/.hpp` 中，不再单独构建 `camera_gimbal.exe`。运行 `camera_tracking.exe red video_1.avi` 后，默认自动模式；窗口获得焦点后按 `1` 切换手动、`2` 切换自动、`3` 或 `C` 归中。手动模式下 `A/D` 左右调整目标 yaw，`W/S` 上下调整目标 pitch，每次 2°。归中回到启动时的 yaw=0、pitch=0，完成后保持零位，按 `1/2` 退出归中。
-目前控制对象是仿真相机云台：yaw 向右为正，pitch 向上为正，角度范围分别为 ±45°、±30°。自动模式从未来 50 ms 的四块装甲板位置中选择相机前方距离最近的一块，驱动仿真光轴跟踪；未接受到观测时保持姿态。青色十字表示仿真光轴，紫色叉表示自动跟踪的预测位置。界面标注 `SIMULATION`，录像画面不会因仿真云台转动而改变，也不会把仿真角度当作真实相机遥测补偿 EKF。
-每帧控制结果保存为 `results/camera_control_<编号>.csv`，包含模式、仿真标志、目标有效性、仿真 yaw/pitch、角速度及预测跟踪点。`target_valid` 仅表示自动模式存在有效预测目标；手动和归中不依赖装甲板观测。当前没有下位机通信，归中完成仅表示仿真角度回到零位。
-预测窗口沿用 `plot.video` 的布局：原视频右侧增加 340 像素信息栏和目标放大图。彩色实线 A0～A3 为当前估计，同色虚线 F0～F3 为 50 ms 后的位置；白色星标及轨迹表示当前中心，菱形表示未来中心或装甲板。观测以加号显示，拒绝观测为红叉。侧栏显示跟踪参数、观测统计、预测时间和相机 yaw/pitch 偏差及限速后的角速度，仅用于预览，不发送电机指令。保存的预测 AVI 也使用此布局。
-每帧检测结果直接进入现有 `ArmorEKF`，无需先生成 CSV 再绘图。没有接受到观测时，自动模式立即保持仿真姿态，预测状态标记 PREDICTION ONLY；手动和归中继续工作。超过 200 ms 未接受观测时隐藏预测图形并清空轨迹。重新关联成功后恢复显示。
-此实时入口当前使用相机系，适用于固定相机视频；未接入真实云台姿态反馈，不能把它当成运动云台下的固定系预测。现有 `pose_base` 固定系离线流程不变。预测程序单独输出 `results/camera_prediction_<视频名>.avi` 和 `data/camera_pose_raw_<编号>.csv`，不会覆盖普通检测程序的输出。
-直接运行前，需确保 OpenCV 运行库目录已加入 PATH。检测程序直接输出 MJPG 编码的 AVI，不再调用外部 FFmpeg 转码。
-输入路径不存在时，程序从 `assets/video/` 查找。
-支持扩展名：AVI、MP4、MOV、MKV、M4V、WebM、MPG、MPEG、WMV。
-检测参数直接设置在 `src/main.cpp` 中。
-输出为 `results/<视频名>.avi` 和 `data/pose_raw_<编号>.csv`。`plot.video` 默认读取原始视频，不依赖检测程序的视频输出；其可视化结果仍为 MP4。
-
-### 5.2 装甲板 EKF
-
-| 参数 | 含义 | 默认 |
-| --- | --- | --- |
-| `--suffix` | 输入、输出编号 | `1` |
-| `--input` | 指定原始 CSV，优先于编号输入路径 | `data/pose_raw_<suffix>.csv` |
-| `--output-dir` | 数值结果输出目录 | `results/` |
-| `--prediction-horizon-ms` | 相对于图像时间的未来预测提前量，单位 ms；`0` 关闭提前预测 | `50` |
-
-```powershell
-.\predictor_armor.exe --input data/pose_raw_1.csv --suffix 1 --output-dir results/custom
-
-```
-
-默认预测图像采集时间之后 50 ms 的四块板位置与水平朝向。使用
-`--prediction-horizon-ms 100` 可改为 100 ms，修改后需重新运行 `plot.video`。
-这是固定预测提前量，不会人为暂停程序，也不自动测量处理、通信或云台响应延迟。
-
-### 5.3 静态图表
-
-`plot.raw`、`plot.armor`、`plot.basic`、`plot.polar` 都支持：
-
-| 参数 | 含义 |
-| --- | --- |
-| `--suffix` | 数据编号；`armor` 默认 `1`，其余默认 `2` |
-| `--data-dir` | 原始观测目录，默认 `data/` |
-| `--results-dir` | 预测 CSV 所在目录，默认 `results/` |
-| `--output-dir` | 图像输出目录，默认与结果目录相同 |
-
-```powershell
-.\.venv\Scripts\python -B -m plot.armor --suffix 1 --results-dir results/custom --output-dir results/custom
-```
-
-### 5.4 视频可视化
-
-| 参数 | 含义 |
-| --- | --- |
-| `--suffix 1|2` | 数据编号，默认 `1`，同时决定默认相机配置 |
-| `--video` | 原视频路径，默认 `assets/video/video_<suffix>.avi` |
-| `--predictions`、`--raw` | 显式指定 EKF 结果和原始观测 CSV |
-| `--diagnostics` | 显式指定逐条观测诊断 CSV |
-| `--no-diagnostics` | 不加载诊断；不能与 `--diagnostics` 同用 |
-| `--camera-profile 1|2` | 相机配置，默认与编号一致 |
-| `--data-dir`、`--results-dir` | 原始 CSV 与 EKF 结果目录 |
-| `--output-dir` | 视频输出目录，默认使用结果目录 |
-| `--output` | 完整输出路径，优先于输出目录 |
-| `--start-frame` | 起始帧，默认 `0` |
-| `--max-frames` | 最多导出帧数，默认导出到结束 |
-| `--trail-length` | 中心轨迹保留帧数，默认 `30`，`0` 关闭 |
-
-只检查一小段视频：
-
-```powershell
-.\.venv\Scripts\python -B -m plot.video --suffix 1 --start-frame 100 --max-frames 60 --output tests/outputs/video_preview.mp4
-```
+该程序的仿真控制默认自动模式：`1` 为手动，`W/S`、`A/D` 调节 pitch/yaw；
+`2` 自动跟踪，`3` 或 `C` 归中，Esc 或关窗结束。
+没有真实电机、串口或云台反馈；录像不会随仿真云台转动而改变。
+它的时间推进、丢失目标规则和输出保持原状，无须先运行 Armor。
 
 ## 6. 坐标、角度与物理尺寸
 
@@ -306,7 +226,7 @@ PnP 与叠加边框采用灯条中心间距 **135 mm**、灯条长度 **56 mm**�
 | `1` | 1440 × 1080 | 文件名主干不包含 `video_2` 时的默认参数 | `--camera-profile 1` |
 | `2` | 1280 × 1024 | 文件名主干包含 `video_2` | `--camera-profile 2` |
 
-相机内参与畸变参数位于 `src/main.cpp`、`src/camera_tracking.cpp` 和 `plot/video.py`；物理板尺寸位于 `src/solver.cpp`、`src/camera_tracking.cpp` 的绘图实现和 `plot/video.py`。使用新相机、新分辨率或不同板型时，需要同步配置两个视频模块和离线可视化。`plot.video` 会检查画面尺寸，但相同分辨率本身不意味着相机标定相同。
+相机内参与畸变参数位于 `src/solver.cpp`、`src/camera_tracking.cpp` 和 `plot/video.py`；物理板尺寸位于 `src/solver.cpp`、`src/camera_tracking.cpp` 的绘图实现和 `plot/video.py`。使用新相机、新分辨率或不同板型时，需要同步配置两个视频模块和离线可视化。`plot.video` 会检查画面尺寸，但相同分辨率本身不意味着相机标定相同。
 
 ## 7. EKF 模型与多板处理
 
@@ -353,24 +273,31 @@ PnP 与叠加边框采用灯条中心间距 **135 mm**、灯条长度 **56 mm**�
 | `max_distance_error` | `0.5` m | 距离残差绝对上限 |
 | `pair_yaw_tolerance` | 25°，传参单位为弧度 | 板间朝向关系容差 |
 
-过程噪声、基础观测协方差和初始化设置位于 `include/predictor_armor.hpp`。调参时应同时检查残差、中心漂移、接受率和运动变化时的响应。
+过程噪声、固定观测协方差和初始化设置位于 `src/predictor_armor.cpp`，构造参数的默认值在 `include/predictor_armor.hpp` 的接口声明中。调参时应同时检查残差、中心漂移、接受率和运动变化时的响应。
 
-漏检或所有观测被拒绝时，EKF 只预测。离线 CSV 流程中，中间的空缺帧按相邻时间戳恢复时间轴，不生成插值观测；输出从初始化帧之后开始，到最后一个原始观测帧结束，不推测 CSV 未记录的开头和尾部空帧。少于两帧可用观测时不会产生新的离线预测结果，已有同名文件不会因此自动删除。实时视频模块则逐帧调用 EKF，包括没有检测结果的帧，并按第 5 节规则隐藏过期预测、保持仿真云台姿态。
+漏检或所有观测被拒绝时，EKF 只预测。Armor 按源视频时间逐帧调用，初始化后一直导出到视频结束，不插值时间或观测，也不在漏检期间隐藏其预测几何。独立的 camera_tracking 保留自己的目标丢失处理规则。
 
 ### 7.4 C++ 调用
 
-三个预测程序均可单独编译一个 `.cpp` 后运行，无需链接共用预测器库。也可在自己的程序中直接使用 Eigen 滤波器头文件：
+观测的 `armor_id` 使用普通整数：`-1` 表示自动关联，`0～3` 表示指定板号，其余编号不参与关联。内部时间戳使用普通 `double`，`-1` 表示尚未设置，`0` 是有效时间；`camera_frames_load` 的参考时间默认 `-1`，表示使用第一条遥测。命令行显式传入的原点时间必须是有限的非负数。投影和预测中心仍通过 `optional` 表达无有效结果。
+
+默认滤波参数直接保存在数据结构中，使用 `ArmorEKF ekf;` 或 `VideoPredictor predictor{PREDICTOR_ARMOR, 50};` 初始化，不再提供 `make_*` 工厂和只读取字段的查询函数。模型选择、最近板选择、更新及显示结果组装集中在 `video_predictor_update`；CSV 的开关文件、分隔符和换行操作放在对应导出函数内。PnP 视频标定在首次 `solver_solve_frame` 调用时按视频文件名选择；已有标定可用 `Solver{camera_matrix, distort_coeffs}` 直接设置。预测提前量和控制参数在首次使用时检查。
+
+三个预测器保持声明与实现分离：`include/predictor*.hpp` 声明普通函数和只存数据的结构体，`src/predictor*.cpp` 实现算法。项目接口不使用自定义类、成员函数、嵌套类型或命名空间。`predictor.hpp/.cpp` 的 `video_predictor_update` 负责在线预测，`prediction_output_write/finish` 负责 CSV/RMSE 导出，均不依赖 OpenCV；CSV 辅助函数仅在对应 `.cpp` 内使用。`lightbar_detector.hpp/.cpp` 只负责检测及检测结果绘制；`solver.hpp/.cpp` 的 `solver_solve_frame` 负责相机参数选择、逐帧 PnP 和类型化观测。`camera_tracking.hpp/.cpp` 的 `video_input_*`、`video_output_*` 负责视频读写、窗口及预测画面。`Armor.cpp` 保留顶部配置和“检测 → PnP → 预测 → 输出”调用链，无新增模块文件。CMake 的 `predictor_filters` 包含滤波及预测结果导出，`armor_vision` 包含检测与 PnP，`armor_video` 复用现有相机文件的视频实现；共享库编译时排除相机程序的独立入口。自己的滤波目标可使用 `target_link_libraries(your_target PRIVATE predictor_filters)`。
 
 三个模型的状态、协方差、观测和雅可比均使用固定尺寸 Eigen 类型：基础单板为 6 维状态 / 3 维观测，极坐标为 9 维状态 / 4 维观测，装甲板为 11 维状态 / 4 维单板观测。四板联合更新按实际关联数量组合 4–16 维观测，矩阵存储上限固定为 16；卡尔曼增益和 NIS 直接通过 Eigen LDLT 求解，不构造逆矩阵，也不切换备用求解器。向量初始化使用 Eigen 构造函数或 `<<`，对角矩阵使用 `asDiagonal()`。
 
 ```cpp
 #include "predictor_armor.hpp"
 
-predictor::ArmorEKF ekf; // 默认使用固定观测噪声
-predictor::ArmorEKF::Measurement z(0, 0, 3, 0); // yaw, pitch, distance, plate yaw
-ekf.initialize(z);
-// 纯滤波器：initialize / predict / update_multi / forecast
-// CSV 批处理通过 predictor_armor.exe --suffix 1 运行。
+ArmorEKF ekf; // 默认使用固定观测噪声
+ArmorMeasurement z(0, 0, 3, 0); // yaw, pitch, distance, plate yaw
+armor_initialize(ekf, z);
+armor_predict(ekf, .03);
+armor_update_multi(ekf, {{z}});
+const auto future = armor_forecast(ekf, .05); // 不推进当前状态
+// 在线预测：video_predictor_update(predictor, frame_id, timestamp_ms, observations)。
+// 导出：prediction_output_write/finish，或 video_output_write/finish。
 ```
 
 旧 Python 实现保存在 `tests/reference/predictor/`，仅供回归对照；原 `import predictor...` 接口已移除。
@@ -386,43 +313,31 @@ ekf.initialize(z);
 预测目标时间等于源图像时间加提前量，不按整数帧取整；30 FPS 下的 50 ms 仍精确使用 0.05 秒。
 预测可以超出视频末尾，这些时刻没有后续视频观测可供验证。
 
-旧相机系流程使用当前相机坐标系；第 12 节的流程先按云台姿态和安装外参转换到固定基座系，再进行滤波和未来预测。EKF 仍采用水平旋转模型，不估计板面俯仰、横滚。
+Armor 的观测与预测使用相机坐标系。需要运动补偿的调用者可先使用第 12 节的位姿转换，再通过滤波 API 处理固定基座系观测。EKF 仍采用水平旋转模型，不估计板面俯仰、横滚。
 未来预测误差应与目标时刻、同一板号和同一坐标系下的后续观测比较。
 
 ## 8. 输出文件与读法
 
-两个视频模块直接生成以下文件（以 `video_1.avi` 为例）：
+以 `video_1.avi` 为例，Armor 总会写入 `results/video_1.avi` 和 `data/pose_raw_1.csv`，
+视频包含检测框、PnP 位置与所选模型的当前/未来预测。模型输出如下：
 
-| 程序 | 文件 | 内容 |
-| --- | --- | --- |
-| `Armor.exe` | `results/video_1.avi` | 检测与 PnP 画面，MJPG 编码 |
-| `Armor.exe` | `data/pose_raw_1.csv` | 原始位姿观测 |
-| `camera_tracking.exe` | `results/camera_prediction_video_1.avi` | 实时预测、仿真光轴和控制状态画面，MJPG 编码 |
-| `camera_tracking.exe` | `data/camera_pose_raw_1.csv` | 该次运行的原始位姿观测 |
-| `camera_tracking.exe` | `results/camera_control_1.csv` | 每帧仿真控制状态与预测跟踪点 |
-
-实时模块不直接导出下面的完整 EKF 状态/诊断 CSV；需要离线分析时，将 `data/camera_pose_raw_1.csv` 通过 `predictor_armor.exe --input ...` 处理。视频输出使用文件名主干；CSV 编号取主干最后一个下划线之后的部分，没有下划线时使用完整主干。同名输出会覆盖。
-
-以下为离线分析流程的结果文件，`*` 表示编号，例如 `1` 或 `2`：
-
-| 文件 | 内容与用途 |
+| 模型 | 输出文件 |
 | --- | --- |
-| `video_*.avi` | C++ 检测视频，显示通过 PnP 检查的装甲板边框，MJPG 编码 |
-| `armor_video_*.mp4` | EKF 叠加视频，显示观测、估计车体中心、四块板及状态信息 |
-| `pose_raw_curve_*.png` | 原始装甲板中心的 x、y、z、距离、目标俯仰角曲线 |
-| `raw_yaw_curve_*.png` | 原始目标方位角与装甲板朝向角，均未经过 EKF |
-| `top_down_trajectory_*.png` | X–Z 平面上的装甲板原始观测与更新前预测位置 |
-| `body_yaw_curve_*.png` | EKF 车体参考朝向，角度按 ±π 折回 |
-| `folded_armor_yaw_curve_*.png` | 当前选中板号的预测朝向与观测朝向对比，使用折回后的角度 |
-| `armor_prediction_error_curve_*.png` | 目标方位、俯仰、距离、板朝向的更新前残差 |
-| `armor_prediction_result_*.csv` | 每帧一行的 EKF 状态和代表性观测残差 |
-| `armor_future_prediction_*.csv` | 每个源帧四行，记录四块板在目标时刻的未来位置和水平朝向 |
-| `armor_observation_diagnostics_*.csv` | 每条观测一行的关联、接受情况、拒绝原因和距离残差 |
-| `armor_rmse_result_*.txt` | 预测结果 CSV 中四项残差的 RMSE |
+| SinglePlate | `prediction_result_1.csv`（13 列）、`rmse_result_1.txt` |
+| Polar | `polar_prediction_result_1.csv`（15 列）、`polar_rmse_result_1.txt` |
+| Armor | `armor_prediction_result_1.csv`（32 列）、`armor_rmse_result_1.txt` |
+| Armor 额外导出 | `armor_observation_diagnostics_1.csv`（11 列）、`armor_future_prediction_1.csv`（10 列） |
 
-原始曲线连接 CSV 中的所有观测，没有按物理板号分组。同帧多板会出现相同横坐标的多个点，换板也会产生跳变。**原始位置是装甲板中心，不是车体中心。**
+模型结果全部位于 `results/`。AVI 名取视频完整主干，CSV 后缀取主干最后一个下划线之后的部分；
+没有下划线时使用完整主干。同名输出会覆盖，运行只生成当前所选模型的结果。
+RMSE 为六位小数及原单位。无有效残差时各项为 `nan`。
 
-俯视图的原始轨迹取每帧最近的原始观测；预测轨迹对应最近的被接受观测，全部被拒绝时使用最近预测板。两条曲线不保证每帧对应同一块物理板，不能把图上的距离直接作为定位误差。
+camera_tracking 的独立输出仍是 `results/camera_prediction_video_1.avi`、
+`data/camera_pose_raw_1.csv` 和 `results/camera_control_1.csv`。它不导出 Armor 的完整状态/诊断文件。
+
+原始位置是装甲板中心；中心状态是 EKF 车体旋转中心。原始曲线连接全部检测观测，
+同帧多板和换板会造成跳变。误差曲线与 RMSE 表示更新前预测和当前观测的残差，
+并非相对于定位真值的误差。
 
 ### 8.1 原始 CSV：`data/pose_raw_*.csv`
 
@@ -489,7 +404,7 @@ ekf.initialize(z);
 | `innovation_gate` | NIS 或距离残差门限未通过 |
 | `association_conflict` | 存在独立候选，但未进入最终联合关联组合 |
 
-噪声倍率是相对于基础 `R` 的**方差倍率**，不是标准差倍率。初始化阶段没有观测更新，相应字段可以为空。`accepted=False` 不一定代表误检，例如初始化帧的未使用观测。
+初始化阶段没有卡尔曼更新，NIS 和距离残差可以为空。`accepted=False` 不一定代表误检，例如初始化帧的未使用观测。
 
 ### 8.4 残差与精度
 
@@ -514,7 +429,7 @@ ekf.initialize(z);
 
 ## 9. 离线视频画面说明
 
-离线 `predictor_armor` 在 `prediction_only` 帧中不再挑选一块最近预测板填充关联结果：
+Armor 模型在 `prediction_only` 帧中不再挑选一块最近预测板填充关联结果：
 `armor_id=-1`，`xa,za,pred_armor_yaw,obs_armor_yaw` 和观测残差留空。
 车体状态和 `armor_future_prediction_*.csv` 的四块板仍按模型正常预测。
 初始化诊断也记录实际时间戳、观测距离和板朝向，便于与原始数据对齐。
@@ -535,36 +450,37 @@ ekf.initialize(z);
 
 彩色边框由对应时刻的状态和 135 × 56 mm 尺寸投影生成，包含相机畸变影响。它们不是 C++ 原始检测框。未来框绘制在当前画面上表示预期运动位置，不应与当前检测框直接比较精度。四块板全部显示，未模拟遮挡。
 
-## 10. 其他预测模型
+## 10. 三种预测模型
 
-| 模型 | 状态 | 运行 / 绘图 |
+在 `src/Armor.cpp` 修改 `predictor_type` 选择模型，重新编译后运行同一个 Armor.exe。
+
+| 模型 | 状态与观测 | 每帧更新 |
 | --- | --- | --- |
-| 单板 6 维 EKF | 板的位置和速度 `[x, vx, y, vy, z, vz]` | `include/predictor.hpp` / `plot.basic` |
-| 极坐标 9 维模型 | 中心、速度、车体朝向、角速度、半径 | `include/predictor_polar.hpp` / `plot.polar` |
+| SinglePlate | `[x,vx,y,vy,z,vz]`；方位、俯仰、距离 | 最近有效板，距离相同保留第一条 |
+| Polar | 9 维：中心/速度、yaw/w、等半径 | 最近有效板，距离相同保留第一条 |
+| Armor | 11 维：中心/速度、yaw/w、r/dl/dh | 四板关联与联合更新 |
 
-两个 C++ 程序默认使用编号 `2`，可通过 `--suffix`、`--input`、`--output-dir` 指定输入与输出。Python 的 `plot.basic` 和 `plot.polar` 仅负责读取结果并绘图。
+SinglePlate 使用匀速状态转移和非线性球坐标观测：
 
-```powershell
-.\predictor.exe
-.\.venv\Scripts\python -B -m plot.basic --suffix 2 --output-dir results/basic
-
-.\predictor_polar.exe
-.\.venv\Scripts\python -B -m plot.polar --suffix 2 --output-dir results/polar
+```text
+yaw      = atan2(x, z)
+pitch    = atan2(y, sqrt(x² + z²))
+distance = sqrt(x² + y² + z²)
 ```
 
-基础模型导出 `prediction_result_*.csv`、`rmse_result_*.txt`；极坐标模型导出 `polar_prediction_result_*.csv`、`polar_rmse_result_*.txt`。基础模型与完整装甲板模型的俯视图同名，比较时应指定不同图像输出目录。
+其解析雅可比、LDLT 求增益、Joseph 协方差更新和完整 6×6 协方差保持不变。
+`R=diag(0.0016,0.0016,0.16)`，`q=0.01`，每轴过程噪声块为
+`q * [[dt⁴/4,dt³/2],[dt³/2,dt²]]`，初始协方差 `10I`。原点或竖直轴附近跳过观测更新。
+最近板选择可能切换实体板，不提供单板身份关联。
 
-`predictor.exe` 使用单板匀速 EKF，观测为 `target_yaw,target_pitch,distance`，单位分别为 rad、rad、m；
-通过非线性球坐标观测、解析雅可比及 Joseph 协方差更新估计位置和速度。首次有效观测初始化位置，速度置零。
-固定观测协方差为 `diag(0.0016,0.0016,0.16)`，是新模型的初值，并非该单板模型的独立调优结论。
-过程噪声 `q=0.01`，每轴 `[位置,速度]` 的噪声块为 `q * [[dt⁴/4,dt³/2],[dt³/2,dt²]]`，初始协方差为 `10I`。
+Polar 的板位置统一采用 `x = xc + r*sin(yaw)`、`z = zc - r*cos(yaw)`，与 PnP 朝向及 Armor 模型一致；初始化中心使用相反位移。
 
-每帧只使用距离最近的有效观测，距离相同保留第一条；这可能在不同实体板之间切换，不提供目标身份关联。
-无效观测被跳过，非法帧号或时间戳报错；缺帧使用源时间戳的实际间隔，非正间隔使用 `1/30` 秒。
-结果记录当前帧观测更新前的预测，RMSE 表示预测与观测的残差，不是定位真值误差。
-`x,y,z` 保留用于误差统计，`target_pitch` 现在也是必需输入列；现有检测 CSV 无需转换。
-基础预测器支持 `--suffix`、`--input`、`--output-dir`、`--root`，已移除无作用的 `--fixed-noise` 和 `--prediction-horizon-ms`。
-实时 `camera_tracking` 仍使用完整装甲板 EKF。
+Polar 保留原 9 维模型、数值雅可比与固定噪声 `R=diag(0.005,0.005,0.05,0.05)`；
+Armor 的固定参数见第 7 节。两种模型的既有几何定义也保留，不重新解释 yaw 或半径。
+
+三种模型都使用每帧的源时间间隔推进。无效观测不更新；非法或不递增的帧号/时间戳明确报错。
+SinglePlate 的 13 列记录更新前预测，Polar 的 15 列及 Armor 的中心状态记录更新后状态，
+所有误差均来自更新前预测。RMSE 只累计有限残差，Armor 只累计最近被接受板的残差。
 
 ## 11. 测试与常见问题
 
@@ -585,7 +501,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1 -PythonOnly
 | `cmake` 不可识别 | 确认 CMake 已安装，将其 `bin` 目录加入 PATH 后重新打开终端 |
 | 找不到 OpenCV 或 DLL | 确认当前 Conda 环境包含 C++ 开发库、`Library/cmake` 配置，并将其 `Library/bin` 加入 PATH |
 | Python 缺少依赖 | 使用项目 `.venv` 的解释器，检查 `setup.ps1` 是否成功完成 |
-| 没有新的 EKF 文件 | 检查输入路径、有效帧数和终端提示，不要把已有同名文件当成本次结果 |
+| 结果只有表头，RMSE 为 nan | 检查颜色、相机标定、有效观测与是否在初始化帧后继续处理 |
 | 图中出现竖线或角度跳变 | 检查同帧多板、换板、角度折回，以及真实观测异常 |
 | 可视化提示尺寸或诊断不匹配 | 使用同一轮、同编号的原视频、原始 CSV、EKF 结果和诊断文件，并核对相机配置 |
 | 定轴旋转时估计中心仍漂移 | 检查角点、PnP 朝向、尺寸、标定、观测权重及模型参数；模型没有固定中心约束 |
@@ -641,31 +557,29 @@ timestamp,yaw_deg,pitch_deg,roll_deg
 可用 `--sync-gap-ms` 调整。反馈必须覆盖输入全部时刻，不允许外推。
 这些约定需要与实际编码器零位、符号和时钟校准一致。
 
-### 固定基座系处理流程
+### 固定基座系位姿转换
 
-在根目录执行，先重新运行检测，取得新增的 `rvec_x/rvec_y/rvec_z` 和 `coordinate_frame=camera`。
-旧版只有 yaw 的原始 CSV 无法恢复完整三维姿态，不能直接用于完整位姿转换。
+先由配置好的 Armor 生成相机系完整 PnP 位姿，再调用保留的转换工具：
 
 ```powershell
-cmake --build build --config Release --parallel
-.\Armor.exe red video_1.avi
+.\Armor.exe
 .\pose_base.exe --suffix 1 --telemetry telemetry.csv --calibration calibration.csv
-.\predictor_armor.exe --input data/pose_base_1.csv --suffix 1 --output-dir results/base
-.\camera_tracking.exe --input results/base/armor_prediction_result_1.csv --output results/base/camera_gimbal_1.csv --telemetry telemetry.csv --calibration calibration.csv
 ```
 
-`data/pose_raw_1.csv` 保留原始相机测量，`data/pose_base_1.csv` 是正式基座系观测输出。
-它包含基座系位置、完整旋转向量、完整四元数，以及用于水平 EKF 的板面法向水平投影角。
-`predictor_armor` 自动识别 `coordinate_frame=base`，中心、速度、诊断角度和四板未来位姿均使用基座系；
-基础、极坐标预测器也保留输入坐标系标签。混合或未知坐标系会报错。
-基座系四板预测额外输出 `qw/qx/qy/qz`，它们来自水平旋转模型，仅描述估计的 yaw，并非完整姿态滤波。
-旧 `plot.video` 仅支持相机系投影，会明确拒绝基座系 CSV，避免把固定系坐标直接画到相机图像上。
+`data/pose_base_1.csv` 包含基座系位置、完整旋转向量、四元数、水平板朝向和原点元数据。
+旧版只有 yaw 的 CSV 无法恢复完整姿态。转换工具拒绝混合或未知坐标系，并检查遥测覆盖。
+
+统一 Armor 入口只处理相机系视频，不读取该 CSV。需要基座系 EKF 的调用者可使用
+`ArmorEKF` API 并显式设置 `base_frame=true`；CSV 读取、逐帧时间轴和元数据传递由调用者负责。
+`camera_tracking.exe --input ...` 保留离线控制转换，输入须是其要求的预测 CSV，
+`--input` 必须放在第一个参数位置。旧有独立 predictor CSV 入口已经移除。
+`plot.video` 仅接受相机系投影。
 
 ### 原点记录与后续重置接口
 
-基座系 CSV 及预测结果携带 `base_reference_timestamp_ms` 和 `base_origin_x_m/base_origin_y_m/base_origin_z_m`；后三项表示参考光心在机械系 M 中的位置，单位米。预测器拒绝混合不同参考原点的数据，控制导出程序核对所用参考时间和原点。
+pose_base 的基座系 CSV 携带 `base_reference_timestamp_ms` 和 `base_origin_x_m/base_origin_y_m/base_origin_z_m`；后三项表示参考光心在机械系 M 中的位置，单位米。调用者必须保持参考原点一致；控制导出程序核对所用参考时间和原点。
 
-`CameraFrames::reset_origin(timestamp_ms)` 可将固定原点改为指定时刻的光心，并返回旧固定系到新固定系的平移变换。轴方向、姿态和速度方向保持不变。当前离线流程通过相同的 `--origin-time-ms` 重新转换、预测、导出；在线重置时还需同步迁移 EKF 的位置状态或重新初始化跟踪器，本次尚未接入在线重置流程。
+`camera_frames_reset_origin(frames, timestamp_ms)` 可将固定原点改为指定时刻的光心，并返回旧固定系到新固定系的平移变换。轴方向、姿态和速度方向保持不变。当前离线流程通过相同的 `--origin-time-ms` 重新转换、预测、导出；在线重置时还需同步迁移 EKF 的位置状态或重新初始化跟踪器，本次尚未接入在线重置流程。
 
 ### 相机跟踪指令
 

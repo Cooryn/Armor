@@ -1,14 +1,15 @@
 // Replay prepared sequences across fixed covariance candidates. Used by tune_fixed_noise.py.
 #include "predictor_armor.hpp"
 #include <array>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-
-using namespace predictor;
+#include <optional>
+#include <stdexcept>
 struct Frame {
     double time;
-    ArmorEKF::State truth = ArmorEKF::State::Zero();
+    ArmorState truth = ArmorState::Zero();
     std::vector<Observation> observations;
 };
 struct Sequence { std::string name; bool synthetic; std::vector<Frame> frames; };
@@ -35,7 +36,7 @@ int main(int argc, char **argv) {
                     for (int i = 0; i < 11; ++i) input >> f.truth(i);
                 }
                 for (int k = 0; k < n; ++k) {
-                    ArmorEKF::Measurement z = ArmorEKF::Measurement::Zero();
+                    ArmorMeasurement z = ArmorMeasurement::Zero();
                     for (int j = 0; j < 4; ++j) input >> z(j);
                     f.observations.push_back({z});
                 }
@@ -48,22 +49,22 @@ int main(int argc, char **argv) {
         double v0, v1, v2, v3;
         while (candidates >> name >> v0 >> v1 >> v2 >> v3) {
             for (const auto &s : sequences) {
-                ArmorEKF b;
+                ArmorEKF b{};
                 b.R = Eigen::Vector4d(v0, v1, v2, v3).asDiagonal();
                 std::array<Stats, 2> stats{};
-                std::optional<ArmorEKF::State> previous;
+                std::optional<ArmorState> previous;
                 double last = 0;
                 for (size_t i = 0; i < s.frames.size(); ++i) {
                     const auto &f = s.frames[i];
                     if (!b.is_initialized) {
                         for (const auto &o : f.observations)
-                            if (b.valid_observation(o.Z_obs)) { b.initialize(o.Z_obs); break; }
+                            if (armor_valid_observation(b, o.Z_obs)) { armor_initialize(b, o.Z_obs); break; }
                         last = f.time;
                         continue;
                     }
-                    b.predict(f.time - last);
+                    armor_predict(b, f.time - last);
                     last = f.time;
-                    const auto result = b.update_multi(f.observations);
+                    const auto result = armor_update_multi(b, f.observations);
                     auto &m = stats[i < s.frames.size() * 7 / 10 ? 0 : 1];
                     m.observations += static_cast<int>(f.observations.size());
                     m.accepted += static_cast<int>(result.first.size());
@@ -80,13 +81,13 @@ int main(int argc, char **argv) {
                         while (future < s.frames.size() && s.frames[future].time < f.time + .05 - 1e-8) ++future;
                         if (future < s.frames.size()) {
                             const auto &target = s.frames[future];
-                            auto forecast = b.forecast(target.time - f.time);
+                            auto forecast = armor_forecast(b, target.time - f.time);
                             for (const auto &o : target.observations) {
-                                if (!b.valid_observation(o.Z_obs)) continue;
-                                ArmorEKF::Measurement residual;
+                                if (!armor_valid_observation(b, o.Z_obs)) continue;
+                                ArmorMeasurement residual;
                                 double smallest = std::numeric_limits<double>::infinity();
                                 for (int id = 0; id < 4; ++id) {
-                                    auto r = ArmorEKF::angular_residual(o.Z_obs, b.h(forecast.state, id));
+                                    auto r = armor_angular_residual(o.Z_obs, armor_h(forecast.state, id));
                                     if (std::abs(r(3)) < smallest) { smallest = std::abs(r(3)); residual = r; }
                                 }
                                 // Every valid future observation is scored, including rejected detections.
@@ -99,22 +100,22 @@ int main(int argc, char **argv) {
                                 // Ground truth is scored at exactly 50 ms; recordings use the next available image.
                                 const auto &left = s.frames[future - 1];
                                 double fraction = (f.time + .05 - left.time) / (target.time - left.time);
-                                const ArmorEKF::State truth = left.truth + fraction * (target.truth - left.truth);
-                                const auto lead = b.forecast(.05);
+                                const ArmorState truth = left.truth + fraction * (target.truth - left.truth);
+                                const auto lead = armor_forecast(b, .05);
                                 for (int axis : {0, 2, 4}) m.center_truth += std::pow(lead.state(axis) - truth(axis), 2);
                                 double error = 0;
                                 for (int id = 0; id < 4; ++id) {
-                                    auto z = b.h(truth, id);
+                                    auto z = armor_h(truth, id);
                                     double smallest = std::numeric_limits<double>::infinity();
                                     double matched_error = 0;
                                     for (int other = 0; other < 4; ++other) {
-                                        auto predicted = b.h(lead.state, other);
-                                        auto r = ArmorEKF::angular_residual(z, predicted);
+                                        auto predicted = armor_h(lead.state, other);
+                                        auto r = armor_angular_residual(z, predicted);
                                         if (std::abs(r(3)) < smallest) {
                                             smallest = std::abs(r(3));
                                             // Compare actual Cartesian plate positions, not spherical measurements.
                                             const double r_true = truth(8) + (id % 2 ? truth(9) : 0);
-                                            const double yaw = truth(6) + id * ArmorEKF::pi / 2;
+                                            const double yaw = truth(6) + id * armor_pi / 2;
                                             Eigen::Vector3d p(truth(0) + r_true * std::sin(yaw),
                                                               truth(2) + (id % 2 ? truth(10) : 0),
                                                               truth(4) - r_true * std::cos(yaw));

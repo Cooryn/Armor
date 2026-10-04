@@ -1,17 +1,15 @@
 #pragma once
 
-#include <opencv2/core.hpp>
+#include <opencv2/opencv.hpp>
 #include <vector>
 
-enum class EnemyColor
+enum EnemyColor
 {
-    RED,
-    BLUE
+    ENEMY_RED,
+    ENEMY_BLUE
 };
 
 cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th = 20, int gray_th = 80);
-
-std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask);
 
 struct Armor
 {
@@ -42,3 +40,6 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
                                float min_detection_score = 0.35f,
                                const std::vector<float> &light_quality = {});
 void drawArmors(cv::Mat &src, const std::vector<Armor> &armors);
+
+// Complete detector stage with the video's calibrated detection thresholds.
+std::vector<Armor> detectArmors(const cv::Mat &image, EnemyColor color);

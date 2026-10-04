@@ -16,13 +16,14 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('--work-dir', type=Path, required=True)
     parser.add_argument('--bin-dir', type=Path, default=ROOT)
+    parser.add_argument('--filter-bin-dir', type=Path, default=ROOT/'tests/build/Release')
     args = parser.parse_args()
     out = args.work_dir.resolve()
     out.mkdir(parents=True, exist_ok=False)
 
     def run(exe, *options, success=True):
         suffix = '.exe' if sys.platform == 'win32' else ''
-        result = subprocess.run([str(args.bin_dir.resolve() / (exe + suffix)), *map(str, options)],
+        result = subprocess.run([str((args.filter_bin_dir if exe == 'camera_filter_replay' else args.bin_dir).resolve() / (exe + suffix)), *map(str, options)],
                                 capture_output=True, timeout=60)
         if (result.returncode == 0) != success:
             raise AssertionError((exe, result.returncode, result.stdout, result.stderr))
@@ -67,6 +68,27 @@ def main():
     pd.DataFrame(telemetry).to_csv(telemetry_csv, index=False)
     frame_options = ['--telemetry', telemetry_csv, '--calibration', calibration]
     run('pose_base', '--input', camera_csv, '--output', base_csv, *frame_options)
+    for origin_time in (-1, -2, float('nan'), float('inf')):
+        for program, source in (('pose_base', camera_csv), ('camera_tracking', base_csv)):
+            rejected_output = out/f'{program}_invalid_origin.csv'
+            run(program, '--input', source, '--output', rejected_output,
+                *frame_options, '--origin-time-ms', origin_time, success=False)
+            assert not rejected_output.exists()
+    shifted_telemetry, shifted_camera = out/'shifted_telemetry.csv', out/'shifted_camera.csv'
+    for source, output in ((telemetry_csv, shifted_telemetry), (camera_csv, shifted_camera)):
+        shifted = pd.read_csv(source)
+        shifted.timestamp += 100
+        shifted.to_csv(output, index=False)
+    shifted_options = ['--telemetry', shifted_telemetry, '--calibration', calibration]
+    shifted_output = out/'shifted_base.csv'
+    run('pose_base', '--input', shifted_camera, '--output', shifted_output, *shifted_options)
+    shifted_base = pd.read_csv(shifted_output)
+    assert shifted_base.base_reference_timestamp_ms.eq(100).all()
+    np.testing.assert_allclose(shifted_base[['x', 'y', 'z']], pd.read_csv(base_csv)[['x', 'y', 'z']], atol=1e-12)
+    rejected_output = out/'zero_origin_outside_coverage.csv'
+    run('pose_base', '--input', shifted_camera, '--output', rejected_output,
+        *shifted_options, '--origin-time-ms', 0, success=False)
+    assert not rejected_output.exists()
     origin = transforms[0][1]
     base = pd.read_csv(base_csv)
     np.testing.assert_allclose(base[['x', 'y', 'z']], np.tile(base_position-origin, (120, 1)), atol=1e-12)
@@ -75,14 +97,28 @@ def main():
     expected_q = np.array([np.cos(heading/2), 0, -np.sin(heading/2), 0])
     np.testing.assert_allclose(base[['qw', 'qx', 'qy', 'qz']], np.tile(expected_q, (120, 1)), atol=1e-12)
     assert base.coordinate_frame.eq('base').all()
-    for exe in ('predictor', 'predictor_polar', 'predictor_armor'):
-        run(exe, '--input', base_csv, '--output-dir', out/'results', '--suffix', 'sim')
-    state_path = out/'results/armor_prediction_result_sim.csv'
+    metadata = ['base_reference_timestamp_ms', 'base_origin_x_m', 'base_origin_y_m', 'base_origin_z_m']
+
+    def filter_base(poses, folder):
+        # Metadata belongs to the caller; the filter only receives typed observations.
+        folder.mkdir(parents=True)
+        fixture = folder/'observations.txt'
+        poses[['frame_id', 'timestamp', 'target_yaw', 'target_pitch', 'distance',
+               'armor_orientation_yaw']].to_csv(fixture, sep=' ', index=False, header=False)
+        run('camera_filter_replay', fixture, folder)
+        for name in ('states', 'futures'):
+            path = folder/f'{name}.csv'
+            result = pd.read_csv(path).merge(poses[['frame_id', 'coordinate_frame', *metadata]],
+                                             on='frame_id', validate='many_to_one')
+            result.to_csv(path, index=False)
+        return folder/'states.csv', folder/'futures.csv'
+
+    state_path, future_path = filter_base(base, out/'results')
     state = pd.read_csv(state_path)
     np.testing.assert_allclose(state[['xc', 'yc', 'zc']], np.tile(center-origin, (119, 1)), atol=1e-7)
     np.testing.assert_allclose(state[['vxc', 'vyc', 'vzc', 'w']], 0, atol=1e-7)
     assert state.coordinate_frame.eq('base').all() and state.accepted_count.eq(1).all()
-    future = pd.read_csv(out/'results/armor_future_prediction_sim.csv')
+    future = pd.read_csv(future_path)
     assert len(future) == 4*len(state) and future.coordinate_frame.eq('base').all()
     np.testing.assert_allclose(np.linalg.norm(future[['qw', 'qx', 'qy', 'qz']], axis=1), 1, atol=1e-12)
     commands_path = out/'camera_gimbal_sim.csv'
@@ -105,19 +141,18 @@ def main():
     reset = pd.read_csv(reset_csv)
     np.testing.assert_allclose(reset[['x', 'y', 'z']], np.tile(base_position-transforms[30][1], (120, 1)), atol=1e-12)
     np.testing.assert_allclose(reset[['qw', 'qx', 'qy', 'qz']], base[['qw', 'qx', 'qy', 'qz']], atol=1e-12)
-    run('predictor_armor', '--input', reset_csv, '--output-dir', out/'reset', '--suffix', 'sim')
-    reset_state = out/'reset/armor_prediction_result_sim.csv'
+    reset_state, _ = filter_base(reset, out/'reset')
     run('camera_tracking', '--input', reset_state, '--output', out/'reset_commands.csv', *reset_options)
     reset_commands = pd.read_csv(out/'reset_commands.csv')
     cols = ['yaw_error_deg', 'pitch_error_deg', 'yaw_rate_dps', 'pitch_rate_dps']
     np.testing.assert_allclose(reset_commands[cols], commands[cols], atol=1e-7)
     run('camera_tracking', '--input', reset_state, '--output', out/'wrong_origin.csv', *frame_options, success=False)
-    mixed = base.copy()
-    metadata = ['base_reference_timestamp_ms', 'base_origin_x_m', 'base_origin_y_m', 'base_origin_z_m']
-    mixed.loc[50, metadata] = reset.loc[50, metadata]
+    mixed = state.copy()
+    mixed.loc[50, metadata] = pd.read_csv(reset_state).loc[50, metadata]
     mixed.to_csv(out/'mixed.csv', index=False)
-    for exe in ('predictor', 'predictor_polar', 'predictor_armor'):
-        run(exe, '--input', out/'mixed.csv', '--output-dir', out/'mixed_results', success=False)
+    run('camera_tracking', '--input', out/'mixed.csv', '--output', out/'mixed_commands.csv',
+        *frame_options, success=False)
+    assert not (out/'mixed_commands.csv').exists()
 
     loss = state.copy()
     loss.loc[10:20, ['accepted_count', 'status']] = [0, 'prediction_only']

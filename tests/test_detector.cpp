@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
             {103,98},{108,100},{103,102},{103,120},{97,120}}};
         cv::Mat spur_mask = cv::Mat::zeros(200, 200, CV_8UC1);
         cv::fillPoly(spur_mask, outlines, cv::Scalar(255));
-        outlines = extractContours(spur_mask);
+        cv::findContours(spur_mask, outlines, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
         std::vector<float> quality;
         auto fitted = getValidLightRects(outlines, 55, &quality);
         require(fitted.size() == 1 && quality.size() == 1, "Missing fitted light");
@@ -93,20 +93,20 @@ int main(int argc, char **argv) {
         cv::projectPoints(object, cv::Vec3d(0,.4,0), cv::Vec3d(.1,.2,3), K, distortion, projected);
         Armor armor;
         std::copy(projected.begin(), projected.end(), armor.vertices);
-        Solver solver(K, distortion);
-        require(solver.solve(armor), "Rejected exact physical rectangle");
+        Solver solver{K, distortion};
+        require(solver_solve(solver, armor), "Rejected exact physical rectangle");
         require(armor.reprojection_error < .01, "Unexpected reprojection error");
         require(std::abs(armor.yaw+ .4*180/CV_PI) < .01, "PnP yaw sign changed");
         require(armor.pnp_candidate_count >= 1, "No validated PnP candidates recorded");
         // Distorted, tilted plates on both sides of zero must keep their pose.
         cv::Mat lens = (cv::Mat_<double>(1,5) << -.15,.03,.001,-.002,0);
-        Solver distorted_solver(K, lens);
+        Solver distorted_solver{K, lens};
         for (double yaw : {-.9, -.3, .001, .3, .9}) {
             cv::Vec3d rotation(.08, yaw, -.03), position(.15,.1,2.5);
             cv::projectPoints(object, rotation, position, K, lens, projected);
             Armor sample;
             std::copy(projected.begin(), projected.end(), sample.vertices);
-            require(distorted_solver.solve(sample), "Exact distorted plate rejected");
+            require(solver_solve(distorted_solver, sample), "Exact distorted plate rejected");
             cv::Mat expected_rotation, recovered_rotation;
             cv::Rodrigues(rotation, expected_rotation);
             cv::Rodrigues(sample.rvec, recovered_rotation);
@@ -125,18 +125,18 @@ int main(int argc, char **argv) {
             a->vertices[2] = a->center+cv::Point2f(40,15);
             a->vertices[3] = a->center+cv::Point2f(40,-15);
         }
-        solver.finishFrame({first,second}, 0);
-        auto hints = solver.yawHints({second,first}, 1./30);
+        solver_finish_frame(solver, {first,second}, 0);
+        auto hints = solver_yaw_hints(solver, {second,first}, 1./30);
         require(hints[0] == 30 && hints[1] == -20, "Temporal matching depends on order");
-        hints = solver.yawHints({first,first}, 1./30);
+        hints = solver_yaw_hints(solver, {first,first}, 1./30);
         require(hints[0] == -20 && hints[1] == -20, "Nearest matching failed to reuse prior");
-        hints = solver.yawHints({first}, .2);
+        hints = solver_yaw_hints(solver, {first}, .2);
         require(!std::isfinite(hints[0]), "Stale pose used after long time gap");
-        solver.finishFrame({}, 1./30);
-        hints = solver.yawHints({first}, 2./30);
+        solver_finish_frame(solver, {}, 1./30);
+        hints = solver_yaw_hints(solver, {first}, 2./30);
         require(!std::isfinite(hints[0]), "Missing frame failed to clear pose history");
         armor.vertices[1] = armor.vertices[0];
-        require(!solver.solve(armor), "Accepted degenerate vertices");
+        require(!solver_solve(solver, armor), "Accepted degenerate vertices");
 
         if (argc > 1) {
             cv::VideoCapture cap(std::string(argv[1]) + "/assets/video/video_1.avi");
@@ -144,8 +144,9 @@ int main(int argc, char **argv) {
             cap.set(cv::CAP_PROP_POS_FRAMES, 753);
             cv::Mat frame;
             require(cap.read(frame), "Cannot read regression frame");
-            auto mask = extractColor(frame, EnemyColor::RED, 70, 170);
-            auto contours = extractContours(mask);
+            auto mask = extractColor(frame, ENEMY_RED, 70, 170);
+            std::vector<std::vector<cv::Point>> contours;
+            cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
             selected = matchArmors(getValidLightRects(contours, 55, nullptr, 1.5, 40), 20, 2, .8f, .8f);
             bool correct = false;
             for (const auto &a : selected) {
@@ -160,25 +161,25 @@ int main(int argc, char **argv) {
             require(cap.isOpened(), "Cannot open side-plate regression video");
             cap.set(cv::CAP_PROP_POS_FRAMES, 41);
             require(cap.read(frame), "Cannot read side-plate regression frame");
-            mask = extractColor(frame, EnemyColor::RED, 70, 170);
-            contours = extractContours(mask);
+            mask = extractColor(frame, ENEMY_RED, 70, 170);
+            cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
             selected = matchArmors(getValidLightRects(contours, 55, nullptr, 1.5, 40), 20, 2, .8f, .8f);
             require(selected.size() == 2, "Thin side plate lost by shape filtering");
 
             // The refined endpoints must retain the known frame-220 detection.
             cap.set(cv::CAP_PROP_POS_FRAMES, 220);
             require(cap.read(frame), "Cannot read refinement regression frame");
-            mask = extractColor(frame, EnemyColor::RED, 70, 170);
-            contours = extractContours(mask);
+            mask = extractColor(frame, ENEMY_RED, 70, 170);
+            cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
             fitted = getValidLightRects(contours, 55, &quality, 1.5, 40);
             selected = matchArmors(fitted,20,2,.8f,.8f,3.1f,.35f,quality);
             cv::Mat K2 = (cv::Mat_<double>(3,3) << 1711.311186,0,732.488057,
                 0,1714.616882,546.930868,0,0,1);
             cv::Mat D2 = (cv::Mat_<double>(1,5) << -.119922,-.078593,.007511,-.028028,0);
-            Solver solver2(K2, D2);
+            Solver solver2{K2, D2};
             bool recovered = false;
             for (auto a : selected) {
-                bool solved = solver2.solve(a);
+                bool solved = solver_solve(solver2, a);
                 recovered |= solved;
             }
             require(recovered, "Endpoint refinement lost video 2 frame 220");

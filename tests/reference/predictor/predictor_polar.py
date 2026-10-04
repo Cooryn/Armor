@@ -46,7 +46,7 @@ class PolarEKF:
         current_plate_yaw = body_yaw + plate_idx * (np.pi / 2.0)
         
         # 用这块板子的角度去推算它的 3D 坐标
-        xa = xc - r * np.sin(current_plate_yaw)
+        xa = xc + r * np.sin(current_plate_yaw)
         za = zc - r * np.cos(current_plate_yaw)
         ya = yc 
         
@@ -148,7 +148,7 @@ def run_predict_polar(csv_input_path, output_dir, suffix="1"):
             r_init = 0.26 # 初始装甲板半径先验
             
             # 从相机的相对坐标反推车体旋转中心 (xc, zc)
-            xc_init = obs['x'] + r_init * np.sin(obs_yaw)
+            xc_init = obs['x'] - r_init * np.sin(obs_yaw)
             zc_init = obs['z'] + r_init * np.cos(obs_yaw)
             
             ekf.X = np.array([

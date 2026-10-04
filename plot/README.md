@@ -14,14 +14,14 @@
 | `__init__.py` | 将目录声明为 Python 包 | 无 | 不生成图像，不单独运行 |
 
 当前主要调试装甲板检测与完整 EKF 时，使用 `raw.py`、`armor.py` 和 `video.py` 即可。
-`basic.py`、`polar.py` 用于保留的旧预测器对照。
+`basic.py`、`polar.py` 用于 Armor 入口中选定的 SinglePlate、Polar 模型。
 
 ```powershell
 # 直接查看原始检测数据，不需要先运行预测
 .\.venv\Scripts\python -m plot.raw --suffix 1
 
-# 先运行完整 EKF，再独立绘图
-.\predictor_armor.exe --suffix 1
+# 在 src/Armor.cpp 选择 Armor 模型并重新编译，运行后独立绘图
+.\Armor.exe
 .\.venv\Scripts\python -m plot.armor --suffix 1
 
 # 视频叠加：自动选择对应相机参数
@@ -54,8 +54,8 @@
 也可用 `--no-diagnostics` 显式关闭诊断标记。A0–A3 是跟踪器相对编号，不保证对应物理前后左右。
 右侧显示帧号、源视频时间、更新/只预测/无状态、中心、角速度、结构参数及目标局部放大图。
 中心轨迹默认保留 30 帧，`--trail-length 0` 可关闭。当前帧没有 EKF 记录时不沿用旧状态。
-侧栏显示未来预测提前量和目标时间。提前量由 `predictor_armor.exe --prediction-horizon-ms`
-设置，默认 50 ms；修改后需重新生成预测 CSV 再绘制视频。`0` 关闭提前预测框。
+侧栏显示未来预测提前量和目标时间。提前量在 `src/Armor.cpp` 的 `prediction_horizon_ms`
+中设置，默认 50 ms；修改后重新编译并运行 Armor，再绘制视频。`0` 关闭提前预测框。
 旧 CSV 缺少未来字段时只显示当前估计，字段不完整或时间不一致时停止导出并提示。
 未来框叠加在当前画面上，仅表示预期位置，不应与当前观测直接计算未来预测误差。
 四块板全部显示，未模拟遮挡。误差图和 RMSE 文本仍是当前帧更新前残差，不是未来预测误差。

@@ -13,6 +13,10 @@ PnP 第 2 项对比：`.\.venv\Scripts\python -B -m tests.plotting.pnp_candidate
 所有测试脚本、检测前后对照、历史分析图片、临时试验和测试构建集中在这里。
 正式程序输出仍位于仓库的 `data/`、`results/`。
 
+原生测试直接初始化滤波和控制数据，调用更新接口检查参数错误；配置校验随首次更新执行。三种在线预测模型继续按同一帧时间轴与 NumPy 对照，验证合并辅助函数后状态、诊断、预测几何及 RMSE 保持一致。
+
+标准库表示简化的回归覆盖：板号 `-1` 自动关联、指定板号 `0`、非法板号、时间 `0` 的重复帧检查和目标丢失计时，以及默认遥测原点、显式原点 `0` 和非法原点时间。
+
 ```text
 tests/
   test_*.py                  Python 回归测试
@@ -50,22 +54,51 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1 -PythonOnly
 EKF 统计窗口：视频 1 为 2–25 秒，视频 2 为 2–10 秒；
 漏检和双板异常统计覆盖全视频。残差只展示每帧最近的被接受观测。
 
-## C++ predictor 迁移回归
+## 在线预测回归
 
-正式预测器位于根目录 `include/`、`src/`；`reference/predictor/` 是迁移时保留的 Python 基准，
-包含迁移前工作区中的修改，只用于测试，不再作为应用入口。
-`test_*.py` 的滤波器测试验证参考实现；原生 C++ 行为由 `tests/test_predictors.cpp`
-及 `verify_predictor_equivalence.py` 联合验证。`run.ps1` 会运行全部三部分。
+`include/predictor*.hpp` 声明 EKF 接口，`src/predictor*.cpp` 实现算法。
+`src/Armor.cpp` 只包含统一视频配置及模块调用链。
+`predictor.hpp/.cpp` 提供 `video_predictor_*`、`prediction_output_*` 普通函数，状态使用只存数据的结构体，均不依赖 OpenCV；
+`lightbar_detector.hpp/.cpp` 只负责检测与检测结果绘制，`solver.hpp/.cpp` 提供逐帧 PnP。
+视频输入、窗口及预测画面输出放在现有 `camera_tracking.hpp/.cpp`。
+程序通过 `predictor_filters`、`armor_vision`、`armor_video` 链接对应实现，无新增模块文件；
+预测接口与导出测试只链接 `predictor_filters`，不再依赖图像模块。
+三个独立 predictor 可执行目标及 CSV 命令行入口已移除。
 
-基础预测器的参考实现已同步为六维 `SinglePlateEKF`。原生测试用有限差分检查解析雅可比，
-并验证球坐标初始化、零创新、角度跨界、变步长/漏帧轨迹、无效观测和协方差正定性。
-等价验证保留 CSV/TXT 格式检查，基础预测器不再接收噪声模式或预测提前量参数。
+`test_predictors.cpp` 验证解析雅可比、零创新、跨界角度、变步长轨迹、
+协方差正定性，以及 Eigen 增益/NIS 与独立 LU 计算。
+`test_video_predictor.cpp` 验证最近有效板、并列首条、四板联合更新、连续漏检、
+末尾预测、空/单帧输入、非变异未来预测、非法时钟和写入错误；
+测试通过公共头文件调用 `video_predictor_update` 和 `prediction_output_write/finish`，
+不再包含入口 `.cpp` 或依赖排除入口的编译宏。
+同一测试程序提供测试专用的 `--replay`，不作为正式 CSV 工具。
 
-三种模型的矩阵尺寸由 Eigen 类型约束。原生测试将 1–4 块板的联合更新、NIS 和极坐标增益与独立的动态矩阵 LU 计算比较，并检查协方差正定性及奇异系统报错；Python 参考保留 NumPy，以独立验证 Eigen 实现。
-
-独立验证（仓库根目录，先构建 predictor 并生成两份 pose_raw CSV）：
+`reference/predictor/video_predictor.py` 使用 NumPy 按完整视频帧时钟重放，
+`verify_predictor_equivalence.py` 对比 C++ 全部结果列、关联诊断、未来四板、
+显示几何及六位小数 RMSE。两段真实记录和合成序列共 35 组案例。
+其余 Python 参考 CSV runner 保留为历史回归夹具，不作为应用入口。
 
 ```powershell
 ctest --test-dir tests/build -C Release --output-on-failure
-.\.venv\Scripts\python.exe -B tests/verify_predictor_equivalence.py --python-root . --bin-dir . --work-dir tests/outputs/predictor-comparison-new
+.\.venv\Scripts\python.exe -B tests/verify_predictor_equivalence.py --python-root . --bin-dir tests/build/Release --work-dir tests/outputs/predictor-comparison-new
 ```
+
+上述对照需要两份 `data/pose_raw_1.csv` / `pose_raw_2.csv`，
+可依次配置并运行 Armor 生成。`run.ps1` 构建/运行原生测试、Python 测试、
+在线 NumPy 对照和相机坐标/控制仿真。
+
+视频集成验证单独运行，会临时修改顶部源码参数，分别构建三种模型及红/蓝检测。
+蓝色轨迹夹具交换现有红色视频的 B/R 通道。检查完整帧数、源 FPS、全部输出列、
+相机系标签及 RMSE，并保存叠加截图。结束时恢复原始配置并重建 Armor。
+
+```powershell
+.\.venv\Scripts\python.exe -B tests/verify_armor_video.py --preview
+```
+
+`--preview` 额外打开六帧 OpenCV 预览，不提供命令行视频/模型覆盖。
+集成视频、CSV、截图和构建日志集中保存于 `tests/outputs/armor-video/`。
+
+相机坐标/控制仿真通过测试专用 `camera_filter_replay` 调用 `ArmorEKF`（`base_frame=true`），
+不依赖已删除的 predictor 可执行文件。Python 调用方按帧传递基座元数据，
+并在控制导出端检查混合原点及错误原点；测试桥接程序只在 `BUILD_TESTING=ON` 时构建。
+Polar 另有独立物理几何回归，检查 30° 朝向下中心、四板位置及静止未来预测，避免仅靠同公式的 NumPy 对照掩盖符号错误。

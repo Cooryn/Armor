@@ -1,5 +1,5 @@
 #include "lightbar_detector.hpp"
-#include <opencv2/imgproc.hpp>
+#include <opencv2/opencv.hpp>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -18,7 +18,7 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
     cv::Mat color_mask;
 
     // 颜色差分+灰度阈值过滤
-    if (color == EnemyColor::RED)
+    if (color == ENEMY_RED)
     {
         cv::Mat r_sub_b;
         cv::subtract(channels[2], channels[0], r_sub_b);
@@ -51,12 +51,6 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
 }
 
 // 提取灯条轮廓
-std::vector<std::vector<cv::Point>> extractContours(const cv::Mat &mask)
-{
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
-    return contours;
-}
 
 // 筛选有效灯条的旋转矩形
 std::vector<cv::RotatedRect> getValidLightRects(
@@ -152,36 +146,22 @@ std::vector<cv::RotatedRect> getValidLightRects(
     return rects;
 }
 
-// 创建匿名命名空间
-namespace
+// 重定义灯条信息
+struct LightGeometry
 {
-    // 重定义灯条信息
-    struct LightGeometry
-    {
-        float length, width;
-        cv::Point2f axis;
-        cv::Point2f top, bottom;
-    };
+    float length, width;
+    cv::Point2f axis;
+    cv::Point2f top, bottom;
+};
 
-    // 计算灯条几何信息
-    LightGeometry geometry(const cv::RotatedRect &rect)
-    {
-        const float angle = (rect.angle + (rect.size.width < rect.size.height ? 90.f : 0.f)) * static_cast<float>(CV_PI / 180.0);
-        cv::Point2f axis(std::cos(angle), std::sin(angle));
-        if (axis.y < 0)
-            axis *= -1.f;
-        const float length = std::max(rect.size.width, rect.size.height);
-        return {length, std::min(rect.size.width, rect.size.height), axis,
-                rect.center - axis * (length / 2), rect.center + axis * (length / 2)};
-    }
+// 计算灯条几何信息
 
-    // 定义候选装甲板
-    struct Candidate
-    {
-        size_t left, right;
-        double score;
-    };
-}
+// 定义候选装甲板
+struct Candidate
+{
+    size_t left, right;
+    double score;
+};
 
 // 灯条匹配装甲板
 std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
@@ -225,7 +205,15 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
     // 初始化LightGeometry对象
     std::vector<LightGeometry> lights;
     for (const auto &bar : bars)
-        lights.push_back(geometry(bar));
+    {
+        const float angle = (bar.angle + (bar.size.width < bar.size.height ? 90.f : 0.f)) * static_cast<float>(CV_PI / 180.0);
+        cv::Point2f axis(std::cos(angle), std::sin(angle));
+        if (axis.y < 0)
+            axis *= -1.f;
+        const float length = std::max(bar.size.width, bar.size.height);
+        lights.push_back({length, std::min(bar.size.width, bar.size.height), axis,
+                          bar.center - axis * (length / 2), bar.center + axis * (length / 2)});
+    }
     std::vector<Candidate> candidates;
 
     // 枚举所有灯条组合
@@ -319,4 +307,14 @@ void drawArmors(cv::Mat &src, const std::vector<Armor> &armors)
             cv::line(src, armor.vertices[i], armor.vertices[(i + 1) % 4], cv::Scalar(0, 255, 0), 2);
         }
     }
+}
+
+std::vector<Armor> detectArmors(const cv::Mat &image, EnemyColor color)
+{
+    const auto mask = extractColor(image, color, 70, 170);
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+    std::vector<float> quality;
+    const auto lights = getValidLightRects(contours, 55, &quality, 1.5, 40);
+    return matchArmors(lights, 20, 2.f, .8f, .8f, 3.1f, .35f, quality);
 }
