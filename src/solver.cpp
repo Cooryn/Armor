@@ -3,14 +3,6 @@
 #include <cmath>
 #include <algorithm>
 
-Solver::Solver(const cv::Mat &camera, const cv::Mat &distortion)
-{
-    camera_matrix = camera;
-    distort_coeffs = distortion;
-}
-
-// 构造函数
-
 // PnP求解装甲板位姿
 bool Solver::solve(Armor &armor, double yaw_hint)
 {
@@ -128,7 +120,7 @@ bool Solver::solve(Armor &armor, double yaw_hint)
 // 前后帧装甲板匹配
 std::vector<int> Solver::temporal_matches(const std::vector<Armor> &armors, double timestamp) const
 {
-    std::vector<int> matches(armors.size(), -1);      // 初始化全部为未匹配
+    std::vector<int> matches(armors.size(), -1); // 初始化全部为未匹配
     const double dt = timestamp - previous_time; // 计算当前帧和上一帧的时间差
     if (!std::isfinite(dt) || dt <= 0 || dt > .1 || previous.empty())
         return matches; // 判断上一帧信息是否可用
@@ -199,7 +191,7 @@ void Solver::finish_frame(const std::vector<Armor> &armors, double timestamp)
 }
 
 SolvedFrame Solver::solve_frame(std::vector<Armor> armors, double timestamp_ms,
-                               const std::string &video_stem)
+                                const std::string &video_stem)
 {
     if (camera_matrix.empty())
     {
@@ -211,9 +203,9 @@ SolvedFrame Solver::solve_frame(std::vector<Armor> armors, double timestamp_ms,
         else
         {
             camera_matrix = (cv::Mat_<double>(3, 3) << 1286.307063384126, 0, 645.34450819155256,
-                                  0, 1288.1400736562441, 483.6163720308021, 0, 0, 1);
+                             0, 1288.1400736562441, 483.6163720308021, 0, 0, 1);
             distort_coeffs = (cv::Mat_<double>(1, 5) << -.47562935060124745, .21831745829617311,
-                                   .0004957613589406044, -.00034617769548693592, 0);
+                              .0004957613589406044, -.00034617769548693592, 0);
         }
     }
 

@@ -9,22 +9,26 @@
 
 static bool single_plate_valid_geometry(const Eigen::Matrix<double, 6, 1> &s);
 
-double single_plate_wrap_to_pi(double angle) {
+double single_plate_wrap_to_pi(double angle)
+{
     double result = std::fmod(angle + single_plate_pi, 2 * single_plate_pi);
     return (result < 0 ? result + 2 * single_plate_pi : result) - single_plate_pi;
 }
 
-bool single_plate_valid_observation(const Eigen::Vector3d &z) {
+bool single_plate_valid_observation(const Eigen::Vector3d &z)
+{
     return z.allFinite() && z(2) > single_plate_geometry_epsilon && std::abs(z(1)) < single_plate_pi / 2 &&
            z(2) * std::cos(z(1)) > single_plate_geometry_epsilon;
 }
 
-Eigen::Vector3d single_plate_h(const Eigen::Matrix<double, 6, 1> &s) {
+Eigen::Vector3d single_plate_h(const Eigen::Matrix<double, 6, 1> &s)
+{
     const double horizontal = std::hypot(s(0), s(4));
     return {std::atan2(s(0), s(4)), std::atan2(s(2), horizontal), std::hypot(horizontal, s(2))};
 }
 
-Eigen::Matrix<double, 3, 6> single_plate_jacobian(const Eigen::Matrix<double, 6, 1> &s) {
+Eigen::Matrix<double, 3, 6> single_plate_jacobian(const Eigen::Matrix<double, 6, 1> &s)
+{
     if (!single_plate_valid_geometry(s))
         throw std::invalid_argument("Singular single-plate observation geometry");
     const double x = s(0), y = s(2), z = s(4), horizontal = std::hypot(x, z),
@@ -99,7 +103,8 @@ bool SinglePlateEKF::update(const Eigen::Vector3d &z)
     return true;
 }
 
-static bool single_plate_valid_geometry(const Eigen::Matrix<double, 6, 1> &s) {
+static bool single_plate_valid_geometry(const Eigen::Matrix<double, 6, 1> &s)
+{
     return s.allFinite() && std::hypot(s(0), s(4)) > single_plate_geometry_epsilon &&
            std::hypot(std::hypot(s(0), s(4)), s(2)) > single_plate_geometry_epsilon;
 }
@@ -130,12 +135,6 @@ static PredictionGeometry armor_geometry(const Forecast &forecast)
     return geometry;
 }
 
-VideoPredictor::VideoPredictor(PredictorType model, double prediction_horizon_ms)
-{
-    type = model;
-    horizon_ms = prediction_horizon_ms;
-}
-
 VideoPrediction VideoPredictor::update(std::int64_t frame, double timestamp, const std::vector<VideoObservation> &obs)
 {
     if (!std::isfinite(horizon_ms) || horizon_ms < 0)
@@ -153,10 +152,7 @@ VideoPrediction VideoPredictor::update(std::int64_t frame, double timestamp, con
     const VideoObservation *selected = nullptr;
     for (const auto &o : obs)
     {
-        const bool valid = type == PREDICTOR_ARMOR ?
-            armor.valid_observation(o.measurement) :
-            o.position.allFinite() && single_plate_valid_observation(o.measurement.head<3>()) &&
-            (type == PREDICTOR_SINGLE_PLATE || o.measurement.allFinite());
+        const bool valid = type == PREDICTOR_ARMOR ? armor.valid_observation(o.measurement) : o.position.allFinite() && single_plate_valid_observation(o.measurement.head<3>()) && (type == PREDICTOR_SINGLE_PLATE || o.measurement.allFinite());
         if (valid && (!selected || o.measurement(2) < selected->measurement(2)))
             selected = &o;
     }
@@ -164,8 +160,8 @@ VideoPrediction VideoPredictor::update(std::int64_t frame, double timestamp, con
     if (type == PREDICTOR_ARMOR)
         for (const auto &o : obs)
             all.push_back({o.measurement});
-    const bool initialized = type == PREDICTOR_SINGLE_PLATE ? basic.initialized_ :
-                             type == PREDICTOR_POLAR ? polar.is_initialized : armor.is_initialized;
+    const bool initialized = type == PREDICTOR_SINGLE_PLATE ? basic.initialized_ : type == PREDICTOR_POLAR ? polar.is_initialized
+                                                                                                           : armor.is_initialized;
     if (!initialized)
     {
         if (selected)
@@ -226,7 +222,7 @@ VideoPrediction VideoPredictor::update(std::int64_t frame, double timestamp, con
             if (selected)
             {
                 const int id = polar_round_even(polar_wrap_to_pi(selected->measurement(3) - polar.X(6)) /
-                                                    (polar_pi / 2));
+                                                (polar_pi / 2));
                 errors = polar_angular_residual(polar_h(polar.X, id), selected->measurement);
                 polar.update(selected->measurement);
             }
@@ -269,8 +265,8 @@ VideoPrediction VideoPredictor::update(std::int64_t frame, double timestamp, con
         }
         result.status = updated ? "updated" : "prediction_only";
     }
-    result.initialized = type == PREDICTOR_SINGLE_PLATE ? basic.initialized_ :
-                         type == PREDICTOR_POLAR ? polar.is_initialized : armor.is_initialized;
+    result.initialized = type == PREDICTOR_SINGLE_PLATE ? basic.initialized_ : type == PREDICTOR_POLAR ? polar.is_initialized
+                                                                                                       : armor.is_initialized;
     if (result.initialized)
     {
         const double forecast_dt = horizon_ms / 1000;
@@ -300,77 +296,13 @@ VideoPrediction VideoPredictor::update(std::int64_t frame, double timestamp, con
 
 // Prediction CSV and RMSE output.
 
-constexpr const char *basic_header =
-    "frame_id,predicted_x,observed_x,error_x,predicted_z,observed_z,error_z,"
-    "predicted_yaw,observed_yaw,error_yaw,predicted_distance,observed_distance,error_distance";
-constexpr const char *polar_header =
-    "frame_id,xc,vxc,yc,vyc,zc,vzc,body_yaw,w,r,err_target_yaw,err_target_pitch,"
-    "err_distance,err_armor_yaw,obs_armor_yaw";
-constexpr const char *armor_header =
-    "frame_id,timestamp,prediction_horizon_ms,prediction_timestamp,future_xc,future_yc,future_zc,"
-    "future_body_yaw,xc,yc,zc,vxc,vyc,vzc,w,xa,za,armor_id,body_yaw,pred_armor_yaw,obs_armor_yaw,"
-    "err_target_yaw,err_target_pitch,err_distance,err_armor_yaw,r,dl,dh,observation_count,"
-    "accepted_count,rejected_count,status";
-
-PredictionOutput::PredictionOutput()
-{
-    type = PREDICTOR_ARMOR;
-    finished = true;
-}
-
-PredictionOutput::PredictionOutput(PredictorType model, const std::filesystem::path &directory,
-                                        const std::string &suffix)
-{
-    type = model;
-
-    if (suffix.empty() || suffix.find_first_of("/\\") != std::string::npos)
-        throw std::invalid_argument("Invalid output suffix");
-    const char *prefix;
-    const char *header;
-    switch (type)
-    {
-    case PREDICTOR_SINGLE_PLATE:
-        prefix = "";
-        header = basic_header;
-        break;
-    case PREDICTOR_POLAR:
-        prefix = "polar_";
-        header = polar_header;
-        break;
-    case PREDICTOR_ARMOR:
-        prefix = "armor_";
-        header = armor_header;
-        break;
-    default:
-        throw std::invalid_argument("Unknown predictor type");
-    }
-    auto open = [](CsvOutput &csv, const std::filesystem::path &path, const char *header) {
-        csv.stream_.open(path);
-        if (!csv.stream_)
-            throw std::runtime_error("Cannot write " + path.string());
-        csv.stream_.exceptions(std::ios::badbit | std::ios::failbit);
-        csv.stream_ << header << '\n'
-                << std::setprecision(17);
-    };
-    std::filesystem::create_directories(directory);
-    open(results, directory / (std::string(prefix) + "prediction_result_" + suffix + ".csv"), header);
-    metrics_path = directory / (std::string(prefix) + "rmse_result_" + suffix + ".txt");
-    if (type == PREDICTOR_ARMOR)
-    {
-        open(logs, directory / ("armor_observation_diagnostics_" + suffix + ".csv"),
-                  "frame_id,observation_index,accepted,armor_id,nis,reason,timestamp,observed_distance,"
-                  "observed_armor_yaw,best_candidate_id,distance_residual");
-        open(futures, directory / ("armor_future_prediction_" + suffix + ".csv"),
-                     "frame_id,timestamp,prediction_timestamp,prediction_horizon_ms,armor_id,x,y,z,"
-                     "armor_orientation_yaw,source_status");
-    }
-}
-
 void PredictionOutput::write(std::int64_t frame, double timestamp, const std::vector<VideoObservation> &obs,
                              const VideoPrediction &prediction)
 {
-    if (finished) throw std::logic_error("Cannot write finished prediction output");
-    auto numbers = [](CsvOutput &csv, std::initializer_list<double> values) {
+    if (finished)
+        throw std::logic_error("Cannot write finished prediction output");
+    auto numbers = [](CsvOutput &csv, std::initializer_list<double> values)
+    {
         for (double value : values)
         {
             csv.stream_ << (csv.first_ ? "" : ",");
@@ -379,8 +311,10 @@ void PredictionOutput::write(std::int64_t frame, double timestamp, const std::ve
             csv.first_ = false;
         }
     };
-    if (type == PREDICTOR_ARMOR) {
-        for (const auto &d : prediction.diagnostics) {
+    if (type == PREDICTOR_ARMOR)
+    {
+        for (const auto &d : prediction.diagnostics)
+        {
             const auto &z = obs.at(d.observation_index).measurement;
             numbers(logs, {double(frame), double(d.observation_index)});
             logs.stream_ << "," << (d.accepted ? "True" : "False");
@@ -391,16 +325,22 @@ void PredictionOutput::write(std::int64_t frame, double timestamp, const std::ve
             logs.first_ = true;
         }
     }
-    if (!prediction.value_count) return;
-    const std::size_t columns = type == PREDICTOR_SINGLE_PLATE ? 13 : type == PREDICTOR_POLAR ? 15 : 31;
-    if (prediction.value_count != columns) throw std::logic_error("Prediction/output model mismatch");
-    for (std::size_t i = 0; i < columns; ++i) numbers(results, {prediction.values[i]});
-    if (type == PREDICTOR_ARMOR) {
+    if (!prediction.value_count)
+        return;
+    const std::size_t columns = type == PREDICTOR_SINGLE_PLATE ? 13 : type == PREDICTOR_POLAR ? 15
+                                                                                              : 31;
+    if (prediction.value_count != columns)
+        throw std::logic_error("Prediction/output model mismatch");
+    for (std::size_t i = 0; i < columns; ++i)
+        numbers(results, {prediction.values[i]});
+    if (type == PREDICTOR_ARMOR)
+    {
         results.stream_ << "," << prediction.status;
-        for (std::size_t i = 0; i < prediction.future.plates.size(); ++i) {
+        for (std::size_t i = 0; i < prediction.future.plates.size(); ++i)
+        {
             const auto &p = prediction.future.plates[i];
             numbers(futures, {double(frame), timestamp, timestamp + prediction.horizon_ms, prediction.horizon_ms,
-                             double(i), p(0), p(1), p(2), p(3)});
+                              double(i), p(0), p(1), p(2), p(3)});
             futures.stream_ << "," << prediction.status;
             futures.stream_ << '\n';
             futures.first_ = true;
@@ -408,9 +348,14 @@ void PredictionOutput::write(std::int64_t frame, double timestamp, const std::ve
     }
     results.stream_ << '\n';
     results.first_ = true;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 4; ++i)
+    {
         const double e = prediction.errors(i);
-        if (std::isfinite(e)) { squared_errors[i] += e * e; ++error_counts[i]; }
+        if (std::isfinite(e))
+        {
+            squared_errors[i] += e * e;
+            ++error_counts[i];
+        }
     }
 }
 
@@ -419,7 +364,8 @@ void PredictionOutput::finish()
     if (finished)
         return;
     for (auto *csv : {&results, &logs, &futures})
-        if (csv->stream_.is_open()) {
+        if (csv->stream_.is_open())
+        {
             csv->stream_.flush();
             csv->stream_.close();
         }

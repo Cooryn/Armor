@@ -3,21 +3,24 @@
 #include <cmath>
 #include <stdexcept>
 
-double polar_wrap_to_pi(double a) {
+double polar_wrap_to_pi(double a)
+{
     double r = std::fmod(a + polar_pi, 2 * polar_pi);
     if (r < 0)
         r += 2 * polar_pi;
     return r - polar_pi;
 }
 
-Eigen::Vector4d polar_angular_residual(const Eigen::Vector4d &a, const Eigen::Vector4d &b) {
+Eigen::Vector4d polar_angular_residual(const Eigen::Vector4d &a, const Eigen::Vector4d &b)
+{
     Eigen::Vector4d d = a - b;
     for (int i : {0, 1, 3})
         d(i) = polar_wrap_to_pi(d(i));
     return d;
 }
 
-int polar_round_even(double x) {
+int polar_round_even(double x)
+{
     double lo = std::floor(x), f = x - lo;
     return static_cast<int>(f < .5                            ? lo
                             : f > .5                          ? lo + 1
@@ -34,7 +37,8 @@ void PolarEKF::predict(double dt)
     P = F * P * F.transpose() + Q;
 }
 
-Eigen::Vector4d polar_h(const Eigen::Matrix<double, 9, 1> &s, int plate_idx) {
+Eigen::Vector4d polar_h(const Eigen::Matrix<double, 9, 1> &s, int plate_idx)
+{
     double yaw = s(6) + plate_idx * polar_pi / 2, x = s(0) + s(8) * std::sin(yaw),
            z = s(4) - s(8) * std::cos(yaw), y = s(2);
     return {polar_wrap_to_pi(std::atan2(x, z)),
@@ -42,7 +46,8 @@ Eigen::Vector4d polar_h(const Eigen::Matrix<double, 9, 1> &s, int plate_idx) {
             std::sqrt(x * x + y * y + z * z), polar_wrap_to_pi(yaw)};
 }
 
-Eigen::Matrix<double, 4, 9> polar_get_jacobian(const Eigen::Matrix<double, 9, 1> &s, int id) {
+Eigen::Matrix<double, 4, 9> polar_get_jacobian(const Eigen::Matrix<double, 9, 1> &s, int id)
+{
     Eigen::Matrix<double, 4, 9> H = Eigen::Matrix<double, 4, 9>::Zero();
     const Eigen::Vector4d base = polar_h(s, id);
     for (int i = 0; i < 9; ++i)

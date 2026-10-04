@@ -121,7 +121,7 @@ inline Eigen::Isometry3d CameraFrames::mechanical_at(double timestamp_ms) const
     auto angle = [f](double a, double b)
     { return a + f * std::remainder(b - a, 360.0); };
     return transform({timestamp_ms, angle(left.yaw_deg, right->yaw_deg),
-                                          angle(left.pitch_deg, right->pitch_deg), angle(left.roll_deg, right->roll_deg)});
+                      angle(left.pitch_deg, right->pitch_deg), angle(left.roll_deg, right->roll_deg)});
 }
 
 inline Eigen::Isometry3d CameraFrames::transform(const CameraSample &s) const

@@ -1,4 +1,9 @@
 #pragma once
+#include <stdexcept>
+#include <iomanip>
+#include <cmath>
+#include <cctype>
+#include <algorithm>
 #include <Eigen/Dense>
 #include "predictor.hpp"
 #include <chrono>
@@ -28,7 +33,10 @@ struct CameraGimbalOutput
 class CameraGimbal
 {
 public:
-    explicit CameraGimbal(const CameraGimbalConfig &config = CameraGimbalConfig{});
+    explicit CameraGimbal(const CameraGimbalConfig &config = CameraGimbalConfig{})
+    {
+        config_ = config;
+    }
     CameraGimbalOutput update(double timestamp_ms, const Eigen::Vector3d &center_camera, bool observed);
 
     CameraGimbalConfig config_;
@@ -75,7 +83,30 @@ private:
 class VideoInput
 {
 public:
-    explicit VideoInput(const std::filesystem::path &path);
+    explicit VideoInput(const std::filesystem::path &path)
+    {
+        path_ = path;
+
+        if (!std::filesystem::is_regular_file(path))
+            throw std::runtime_error("Input video does not exist: " + path.string());
+        auto extension = path.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char c)
+                       { return static_cast<char>(std::tolower(c)); });
+        constexpr std::array<const char *, 9> extensions = {".avi", ".mp4", ".mov", ".mkv", ".m4v", ".webm", ".mpg", ".mpeg", ".wmv"};
+        if (std::find(extensions.begin(), extensions.end(), extension) == extensions.end())
+            throw std::invalid_argument("Unsupported video file extension: " + extension);
+        stream_.open(path.string());
+        if (!stream_.isOpened() || !stream_.read(image_))
+            throw std::runtime_error("Cannot read video: " + path.string());
+        fps_ = stream_.get(cv::CAP_PROP_FPS);
+        if (!std::isfinite(fps_) || fps_ <= 0)
+            throw std::runtime_error("Invalid source video FPS");
+        frame_count_ = stream_.get(cv::CAP_PROP_FRAME_COUNT);
+        stem_ = path.stem().string();
+        const auto separator = stem_.find_last_of('_');
+        suffix_ = separator == std::string::npos ? stem_ : stem_.substr(separator + 1);
+    }
     bool next();
 
     std::filesystem::path path_;
@@ -94,12 +125,39 @@ class VideoOutput
 {
 public:
     VideoOutput(const std::filesystem::path &root, const VideoInput &input,
-                PredictorType model, bool preview);
+                PredictorType model, bool preview)
+    {
+        predictions_ = PredictionOutput(model, root / "results", input.suffix_);
+        type_ = model;
+        preview_ = preview;
+        output_path_ = root / "results" / (input.stem_ + ".avi");
+        raw_path_ = root / "data" / ("pose_raw_" + input.suffix_ + ".csv");
+
+        if (std::filesystem::weakly_canonical(input.path_) == std::filesystem::weakly_canonical(output_path_))
+            throw std::invalid_argument("Output video must not overwrite the input video");
+        writer_.open(output_path_.string(), cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), input.fps_, input.image_.size());
+        if (!writer_.isOpened())
+            throw std::runtime_error("Cannot write video: " + output_path_.string());
+        std::filesystem::create_directories(root / "data");
+        raw_.open(raw_path_);
+        if (!raw_)
+            throw std::runtime_error("Cannot write " + raw_path_.string());
+        raw_.exceptions(std::ios::badbit | std::ios::failbit);
+        raw_ << std::setprecision(15)
+             << "frame_id,timestamp,x,y,z,target_yaw,target_pitch,distance,armor_orientation_yaw,detection_score,"
+                "reprojection_error,pnp_candidate_count,pnp_used_temporal,rvec_x,rvec_y,rvec_z,coordinate_frame\n";
+        if (preview_)
+        {
+            cv::namedWindow(window, cv::WINDOW_NORMAL);
+            cv::resizeWindow(window, 960, 720);
+        }
+    }
     bool write(const VideoInput &input, const Solver &solver, const SolvedFrame &poses,
                const VideoPrediction &prediction, std::chrono::steady_clock::time_point frame_start);
     void finish();
 
 private:
+    static constexpr const char *window = "Armor - current / future prediction - Esc to stop";
     PredictorType type_;
     bool preview_, finished_ = false;
     std::filesystem::path output_path_, raw_path_;

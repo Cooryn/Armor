@@ -31,7 +31,7 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
         color_mask = (b_sub_r > color_th) & (channels[0] > gray_th);
     }
 
-    // 将图片灰度二值化，提取出高亮部分
+    // 将图片二值化，提取出高亮部分
     cv::Mat gray, highlight_mask;
     cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
     cv::threshold(gray, highlight_mask, 210, 255, cv::THRESH_BINARY);
@@ -49,8 +49,6 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
 
     return color_mask;
 }
-
-// 提取灯条轮廓
 
 // 筛选有效灯条的旋转矩形
 std::vector<cv::RotatedRect> getValidLightRects(
@@ -115,7 +113,7 @@ std::vector<cv::RotatedRect> getValidLightRects(
                 axis = cv::Point2f(std::cos(radians), std::sin(radians));
                 if (axis.y < 0)
                     axis *= -1.f;
-                const cv::Point2f normal(axis.y, -axis.x); // 构造法向量
+                const cv::Point2f normal(axis.y, -axis.x); // 构造单位法向量
 
                 // 计算灯条实际长度
                 float along_min = std::numeric_limits<float>::infinity();
@@ -153,8 +151,6 @@ struct LightGeometry
     cv::Point2f axis;
     cv::Point2f top, bottom;
 };
-
-// 计算灯条几何信息
 
 // 定义候选装甲板
 struct Candidate
@@ -313,7 +309,7 @@ std::vector<Armor> detectArmors(const cv::Mat &image, EnemyColor color)
 {
     const auto mask = extractColor(image, color, 70, 170);
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE); // 提取灯条轮廓
     std::vector<float> quality;
     const auto lights = getValidLightRects(contours, 55, &quality, 1.5, 40);
     return matchArmors(lights, 20, 2.f, .8f, .8f, 3.1f, .35f, quality);

@@ -17,8 +17,12 @@ struct SolverTrack
 class Solver
 {
 public:
-    Solver() = default;
-    Solver(const cv::Mat &camera, const cv::Mat &distortion);
+    // 初始化相机内参和畸变系数
+    Solver(const cv::Mat &camera = cv::Mat(), const cv::Mat &distortion = cv::Mat())
+    {
+        camera_matrix = camera;
+        distort_coeffs = distortion;
+    }
     SolvedFrame solve_frame(std::vector<Armor> armors, double timestamp_ms, const std::string &video_stem);
     bool solve(Armor &armor, double yaw_hint = std::numeric_limits<double>::quiet_NaN());
     std::vector<double> yaw_hints(const std::vector<Armor> &armors, double timestamp) const;

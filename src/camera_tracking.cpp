@@ -17,11 +17,6 @@
 #include <string>
 #include <vector>
 
-CameraGimbal::CameraGimbal(const CameraGimbalConfig &config)
-{
-    config_ = config;
-}
-
 CameraGimbalOutput CameraGimbal::update(double timestamp_ms, const Eigen::Vector3d &center_camera,
                                         bool observed)
 {
@@ -68,7 +63,7 @@ CameraGimbalOutput CameraGimbal::update(double timestamp_ms, const Eigen::Vector
     Eigen::Vector2d desired(out.yaw_offset_deg, out.pitch_offset_deg);
     for (int i = 0; i < 2; ++i)
         desired(i) = config_.gain * std::copysign(
-                                             std::max(0.0, std::abs(desired(i)) - config_.deadband_deg), desired(i));
+                                        std::max(0.0, std::abs(desired(i)) - config_.deadband_deg), desired(i));
     Eigen::Vector2d bounded(std::clamp(desired.x(), -config_.yaw_speed_dps, config_.yaw_speed_dps),
                             std::clamp(desired.y(), -config_.pitch_speed_dps, config_.pitch_speed_dps));
     out.speed_limited = (bounded - desired).squaredNorm() > 0;
@@ -222,7 +217,7 @@ void CameraTracking::key(int key)
 const char *CameraTracking::mode_name() const
 {
     return mode_ == TRACKING_MANUAL ? "MANUAL" : mode_ == TRACKING_AUTOMATIC ? "AUTO"
-                                                                                       : "CENTER";
+                                                                             : "CENTER";
 }
 
 bool CameraTracking::visible() const
@@ -376,12 +371,12 @@ void CameraTracking::draw(cv::Mat &image, const cv::Mat &camera, const cv::Mat &
     }
     const cv::Scalar white(235, 235, 235), gray(210, 210, 210);
     std::vector<std::pair<std::string, cv::Scalar>> lines = {{"ARMOR TRACKING", white},
-                               {cv::format("Frame %d | %.2f s", frame_id, std::max(last_time_, 0.0) / 1000), gray},
-                               {status_ == "tracking" ? "UPDATED" : status_ == "prediction_only" ? "PREDICTION ONLY"
-                                                                     : status_ == "lost"              ? "LOST"
-                                                                                                           : "INITIALIZING / NO STATE",
-                                status_ == "tracking" ? cv::Scalar(80, 220, 100) : cv::Scalar(0, 200, 255)},
-                               {"ESTIMATE (camera-frame EKF)", gray}};
+                                                             {cv::format("Frame %d | %.2f s", frame_id, std::max(last_time_, 0.0) / 1000), gray},
+                                                             {status_ == "tracking" ? "UPDATED" : status_ == "prediction_only" ? "PREDICTION ONLY"
+                                                                                              : status_ == "lost"              ? "LOST"
+                                                                                                                               : "INITIALIZING / NO STATE",
+                                                              status_ == "tracking" ? cv::Scalar(80, 220, 100) : cv::Scalar(0, 200, 255)},
+                                                             {"ESTIMATE (camera-frame EKF)", gray}};
     if (visible())
     {
         const auto &x = ekf_.X;
@@ -841,7 +836,7 @@ static void export_commands(const std::filesystem::path &input, const std::files
             center = (*frames).at(timestamp).inverse() * center;
         }
         auto command = controller.update(timestamp, center,
-                                            status == "updated");
+                                         status == "updated");
         records.push_back({frame, timestamp, command});
         previous_frame = frame;
     }
@@ -973,7 +968,6 @@ int export_control_csv(int argc, char **argv)
 }
 
 // Video input and prediction presentation for the video applications.
-constexpr const char *window = "Armor - current / future prediction - Esc to stop";
 const std::array<cv::Scalar, 4> plate_colors = {
     cv::Scalar(0, 255, 255), cv::Scalar(255, 180, 0), cv::Scalar(255, 0, 255), cv::Scalar(0, 255, 100)};
 
@@ -1047,31 +1041,6 @@ static void draw_geometry(cv::Mat &image, const PredictionGeometry &geometry,
     }
 }
 
-VideoInput::VideoInput(const std::filesystem::path &path)
-{
-    path_ = path;
-
-    if (!std::filesystem::is_regular_file(path))
-        throw std::runtime_error("Input video does not exist: " + path.string());
-    auto extension = path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c)
-                   { return static_cast<char>(std::tolower(c)); });
-    constexpr std::array<const char *, 9> extensions = {".avi", ".mp4", ".mov", ".mkv", ".m4v", ".webm", ".mpg", ".mpeg", ".wmv"};
-    if (std::find(extensions.begin(), extensions.end(), extension) == extensions.end())
-        throw std::invalid_argument("Unsupported video file extension: " + extension);
-    stream_.open(path.string());
-    if (!stream_.isOpened() || !stream_.read(image_))
-        throw std::runtime_error("Cannot read video: " + path.string());
-    fps_ = stream_.get(cv::CAP_PROP_FPS);
-    if (!std::isfinite(fps_) || fps_ <= 0)
-        throw std::runtime_error("Invalid source video FPS");
-    frame_count_ = stream_.get(cv::CAP_PROP_FRAME_COUNT);
-    stem_ = path.stem().string();
-    const auto separator = stem_.find_last_of('_');
-    suffix_ = separator == std::string::npos ? stem_ : stem_.substr(separator + 1);
-}
-
 bool VideoInput::next()
 {
     if (!stream_.read(image_))
@@ -1085,35 +1054,6 @@ bool VideoInput::next()
     return true;
 }
 
-VideoOutput::VideoOutput(const std::filesystem::path &root, const VideoInput &input,
-                              PredictorType model, bool preview)
-{
-    predictions_ = PredictionOutput(model, root / "results", input.suffix_);
-    type_ = model;
-    preview_ = preview;
-    output_path_ = root / "results" / (input.stem_ + ".avi");
-    raw_path_ = root / "data" / ("pose_raw_" + input.suffix_ + ".csv");
-
-    if (std::filesystem::weakly_canonical(input.path_) == std::filesystem::weakly_canonical(output_path_))
-        throw std::invalid_argument("Output video must not overwrite the input video");
-    writer_.open(output_path_.string(), cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), input.fps_, input.image_.size());
-    if (!writer_.isOpened())
-        throw std::runtime_error("Cannot write video: " + output_path_.string());
-    std::filesystem::create_directories(root / "data");
-    raw_.open(raw_path_);
-    if (!raw_)
-        throw std::runtime_error("Cannot write " + raw_path_.string());
-    raw_.exceptions(std::ios::badbit | std::ios::failbit);
-    raw_ << std::setprecision(15)
-              << "frame_id,timestamp,x,y,z,target_yaw,target_pitch,distance,armor_orientation_yaw,detection_score,"
-                 "reprojection_error,pnp_candidate_count,pnp_used_temporal,rvec_x,rvec_y,rvec_z,coordinate_frame\n";
-    if (preview_)
-    {
-        cv::namedWindow(window, cv::WINDOW_NORMAL);
-        cv::resizeWindow(window, 960, 720);
-    }
-}
-
 bool VideoOutput::write(const VideoInput &input, const Solver &solver, const SolvedFrame &poses, const VideoPrediction &prediction,
                         std::chrono::steady_clock::time_point frame_start)
 {
@@ -1125,9 +1065,9 @@ bool VideoOutput::write(const VideoInput &input, const Solver &solver, const Sol
         const auto &p = poses.observations[i].position;
         const auto &z = poses.observations[i].measurement;
         raw_ << input.frame_id_ << ',' << input.timestamp_ms << ',' << p(0) << ',' << p(1) << ',' << p(2) << ','
-                  << z(0) << ',' << z(1) << ',' << z(2) << ',' << z(3) << ',' << a.detection_score << ','
-                  << a.reprojection_error << ',' << a.pnp_candidate_count << ',' << a.pnp_used_temporal << ','
-                  << a.rvec.at<double>(0) << ',' << a.rvec.at<double>(1) << ',' << a.rvec.at<double>(2) << ",camera\n";
+             << z(0) << ',' << z(1) << ',' << z(2) << ',' << z(3) << ',' << a.detection_score << ','
+             << a.reprojection_error << ',' << a.pnp_candidate_count << ',' << a.pnp_used_temporal << ','
+             << a.rvec.at<double>(0) << ',' << a.rvec.at<double>(1) << ',' << a.rvec.at<double>(2) << ",camera\n";
     }
     predictions_.write(input.frame_id_, input.timestamp_ms, poses.observations, prediction);
     cv::Mat canvas = input.image_.clone();
@@ -1135,7 +1075,7 @@ bool VideoOutput::write(const VideoInput &input, const Solver &solver, const Sol
     draw_geometry(canvas, prediction.current, solver.camera_matrix, solver.distort_coeffs, false, type_);
     draw_geometry(canvas, prediction.future, solver.camera_matrix, solver.distort_coeffs, true, type_);
     const char *model = type_ == PREDICTOR_SINGLE_PLATE ? "SinglePlate" : type_ == PREDICTOR_POLAR ? "Polar"
-                                                                                                             : "Armor";
+                                                                                                   : "Armor";
     cv::putText(canvas, cv::format("%s  frame %lld  %s  future +%.0f ms", model, static_cast<long long>(input.frame_id_), prediction.status.c_str(), prediction.horizon_ms),
                 {20, 30}, cv::FONT_HERSHEY_SIMPLEX, .6, {0, 255, 255}, 2, cv::LINE_AA);
     for (std::size_t i = 0; i < poses.observations.size(); ++i)

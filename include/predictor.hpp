@@ -1,4 +1,6 @@
 #pragma once
+#include <stdexcept>
+#include <iomanip>
 #include <Eigen/Dense>
 #include "predictor_armor.hpp"
 #include "predictor_polar.hpp"
@@ -67,7 +69,11 @@ struct VideoPrediction
 class VideoPredictor
 {
 public:
-    VideoPredictor(PredictorType model = PREDICTOR_ARMOR, double prediction_horizon_ms = 50);
+    VideoPredictor(PredictorType model = PREDICTOR_ARMOR, double prediction_horizon_ms = 50)
+    {
+        type = model;
+        horizon_ms = prediction_horizon_ms;
+    }
     VideoPrediction update(std::int64_t frame, double timestamp,
                            const std::vector<VideoObservation> &observations);
 
@@ -89,9 +95,71 @@ struct CsvOutput
 class PredictionOutput
 {
 public:
-    PredictionOutput();
+    PredictionOutput()
+    {
+        type = PREDICTOR_ARMOR;
+        finished = true;
+    }
     PredictionOutput(PredictorType model, const std::filesystem::path &directory,
-                     const std::string &suffix);
+                     const std::string &suffix)
+    {
+        constexpr const char *basic_header =
+            "frame_id,predicted_x,observed_x,error_x,predicted_z,observed_z,error_z,"
+            "predicted_yaw,observed_yaw,error_yaw,predicted_distance,observed_distance,error_distance";
+        constexpr const char *polar_header =
+            "frame_id,xc,vxc,yc,vyc,zc,vzc,body_yaw,w,r,err_target_yaw,err_target_pitch,"
+            "err_distance,err_armor_yaw,obs_armor_yaw";
+        constexpr const char *armor_header =
+            "frame_id,timestamp,prediction_horizon_ms,prediction_timestamp,future_xc,future_yc,future_zc,"
+            "future_body_yaw,xc,yc,zc,vxc,vyc,vzc,w,xa,za,armor_id,body_yaw,pred_armor_yaw,obs_armor_yaw,"
+            "err_target_yaw,err_target_pitch,err_distance,err_armor_yaw,r,dl,dh,observation_count,"
+            "accepted_count,rejected_count,status";
+
+        type = model;
+
+        if (suffix.empty() || suffix.find_first_of("/\\") != std::string::npos)
+            throw std::invalid_argument("Invalid output suffix");
+        const char *prefix;
+        const char *header;
+        switch (type)
+        {
+        case PREDICTOR_SINGLE_PLATE:
+            prefix = "";
+            header = basic_header;
+            break;
+        case PREDICTOR_POLAR:
+            prefix = "polar_";
+            header = polar_header;
+            break;
+        case PREDICTOR_ARMOR:
+            prefix = "armor_";
+            header = armor_header;
+            break;
+        default:
+            throw std::invalid_argument("Unknown predictor type");
+        }
+        auto open = [](CsvOutput &csv, const std::filesystem::path &path, const char *header)
+        {
+            csv.stream_.open(path);
+            if (!csv.stream_)
+                throw std::runtime_error("Cannot write " + path.string());
+            csv.stream_.exceptions(std::ios::badbit | std::ios::failbit);
+            csv.stream_ << header << '\n'
+                        << std::setprecision(17);
+        };
+        std::filesystem::create_directories(directory);
+        open(results, directory / (std::string(prefix) + "prediction_result_" + suffix + ".csv"), header);
+        metrics_path = directory / (std::string(prefix) + "rmse_result_" + suffix + ".txt");
+        if (type == PREDICTOR_ARMOR)
+        {
+            open(logs, directory / ("armor_observation_diagnostics_" + suffix + ".csv"),
+                 "frame_id,observation_index,accepted,armor_id,nis,reason,timestamp,observed_distance,"
+                 "observed_armor_yaw,best_candidate_id,distance_residual");
+            open(futures, directory / ("armor_future_prediction_" + suffix + ".csv"),
+                 "frame_id,timestamp,prediction_timestamp,prediction_horizon_ms,armor_id,x,y,z,"
+                 "armor_orientation_yaw,source_status");
+        }
+    }
     void write(std::int64_t frame, double timestamp,
                const std::vector<VideoObservation> &observations, const VideoPrediction &prediction);
     void finish();
