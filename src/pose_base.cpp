@@ -100,7 +100,7 @@ static void convert(const std::filesystem::path &input, const std::filesystem::p
         const Eigen::Vector3d camera_rvec(get("rvec_x"), get("rvec_y"), get("rvec_z"));
         if (!camera_position.allFinite() || camera_position.z() <= 0 || !camera_rvec.allFinite())
             throw std::invalid_argument("Invalid PnP camera pose");
-        const auto T_BC = camera_frames_at(frames, timestamp);
+        const auto T_BC = frames.at(timestamp);
         const Eigen::Vector3d position = T_BC * camera_position;
         Eigen::Matrix3d R_CA = Eigen::Matrix3d::Identity();
         if (camera_rvec.norm() > 1e-15)
@@ -204,7 +204,7 @@ int main(int argc, char **argv)
             if (std::filesystem::weakly_canonical(source) == std::filesystem::weakly_canonical(output) ||
                 (std::filesystem::exists(output) && std::filesystem::equivalent(source, output)))
                 throw std::invalid_argument("Output must not overwrite any input file");
-        convert(input, output, camera_frames_load(telemetry, calibration, max_gap_ms, reference_time_ms));
+        convert(input, output, CameraFrames::load(telemetry, calibration, max_gap_ms, reference_time_ms));
         return 0;
     }
     catch (const std::exception &error)

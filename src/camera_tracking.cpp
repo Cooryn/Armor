@@ -17,30 +17,35 @@
 #include <string>
 #include <vector>
 
-CameraGimbalOutput camera_gimbal_update(CameraGimbal &self, double timestamp_ms, const Eigen::Vector3d &center_camera,
+CameraGimbal::CameraGimbal(const CameraGimbalConfig &config)
+{
+    config_ = config;
+}
+
+CameraGimbalOutput CameraGimbal::update(double timestamp_ms, const Eigen::Vector3d &center_camera,
                                         bool observed)
 {
-    for (double v : {self.config_.gain, self.config_.yaw_limit_deg, self.config_.pitch_limit_deg,
-                     self.config_.yaw_speed_dps, self.config_.pitch_speed_dps,
-                     self.config_.acceleration_dps2, self.config_.max_gap_ms})
+    for (double v : {config_.gain, config_.yaw_limit_deg, config_.pitch_limit_deg,
+                     config_.yaw_speed_dps, config_.pitch_speed_dps,
+                     config_.acceleration_dps2, config_.max_gap_ms})
         if (!std::isfinite(v) || v <= 0)
             throw std::invalid_argument("Controller limits and gain must be finite and positive");
-    if (self.config_.yaw_limit_deg >= 90 || self.config_.pitch_limit_deg >= 90 ||
-        !std::isfinite(self.config_.deadband_deg) || self.config_.deadband_deg < 0 ||
-        self.config_.deadband_deg >= std::min(self.config_.yaw_limit_deg, self.config_.pitch_limit_deg))
+    if (config_.yaw_limit_deg >= 90 || config_.pitch_limit_deg >= 90 ||
+        !std::isfinite(config_.deadband_deg) || config_.deadband_deg < 0 ||
+        config_.deadband_deg >= std::min(config_.yaw_limit_deg, config_.pitch_limit_deg))
         throw std::invalid_argument("Invalid angular limits or deadband");
     if (!std::isfinite(timestamp_ms) || timestamp_ms < 0 ||
-        (self.last_time_ >= 0 && timestamp_ms <= self.last_time_))
+        (last_time_ >= 0 && timestamp_ms <= last_time_))
         throw std::invalid_argument("Timestamps must be finite, nonnegative and strictly increasing");
-    const double elapsed_ms = self.last_time_ >= 0 ? timestamp_ms - self.last_time_ : 0;
-    const bool first = self.last_time_ < 0;
-    self.last_time_ = timestamp_ms;
+    const double elapsed_ms = last_time_ >= 0 ? timestamp_ms - last_time_ : 0;
+    const bool first = last_time_ < 0;
+    last_time_ = timestamp_ms;
     CameraGimbalOutput out;
     // OpenCV camera coordinates: +x right, +y down, +z forward.
     out.target_valid = observed && center_camera.allFinite() && center_camera.z() > 1e-6;
     if (!out.target_valid)
     {
-        self.last_rate_.setZero();
+        last_rate_.setZero();
         out.status = observed ? "invalid_target" : "no_observation";
         return out;
     }
@@ -49,54 +54,54 @@ CameraGimbalOutput camera_gimbal_update(CameraGimbal &self, double timestamp_ms,
     out.pitch_error_deg = -std::atan2(center_camera.y(),
                                       std::hypot(center_camera.x(), center_camera.z())) *
                           rad_to_deg;
-    out.yaw_offset_deg = std::clamp(out.yaw_error_deg, -self.config_.yaw_limit_deg, self.config_.yaw_limit_deg);
-    out.pitch_offset_deg = std::clamp(out.pitch_error_deg, -self.config_.pitch_limit_deg, self.config_.pitch_limit_deg);
+    out.yaw_offset_deg = std::clamp(out.yaw_error_deg, -config_.yaw_limit_deg, config_.yaw_limit_deg);
+    out.pitch_offset_deg = std::clamp(out.pitch_error_deg, -config_.pitch_limit_deg, config_.pitch_limit_deg);
     out.angle_limited = out.yaw_offset_deg != out.yaw_error_deg ||
                         out.pitch_offset_deg != out.pitch_error_deg;
-    if (first || elapsed_ms > self.config_.max_gap_ms)
+    if (first || elapsed_ms > config_.max_gap_ms)
     {
-        self.last_rate_.setZero();
+        last_rate_.setZero();
         out.status = first ? "initializing" : "time_gap";
         return out;
     }
     out.control_valid = true;
     Eigen::Vector2d desired(out.yaw_offset_deg, out.pitch_offset_deg);
     for (int i = 0; i < 2; ++i)
-        desired(i) = self.config_.gain * std::copysign(
-                                             std::max(0.0, std::abs(desired(i)) - self.config_.deadband_deg), desired(i));
-    Eigen::Vector2d bounded(std::clamp(desired.x(), -self.config_.yaw_speed_dps, self.config_.yaw_speed_dps),
-                            std::clamp(desired.y(), -self.config_.pitch_speed_dps, self.config_.pitch_speed_dps));
+        desired(i) = config_.gain * std::copysign(
+                                             std::max(0.0, std::abs(desired(i)) - config_.deadband_deg), desired(i));
+    Eigen::Vector2d bounded(std::clamp(desired.x(), -config_.yaw_speed_dps, config_.yaw_speed_dps),
+                            std::clamp(desired.y(), -config_.pitch_speed_dps, config_.pitch_speed_dps));
     out.speed_limited = (bounded - desired).squaredNorm() > 0;
-    const double max_change = self.config_.acceleration_dps2 * elapsed_ms / 1000.0;
-    Eigen::Vector2d rate = self.last_rate_ + (bounded - self.last_rate_).cwiseMax(-max_change).cwiseMin(max_change);
+    const double max_change = config_.acceleration_dps2 * elapsed_ms / 1000.0;
+    Eigen::Vector2d rate = last_rate_ + (bounded - last_rate_).cwiseMax(-max_change).cwiseMin(max_change);
     out.acceleration_limited = (rate - bounded).squaredNorm() > 0;
-    self.last_rate_ = rate;
+    last_rate_ = rate;
     out.yaw_rate_dps = rate.x();
     out.pitch_rate_dps = rate.y();
     out.status = "tracking";
     return out;
 }
 
-void camera_tracking_update(CameraTracking &self, const std::vector<Observation> &observations, double timestamp_ms)
+void CameraTracking::update(const std::vector<Observation> &observations, double timestamp_ms)
 {
     if (!std::isfinite(timestamp_ms) || timestamp_ms < 0 ||
-        (self.last_time_ >= 0 && timestamp_ms <= self.last_time_))
+        (last_time_ >= 0 && timestamp_ms <= last_time_))
         throw std::invalid_argument("Live frame timestamps must increase");
-    const double dt = self.last_time_ >= 0 ? (timestamp_ms - self.last_time_) / 1000. : 0;
-    self.accepted_ = 0;
-    self.observations_ = observations;
-    self.diagnostics_.clear();
-    if (!self.ekf_.is_initialized)
+    const double dt = last_time_ >= 0 ? (timestamp_ms - last_time_) / 1000. : 0;
+    accepted_ = 0;
+    observations_ = observations;
+    diagnostics_.clear();
+    if (!ekf_.is_initialized)
     {
         const Observation *seed = nullptr;
         for (const auto &o : observations)
-            if (armor_valid_observation(self.ekf_, o.Z_obs) && (!seed || o.Z_obs(2) < seed->Z_obs(2)))
+            if (ekf_.valid_observation(o.Z_obs) && (!seed || o.Z_obs(2) < seed->Z_obs(2)))
                 seed = &o;
         if (seed)
         {
-            armor_initialize(self.ekf_, seed->Z_obs);
-            self.accepted_ = 1;
-            self.status_ = "initializing";
+            ekf_.initialize(seed->Z_obs);
+            accepted_ = 1;
+            status_ = "initializing";
         }
         for (size_t i = 0; i < observations.size(); ++i)
         {
@@ -105,31 +110,31 @@ void camera_tracking_update(CameraTracking &self, const std::vector<Observation>
             d.accepted = &observations[i] == seed;
             d.armor_id = d.accepted ? 0 : -1;
             d.reason = d.accepted ? "initialization" : (seed ? "initialization_unused" : "invalid");
-            self.diagnostics_.push_back(d);
+            diagnostics_.push_back(d);
         }
     }
     else
     {
-        armor_predict(self.ekf_, (timestamp_ms - self.last_time_) / 1000.);
-        auto result = armor_update_multi(self.ekf_, observations);
-        self.accepted_ = result.first.size();
-        self.diagnostics_ = std::move(result.second);
-        self.status_ = self.accepted_ ? "tracking" : "prediction_only";
+        ekf_.predict((timestamp_ms - last_time_) / 1000.);
+        auto result = ekf_.update_multi(observations);
+        accepted_ = result.first.size();
+        diagnostics_ = std::move(result.second);
+        status_ = accepted_ ? "tracking" : "prediction_only";
     }
-    self.last_time_ = timestamp_ms;
-    if (self.accepted_)
-        self.last_observation_ = timestamp_ms;
-    if (self.last_observation_ >= 0 && timestamp_ms - self.last_observation_ > 200)
-        self.status_ = "lost";
+    last_time_ = timestamp_ms;
+    if (accepted_)
+        last_observation_ = timestamp_ms;
+    if (last_observation_ >= 0 && timestamp_ms - last_observation_ > 200)
+        status_ = "lost";
     constexpr double radians = 3.14159265358979323846 / 180.;
     Eigen::Vector3d direction = Eigen::Vector3d::UnitZ();
     bool valid = true;
-    if (self.mode_ == TRACKING_AUTOMATIC)
+    if (mode_ == TRACKING_AUTOMATIC)
     {
-        valid = self.accepted_ > 0 && self.ekf_.is_initialized;
+        valid = accepted_ > 0 && ekf_.is_initialized;
         if (valid)
         {
-            const auto future = armor_forecast(self.ekf_, camera_tracking_horizon_s);
+            const auto future = ekf_.forecast(camera_tracking_horizon_s);
             int selected = -1;
             double distance = std::numeric_limits<double>::infinity();
             for (int i = 0; i < 4; ++i)
@@ -139,90 +144,90 @@ void camera_tracking_update(CameraTracking &self, const std::vector<Observation>
                 {
                     selected = i;
                     distance = p.squaredNorm();
-                    self.predicted_target_ = p;
+                    predicted_target_ = p;
                 }
             }
             valid = selected >= 0;
             const Eigen::Matrix3d rotation =
-                (Eigen::AngleAxisd(self.simulated_angles_.x() * radians, Eigen::Vector3d::UnitY()) *
-                 Eigen::AngleAxisd(self.simulated_angles_.y() * radians, Eigen::Vector3d::UnitX()))
+                (Eigen::AngleAxisd(simulated_angles_.x() * radians, Eigen::Vector3d::UnitY()) *
+                 Eigen::AngleAxisd(simulated_angles_.y() * radians, Eigen::Vector3d::UnitX()))
                     .toRotationMatrix();
-            direction = rotation.transpose() * self.predicted_target_;
+            direction = rotation.transpose() * predicted_target_;
         }
     }
     else
     {
-        const Eigen::Vector2d desired = self.mode_ == TRACKING_CENTER ? Eigen::Vector2d::Zero() : self.manual_target_;
-        const Eigen::Vector2d error = (desired - self.simulated_angles_) * radians;
+        const Eigen::Vector2d desired = mode_ == TRACKING_CENTER ? Eigen::Vector2d::Zero() : manual_target_;
+        const Eigen::Vector2d error = (desired - simulated_angles_) * radians;
         direction = {std::sin(error.x()) * std::cos(error.y()), -std::sin(error.y()),
                      std::cos(error.x()) * std::cos(error.y())};
     }
-    self.command_ = camera_gimbal_update(self.controller_, timestamp_ms, direction, valid);
-    if (self.command_.control_valid)
+    command_ = controller_.update(timestamp_ms, direction, valid);
+    if (command_.control_valid)
     {
-        const Eigen::Vector2d previous = self.simulated_angles_;
-        self.simulated_angles_ += Eigen::Vector2d(self.command_.yaw_rate_dps, self.command_.pitch_rate_dps) * dt;
-        self.simulated_angles_.x() = std::clamp(self.simulated_angles_.x(), -45., 45.);
-        self.simulated_angles_.y() = std::clamp(self.simulated_angles_.y(), -30., 30.);
-        if (self.mode_ != TRACKING_AUTOMATIC)
+        const Eigen::Vector2d previous = simulated_angles_;
+        simulated_angles_ += Eigen::Vector2d(command_.yaw_rate_dps, command_.pitch_rate_dps) * dt;
+        simulated_angles_.x() = std::clamp(simulated_angles_.x(), -45., 45.);
+        simulated_angles_.y() = std::clamp(simulated_angles_.y(), -30., 30.);
+        if (mode_ != TRACKING_AUTOMATIC)
         {
-            const Eigen::Vector2d desired = self.mode_ == TRACKING_CENTER ? Eigen::Vector2d::Zero() : self.manual_target_;
+            const Eigen::Vector2d desired = mode_ == TRACKING_CENTER ? Eigen::Vector2d::Zero() : manual_target_;
             for (int i = 0; i < 2; ++i)
-                if ((desired(i) - previous(i)) * (desired(i) - self.simulated_angles_(i)) <= 0 ||
-                    std::abs(desired(i) - self.simulated_angles_(i)) <= .001)
-                    self.simulated_angles_(i) = desired(i);
+                if ((desired(i) - previous(i)) * (desired(i) - simulated_angles_(i)) <= 0 ||
+                    std::abs(desired(i) - simulated_angles_(i)) <= .001)
+                    simulated_angles_(i) = desired(i);
         }
         if (dt > 0)
         {
-            self.command_.yaw_rate_dps = (self.simulated_angles_.x() - previous.x()) / dt;
-            self.command_.pitch_rate_dps = (self.simulated_angles_.y() - previous.y()) / dt;
+            command_.yaw_rate_dps = (simulated_angles_.x() - previous.x()) / dt;
+            command_.pitch_rate_dps = (simulated_angles_.y() - previous.y()) / dt;
         }
     }
 }
 
-void camera_tracking_key(CameraTracking &self, int key)
+void CameraTracking::key(int key)
 {
-    CameraTrackingMode mode = self.mode_;
+    CameraTrackingMode mode = mode_;
     if (key == '1')
         mode = TRACKING_MANUAL;
     if (key == '2')
         mode = TRACKING_AUTOMATIC;
     if (key == '3' || key == 'c' || key == 'C')
         mode = TRACKING_CENTER;
-    if (self.mode_ != mode)
+    if (mode_ != mode)
     {
-        self.mode_ = mode;
-        self.manual_target_ = self.simulated_angles_;
+        mode_ = mode;
+        manual_target_ = simulated_angles_;
         CameraGimbalConfig config;
         if (mode != TRACKING_AUTOMATIC)
             config.deadband_deg = 0;
-        self.controller_ = CameraGimbal{config};
-        self.command_ = {};
+        controller_ = CameraGimbal{config};
+        command_ = {};
     }
-    if (self.mode_ == TRACKING_MANUAL)
+    if (mode_ == TRACKING_MANUAL)
     {
         if (key == 'a' || key == 'A')
-            self.manual_target_.x() -= 2;
+            manual_target_.x() -= 2;
         if (key == 'd' || key == 'D')
-            self.manual_target_.x() += 2;
+            manual_target_.x() += 2;
         if (key == 'w' || key == 'W')
-            self.manual_target_.y() += 2;
+            manual_target_.y() += 2;
         if (key == 's' || key == 'S')
-            self.manual_target_.y() -= 2;
-        self.manual_target_.x() = std::clamp(self.manual_target_.x(), -45., 45.);
-        self.manual_target_.y() = std::clamp(self.manual_target_.y(), -30., 30.);
+            manual_target_.y() -= 2;
+        manual_target_.x() = std::clamp(manual_target_.x(), -45., 45.);
+        manual_target_.y() = std::clamp(manual_target_.y(), -30., 30.);
     }
 }
 
-const char *camera_tracking_mode_name(const CameraTracking &self)
+const char *CameraTracking::mode_name() const
 {
-    return self.mode_ == TRACKING_MANUAL ? "MANUAL" : self.mode_ == TRACKING_AUTOMATIC ? "AUTO"
+    return mode_ == TRACKING_MANUAL ? "MANUAL" : mode_ == TRACKING_AUTOMATIC ? "AUTO"
                                                                                        : "CENTER";
 }
 
-bool camera_tracking_visible(const CameraTracking &self)
+bool CameraTracking::visible() const
 {
-    return self.ekf_.is_initialized && self.status_ != "lost";
+    return ekf_.is_initialized && status_ != "lost";
 }
 
 static bool project(const std::vector<cv::Point3d> &points, const cv::Mat &camera,
@@ -242,7 +247,7 @@ static bool project(const std::vector<cv::Point3d> &points, const cv::Mat &camer
     return true;
 }
 
-void camera_tracking_draw(CameraTracking &self, cv::Mat &image, const cv::Mat &camera, const cv::Mat &distortion, int frame_id)
+void CameraTracking::draw(cv::Mat &image, const cv::Mat &camera, const cv::Mat &distortion, int frame_id)
 {
     const int width = image.cols, height = image.rows;
     cv::Mat canvas(height, width + 340, CV_8UC3, cv::Scalar(30, 27, 24));
@@ -311,20 +316,20 @@ void camera_tracking_draw(CameraTracking &self, cv::Mat &image, const cv::Mat &c
             }
         }
     };
-    if (camera_tracking_visible(self))
+    if (visible())
     {
-        const auto current = armor_forecast(self.ekf_, 0), future = armor_forecast(self.ekf_, camera_tracking_horizon_s);
-        current_center = pixel({self.ekf_.X(0), self.ekf_.X(2), self.ekf_.X(4)});
+        const auto current = ekf_.forecast(0), future = ekf_.forecast(camera_tracking_horizon_s);
+        current_center = pixel({ekf_.X(0), ekf_.X(2), ekf_.X(4)});
         if (current_center)
         {
-            if (self.drawn_time_ != self.last_time_)
+            if (drawn_time_ != last_time_)
             {
-                self.trail_.push_back(*current_center);
-                if (self.trail_.size() > 30)
-                    self.trail_.pop_front();
+                trail_.push_back(*current_center);
+                if (trail_.size() > 30)
+                    trail_.pop_front();
             }
-            for (size_t i = 1; i < self.trail_.size(); ++i)
-                cv::line(view, self.trail_[i - 1], self.trail_[i], {180, 180, 180}, 1, cv::LINE_AA);
+            for (size_t i = 1; i < trail_.size(); ++i)
+                cv::line(view, trail_[i - 1], trail_[i], {180, 180, 180}, 1, cv::LINE_AA);
             cv::drawMarker(view, *current_center, {255, 255, 255}, cv::MARKER_STAR, 15, 2);
         }
         plates(current, false);
@@ -333,11 +338,11 @@ void camera_tracking_draw(CameraTracking &self, cv::Mat &image, const cv::Mat &c
         plates(future, true);
     }
     else
-        self.trail_.clear();
-    self.drawn_time_ = self.last_time_;
+        trail_.clear();
+    drawn_time_ = last_time_;
     constexpr double rad = 3.14159265358979323846 / 180.;
-    const auto axis = (Eigen::AngleAxisd(self.simulated_angles_.x() * rad, Eigen::Vector3d::UnitY()) *
-                       Eigen::AngleAxisd(self.simulated_angles_.y() * rad, Eigen::Vector3d::UnitX())) *
+    const auto axis = (Eigen::AngleAxisd(simulated_angles_.x() * rad, Eigen::Vector3d::UnitY()) *
+                       Eigen::AngleAxisd(simulated_angles_.y() * rad, Eigen::Vector3d::UnitX())) *
                       Eigen::Vector3d::UnitZ();
     std::vector<cv::Point> optical_axis;
     if (project({{axis.x(), axis.y(), axis.z()}}, camera, distortion, optical_axis) && bounds.contains(optical_axis[0]))
@@ -345,17 +350,17 @@ void camera_tracking_draw(CameraTracking &self, cv::Mat &image, const cv::Mat &c
         cv::drawMarker(view, optical_axis[0], {255, 255, 0}, cv::MARKER_CROSS, 24, 2);
         cv::putText(view, "SIM CAMERA AXIS", optical_axis[0] + cv::Point(12, -12), cv::FONT_HERSHEY_SIMPLEX, .5, {255, 255, 0}, 1, cv::LINE_AA);
     }
-    if (self.mode_ == TRACKING_AUTOMATIC && self.command_.target_valid)
+    if (mode_ == TRACKING_AUTOMATIC && command_.target_valid)
     {
         std::vector<cv::Point> target;
-        if (project({{self.predicted_target_.x(), self.predicted_target_.y(), self.predicted_target_.z()}}, camera, distortion, target) && bounds.contains(target[0]))
+        if (project({{predicted_target_.x(), predicted_target_.y(), predicted_target_.z()}}, camera, distortion, target) && bounds.contains(target[0]))
             cv::drawMarker(view, target[0], {255, 0, 255}, cv::MARKER_TILTED_CROSS, 20, 2);
     }
     size_t rejected = 0, unknown = 0;
-    for (size_t i = 0; i < self.observations_.size(); ++i)
+    for (size_t i = 0; i < observations_.size(); ++i)
     {
-        const auto &d = self.diagnostics_[i];
-        const auto &z = self.observations_[i].Z_obs;
+        const auto &d = diagnostics_[i];
+        const auto &z = observations_[i].Z_obs;
         const bool reject = d.reason == "invalid" || d.reason == "innovation_gate" || d.reason == "association_conflict";
         rejected += reject;
         unknown += !d.accepted && !reject;
@@ -369,18 +374,17 @@ void camera_tracking_draw(CameraTracking &self, cv::Mat &image, const cv::Mat &c
         if (d.accepted && plate_centers[d.armor_id])
             cv::line(view, *point, *plate_centers[d.armor_id], color, 1, cv::LINE_AA);
     }
-    using Line = std::pair<std::string, cv::Scalar>;
     const cv::Scalar white(235, 235, 235), gray(210, 210, 210);
-    std::vector<Line> lines = {{"ARMOR TRACKING", white},
-                               {cv::format("Frame %d | %.2f s", frame_id, std::max(self.last_time_, 0.0) / 1000), gray},
-                               {self.status_ == "tracking" ? "UPDATED" : self.status_ == "prediction_only" ? "PREDICTION ONLY"
-                                                                     : self.status_ == "lost"              ? "LOST"
+    std::vector<std::pair<std::string, cv::Scalar>> lines = {{"ARMOR TRACKING", white},
+                               {cv::format("Frame %d | %.2f s", frame_id, std::max(last_time_, 0.0) / 1000), gray},
+                               {status_ == "tracking" ? "UPDATED" : status_ == "prediction_only" ? "PREDICTION ONLY"
+                                                                     : status_ == "lost"              ? "LOST"
                                                                                                            : "INITIALIZING / NO STATE",
-                                self.status_ == "tracking" ? cv::Scalar(80, 220, 100) : cv::Scalar(0, 200, 255)},
+                                status_ == "tracking" ? cv::Scalar(80, 220, 100) : cv::Scalar(0, 200, 255)},
                                {"ESTIMATE (camera-frame EKF)", gray}};
-    if (camera_tracking_visible(self))
+    if (visible())
     {
-        const auto &x = self.ekf_.X;
+        const auto &x = ekf_.X;
         lines.push_back({cv::format("xc: %.3f m", x(0)), white});
         lines.push_back({cv::format("yc: %.3f m", x(2)), white});
         lines.push_back({cv::format("zc: %.3f m", x(4)), white});
@@ -389,19 +393,19 @@ void camera_tracking_draw(CameraTracking &self, cv::Mat &image, const cv::Mat &c
         lines.push_back({cv::format("r: %.3f m", x(8)), white});
         lines.push_back({cv::format("dl / dh: %.3f / %.3f", x(9), x(10)), white});
         lines.push_back({"FORECAST: +50 ms", white});
-        lines.push_back({cv::format("Target time: %.3f s", std::max(self.last_time_, 0.0) / 1000 + camera_tracking_horizon_s), gray});
+        lines.push_back({cv::format("Target time: %.3f s", std::max(last_time_, 0.0) / 1000 + camera_tracking_horizon_s), gray});
     }
-    lines.insert(lines.end(), {{"", gray}, {"Observations: " + std::to_string(self.observations_.size()), white}, {"Accepted: " + std::to_string(self.accepted_) + "   Rejected: " + std::to_string(rejected), white}, {"Unclassified: " + std::to_string(unknown), {0, 220, 255}}, {"LEGEND", white}, {"Solid A0-A3: current estimate", gray}, {"Dashed F0-F3: future forecast", gray}, {"+ : observation", gray}, {"Red X: rejected observation", {40, 80, 255}}, {"Yellow +: not classified", {0, 220, 255}}, {"Star / trail: center", gray}, {"Diamond: future center/plate", gray}, {"A/F pairs: same relative ID", gray}, {"CAMERA TRACKING (preview)", white}});
-    if (self.command_.target_valid)
-        lines.push_back({cv::format("Yaw / pitch: %.2f / %.2f deg", self.command_.yaw_error_deg, self.command_.pitch_error_deg), gray});
+    lines.insert(lines.end(), {{"", gray}, {"Observations: " + std::to_string(observations_.size()), white}, {"Accepted: " + std::to_string(accepted_) + "   Rejected: " + std::to_string(rejected), white}, {"Unclassified: " + std::to_string(unknown), {0, 220, 255}}, {"LEGEND", white}, {"Solid A0-A3: current estimate", gray}, {"Dashed F0-F3: future forecast", gray}, {"+ : observation", gray}, {"Red X: rejected observation", {40, 80, 255}}, {"Yellow +: not classified", {0, 220, 255}}, {"Star / trail: center", gray}, {"Diamond: future center/plate", gray}, {"A/F pairs: same relative ID", gray}, {"CAMERA TRACKING (preview)", white}});
+    if (command_.target_valid)
+        lines.push_back({cv::format("Yaw / pitch: %.2f / %.2f deg", command_.yaw_error_deg, command_.pitch_error_deg), gray});
     else
         lines.push_back({"Yaw / pitch: unavailable", gray});
-    lines.push_back({cv::format("Rate: %.2f / %.2f deg/s", self.command_.yaw_rate_dps, self.command_.pitch_rate_dps), gray});
-    lines.push_back({self.command_.control_valid ? "VALID | no motor commands" : "HOLD | no motor commands", {0, 220, 255}});
-    lines.insert(lines.begin(), {{std::string("SIMULATION | ") + camera_tracking_mode_name(self), {0, 220, 255}},
+    lines.push_back({cv::format("Rate: %.2f / %.2f deg/s", command_.yaw_rate_dps, command_.pitch_rate_dps), gray});
+    lines.push_back({command_.control_valid ? "VALID | no motor commands" : "HOLD | no motor commands", {0, 220, 255}});
+    lines.insert(lines.begin(), {{std::string("SIMULATION | ") + mode_name(), {0, 220, 255}},
                                  {"1 Manual | 2 Auto | 3/C Center", white},
                                  {"WASD: manual target +/-2 deg", gray},
-                                 {cv::format("Sim yaw/pitch: %.1f / %.1f", self.simulated_angles_.x(), self.simulated_angles_.y()), white}});
+                                 {cv::format("Sim yaw/pitch: %.1f / %.1f", simulated_angles_.x(), simulated_angles_.y()), white}});
     const int bottom = height >= 1000 ? height - 240 : height - 10;
     const int spacing = std::min(27, std::max(10, (bottom - 32) / int(lines.size())));
     for (size_t i = 0; i < lines.size(); ++i)
@@ -586,11 +590,11 @@ int main(int argc, char **argv)
         int text_y_offset = 30;
         std::vector<Armor> valid_armors;
         const double source_time = frame_count / source_fps;
-        const auto yaw_hints = solver_yaw_hints(pnp_solver, armors, source_time);
+        const auto yaw_hints = pnp_solver.yaw_hints(armors, source_time);
 
         for (size_t i = 0; i < armors.size(); i++)
         {
-            bool solved = solver_solve(pnp_solver, armors[i], yaw_hints[i]);
+            bool solved = pnp_solver.solve(armors[i], yaw_hints[i]);
             if (solved)
             {
                 valid_armors.push_back(armors[i]);
@@ -608,7 +612,7 @@ int main(int argc, char **argv)
             }
         }
 
-        solver_finish_frame(pnp_solver, valid_armors, source_time);
+        pnp_solver.finish_frame(valid_armors, source_time);
         drawArmors(final_result, valid_armors);
         std::vector<Observation> observations;
         if (!valid_armors.empty())
@@ -657,14 +661,14 @@ int main(int argc, char **argv)
             }
         }
 
-        camera_tracking_update(tracking, observations, frame_count * 1000.0 / source_fps);
+        tracking.update(observations, frame_count * 1000.0 / source_fps);
         final_result = frame.clone();
-        camera_tracking_draw(tracking, final_result, camera_matrix, distort_coeffs, frame_count);
+        tracking.draw(final_result, camera_matrix, distort_coeffs, frame_count);
 
         const auto &command = tracking.command_;
         const auto &angles = tracking.simulated_angles_;
         const auto &target = tracking.predicted_target_;
-        controls << frame_count << ',' << frame_count * 1000.0 / source_fps << ',' << camera_tracking_mode_name(tracking)
+        controls << frame_count << ',' << frame_count * 1000.0 / source_fps << ',' << tracking.mode_name()
                  << ",1," << (tracking.mode_ == TRACKING_AUTOMATIC && command.target_valid) << ',' << angles.x() << ',' << angles.y() << ',' << command.yaw_rate_dps << ','
                  << command.pitch_rate_dps << ',' << command.control_valid << ','
                  << target.x() << ',' << target.y() << ',' << target.z() << '\n';
@@ -682,7 +686,7 @@ int main(int argc, char **argv)
                                                 .count();
                 const int delay = static_cast<int>(std::clamp(std::ceil(remaining_ms), 1.0, 10.0));
                 const int key = cv::waitKey(delay) & 0xff;
-                camera_tracking_key(tracking, key);
+                tracking.key(key);
                 stop = key == 27;
                 if (!stop)
                 {
@@ -834,9 +838,9 @@ static void export_commands(const std::filesystem::path &input, const std::files
                 std::abs(reference - (*frames).reference_time_ms_) > 1e-6 ||
                 (origin - (*frames).origin_in_mechanical_).norm() > 1e-9)
                 throw std::invalid_argument("Base origin mismatch: use the same --origin-time-ms as pose_base");
-            center = camera_frames_at(*frames, timestamp).inverse() * center;
+            center = (*frames).at(timestamp).inverse() * center;
         }
-        auto command = camera_gimbal_update(controller, timestamp, center,
+        auto command = controller.update(timestamp, center,
                                             status == "updated");
         records.push_back({frame, timestamp, command});
         previous_frame = frame;
@@ -949,7 +953,7 @@ int export_control_csv(int argc, char **argv)
         if (reference_time_ms >= 0 && telemetry.empty())
             throw std::invalid_argument("--origin-time-ms requires telemetry/calibration");
         if (!telemetry.empty())
-            frames = camera_frames_load(telemetry, calibration, sync_gap_ms, reference_time_ms);
+            frames = CameraFrames::load(telemetry, calibration, sync_gap_ms, reference_time_ms);
         for (const auto &source : {input, telemetry, calibration})
         {
             if (source.empty())
@@ -1043,10 +1047,9 @@ static void draw_geometry(cv::Mat &image, const PredictionGeometry &geometry,
     }
 }
 
-VideoInput open_video_input(const std::filesystem::path &path)
+VideoInput::VideoInput(const std::filesystem::path &path)
 {
-    VideoInput self{};
-    self.path_ = path;
+    path_ = path;
 
     if (!std::filesystem::is_regular_file(path))
         throw std::runtime_error("Input video does not exist: " + path.string());
@@ -1057,86 +1060,81 @@ VideoInput open_video_input(const std::filesystem::path &path)
     constexpr std::array<const char *, 9> extensions = {".avi", ".mp4", ".mov", ".mkv", ".m4v", ".webm", ".mpg", ".mpeg", ".wmv"};
     if (std::find(extensions.begin(), extensions.end(), extension) == extensions.end())
         throw std::invalid_argument("Unsupported video file extension: " + extension);
-    self.stream_.open(path.string());
-    if (!self.stream_.isOpened() || !self.stream_.read(self.image_))
+    stream_.open(path.string());
+    if (!stream_.isOpened() || !stream_.read(image_))
         throw std::runtime_error("Cannot read video: " + path.string());
-    self.fps_ = self.stream_.get(cv::CAP_PROP_FPS);
-    if (!std::isfinite(self.fps_) || self.fps_ <= 0)
+    fps_ = stream_.get(cv::CAP_PROP_FPS);
+    if (!std::isfinite(fps_) || fps_ <= 0)
         throw std::runtime_error("Invalid source video FPS");
-    self.frame_count_ = self.stream_.get(cv::CAP_PROP_FRAME_COUNT);
-    self.stem_ = path.stem().string();
-    const auto separator = self.stem_.find_last_of('_');
-    self.suffix_ = separator == std::string::npos ? self.stem_ : self.stem_.substr(separator + 1);
-
-    return self;
+    frame_count_ = stream_.get(cv::CAP_PROP_FRAME_COUNT);
+    stem_ = path.stem().string();
+    const auto separator = stem_.find_last_of('_');
+    suffix_ = separator == std::string::npos ? stem_ : stem_.substr(separator + 1);
 }
 
-bool video_input_next(VideoInput &self)
+bool VideoInput::next()
 {
-    if (!self.stream_.read(self.image_))
+    if (!stream_.read(image_))
     {
-        if (std::isfinite(self.frame_count_) && double(self.frame_id_ + 1) < self.frame_count_)
+        if (std::isfinite(frame_count_) && double(frame_id_ + 1) < frame_count_)
             throw std::runtime_error("Video read failed before the final source frame");
         return false;
     }
-    ++self.frame_id_;
-    self.timestamp_ms = double(self.frame_id_) * 1000 / self.fps_;
+    ++frame_id_;
+    timestamp_ms = double(frame_id_) * 1000 / fps_;
     return true;
 }
 
-VideoOutput open_video_output(const std::filesystem::path &root, const VideoInput &input,
+VideoOutput::VideoOutput(const std::filesystem::path &root, const VideoInput &input,
                               PredictorType model, bool preview)
 {
-    VideoOutput self{};
-    self.type_ = model;
-    self.preview_ = preview;
-    self.output_path_ = root / "results" / (input.stem_ + ".avi");
-    self.raw_path_ = root / "data" / ("pose_raw_" + input.suffix_ + ".csv");
-    self.predictions_ = open_prediction_output(model, root / "results", input.suffix_);
+    predictions_ = PredictionOutput(model, root / "results", input.suffix_);
+    type_ = model;
+    preview_ = preview;
+    output_path_ = root / "results" / (input.stem_ + ".avi");
+    raw_path_ = root / "data" / ("pose_raw_" + input.suffix_ + ".csv");
 
-    if (std::filesystem::weakly_canonical(input.path_) == std::filesystem::weakly_canonical(self.output_path_))
+    if (std::filesystem::weakly_canonical(input.path_) == std::filesystem::weakly_canonical(output_path_))
         throw std::invalid_argument("Output video must not overwrite the input video");
-    self.writer_.open(self.output_path_.string(), cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), input.fps_, input.image_.size());
-    if (!self.writer_.isOpened())
-        throw std::runtime_error("Cannot write video: " + self.output_path_.string());
+    writer_.open(output_path_.string(), cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), input.fps_, input.image_.size());
+    if (!writer_.isOpened())
+        throw std::runtime_error("Cannot write video: " + output_path_.string());
     std::filesystem::create_directories(root / "data");
-    self.raw_.open(self.raw_path_);
-    if (!self.raw_)
-        throw std::runtime_error("Cannot write " + self.raw_path_.string());
-    self.raw_.exceptions(std::ios::badbit | std::ios::failbit);
-    self.raw_ << std::setprecision(15)
+    raw_.open(raw_path_);
+    if (!raw_)
+        throw std::runtime_error("Cannot write " + raw_path_.string());
+    raw_.exceptions(std::ios::badbit | std::ios::failbit);
+    raw_ << std::setprecision(15)
               << "frame_id,timestamp,x,y,z,target_yaw,target_pitch,distance,armor_orientation_yaw,detection_score,"
                  "reprojection_error,pnp_candidate_count,pnp_used_temporal,rvec_x,rvec_y,rvec_z,coordinate_frame\n";
-    if (self.preview_)
+    if (preview_)
     {
         cv::namedWindow(window, cv::WINDOW_NORMAL);
         cv::resizeWindow(window, 960, 720);
     }
-
-    return self;
 }
 
-bool video_output_write(VideoOutput &self, const VideoInput &input, const Solver &solver, const SolvedFrame &poses, const VideoPrediction &prediction,
+bool VideoOutput::write(const VideoInput &input, const Solver &solver, const SolvedFrame &poses, const VideoPrediction &prediction,
                         std::chrono::steady_clock::time_point frame_start)
 {
-    if (self.finished_)
+    if (finished_)
         throw std::logic_error("Cannot write finished video output");
     for (std::size_t i = 0; i < poses.observations.size(); ++i)
     {
         const auto &a = poses.armors.at(i);
         const auto &p = poses.observations[i].position;
         const auto &z = poses.observations[i].measurement;
-        self.raw_ << input.frame_id_ << ',' << input.timestamp_ms << ',' << p(0) << ',' << p(1) << ',' << p(2) << ','
+        raw_ << input.frame_id_ << ',' << input.timestamp_ms << ',' << p(0) << ',' << p(1) << ',' << p(2) << ','
                   << z(0) << ',' << z(1) << ',' << z(2) << ',' << z(3) << ',' << a.detection_score << ','
                   << a.reprojection_error << ',' << a.pnp_candidate_count << ',' << a.pnp_used_temporal << ','
                   << a.rvec.at<double>(0) << ',' << a.rvec.at<double>(1) << ',' << a.rvec.at<double>(2) << ",camera\n";
     }
-    prediction_output_write(self.predictions_, input.frame_id_, input.timestamp_ms, poses.observations, prediction);
+    predictions_.write(input.frame_id_, input.timestamp_ms, poses.observations, prediction);
     cv::Mat canvas = input.image_.clone();
     drawArmors(canvas, poses.armors);
-    draw_geometry(canvas, prediction.current, solver.camera_matrix, solver.distort_coeffs, false, self.type_);
-    draw_geometry(canvas, prediction.future, solver.camera_matrix, solver.distort_coeffs, true, self.type_);
-    const char *model = self.type_ == PREDICTOR_SINGLE_PLATE ? "SinglePlate" : self.type_ == PREDICTOR_POLAR ? "Polar"
+    draw_geometry(canvas, prediction.current, solver.camera_matrix, solver.distort_coeffs, false, type_);
+    draw_geometry(canvas, prediction.future, solver.camera_matrix, solver.distort_coeffs, true, type_);
+    const char *model = type_ == PREDICTOR_SINGLE_PLATE ? "SinglePlate" : type_ == PREDICTOR_POLAR ? "Polar"
                                                                                                              : "Armor";
     cv::putText(canvas, cv::format("%s  frame %lld  %s  future +%.0f ms", model, static_cast<long long>(input.frame_id_), prediction.status.c_str(), prediction.horizon_ms),
                 {20, 30}, cv::FONT_HERSHEY_SIMPLEX, .6, {0, 255, 255}, 2, cv::LINE_AA);
@@ -1146,9 +1144,9 @@ bool video_output_write(VideoOutput &self, const VideoInput &input, const Solver
         cv::putText(canvas, cv::format("PnP[%zu] x %.2f y %.2f z %.2f m", i, p(0), p(1), p(2)),
                     {20, 55 + static_cast<int>(i) * 25}, cv::FONT_HERSHEY_SIMPLEX, .5, {0, 255, 255}, 1);
     }
-    self.writer_.write(canvas);
-    ++self.processed_;
-    if (!self.preview_)
+    writer_.write(canvas);
+    ++processed_;
+    if (!preview_)
         return true;
     cv::imshow(window, canvas);
     const auto deadline = frame_start + std::chrono::duration<double>(1 / input.fps_);
@@ -1173,19 +1171,19 @@ bool video_output_write(VideoOutput &self, const VideoInput &input, const Solver
     return true;
 }
 
-void video_output_finish(VideoOutput &self)
+void VideoOutput::finish()
 {
-    if (self.finished_)
+    if (finished_)
         return;
-    prediction_output_finish(self.predictions_);
-    self.raw_.close();
-    self.writer_.release();
-    cv::VideoCapture exported(self.output_path_.string());
-    if (!exported.isOpened() || exported.get(cv::CAP_PROP_FRAME_COUNT) != double(self.processed_))
-        throw std::runtime_error("Output video write failed or frame count is incomplete: " + self.output_path_.string());
-    if (self.preview_)
+    predictions_.finish();
+    raw_.close();
+    writer_.release();
+    cv::VideoCapture exported(output_path_.string());
+    if (!exported.isOpened() || exported.get(cv::CAP_PROP_FRAME_COUNT) != double(processed_))
+        throw std::runtime_error("Output video write failed or frame count is incomplete: " + output_path_.string());
+    if (preview_)
         cv::destroyAllWindows();
-    self.finished_ = true;
-    std::cout << "Processed " << self.processed_ << " frames. Video: " << self.output_path_.string()
-              << "\nObservations: " << self.raw_path_.string() << "\nPredictions: " << self.output_path_.parent_path().string() << '\n';
+    finished_ = true;
+    std::cout << "Processed " << processed_ << " frames. Video: " << output_path_.string()
+              << "\nObservations: " << raw_path_.string() << "\nPredictions: " << output_path_.parent_path().string() << '\n';
 }

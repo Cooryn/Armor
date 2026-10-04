@@ -1,13 +1,18 @@
 #include "solver.hpp"
-static std::vector<int> solver_temporal_matches(const Solver &self, const std::vector<Armor> &armors, double timestamp);
 
 #include <cmath>
 #include <algorithm>
 
+Solver::Solver(const cv::Mat &camera, const cv::Mat &distortion)
+{
+    camera_matrix = camera;
+    distort_coeffs = distortion;
+}
+
 // 构造函数
 
 // PnP求解装甲板位姿
-bool solver_solve(Solver &self, Armor &armor, double yaw_hint)
+bool Solver::solve(Armor &armor, double yaw_hint)
 {
     static const std::vector<cv::Point3f> object_points = {
         {-.0675f, -.028f, 0}, {-.0675f, .028f, 0}, {.0675f, .028f, 0}, {.0675f, -.028f, 0}};
@@ -47,7 +52,7 @@ bool solver_solve(Solver &self, Armor &armor, double yaw_hint)
 
         // RMS重投影误差
         std::vector<cv::Point2f> projected;
-        cv::projectPoints(object_points, rvec, tvec, self.camera_matrix, self.distort_coeffs, projected);
+        cv::projectPoints(object_points, rvec, tvec, camera_matrix, distort_coeffs, projected);
         double error = 0;
         for (size_t i = 0; i < projected.size(); ++i)
         {
@@ -74,7 +79,7 @@ bool solver_solve(Solver &self, Armor &armor, double yaw_hint)
 
     // 使用PnP获取平面姿态候选解，并检查候选解的有效性
     std::vector<cv::Mat> rvec, tvec;
-    cv::solvePnPGeneric(object_points, image_points, self.camera_matrix, self.distort_coeffs,
+    cv::solvePnPGeneric(object_points, image_points, camera_matrix, distort_coeffs,
                         rvec, tvec, false, cv::SOLVEPNP_IPPE);
     for (size_t i = 0; i < rvec.size(); ++i)
     {
@@ -121,18 +126,18 @@ bool solver_solve(Solver &self, Armor &armor, double yaw_hint)
 }
 
 // 前后帧装甲板匹配
-static std::vector<int> solver_temporal_matches(const Solver &self, const std::vector<Armor> &armors, double timestamp)
+std::vector<int> Solver::temporal_matches(const std::vector<Armor> &armors, double timestamp) const
 {
     std::vector<int> matches(armors.size(), -1);      // 初始化全部为未匹配
-    const double dt = timestamp - self.previous_time; // 计算当前帧和上一帧的时间差
-    if (!std::isfinite(dt) || dt <= 0 || dt > .1 || self.previous.empty())
+    const double dt = timestamp - previous_time; // 计算当前帧和上一帧的时间差
+    if (!std::isfinite(dt) || dt <= 0 || dt > .1 || previous.empty())
         return matches; // 判断上一帧信息是否可用
 
-    std::vector<std::vector<double>> costs(armors.size(), std::vector<double>(self.previous.size())); // 建立代价矩阵
+    std::vector<std::vector<double>> costs(armors.size(), std::vector<double>(previous.size())); // 建立代价矩阵
     for (size_t i = 0; i < armors.size(); ++i)
-        for (size_t j = 0; j < self.previous.size(); ++j)
+        for (size_t j = 0; j < previous.size(); ++j)
         {
-            const auto &p = self.previous[j];
+            const auto &p = previous[j];
             const double width = cv::norm(armors[i].vertices[3] - armors[i].vertices[0]);
             const auto expected_center = p.center + p.velocity * static_cast<float>(dt);
             costs[i][j] = (width > .5 * p.width && width < 2 * p.width) ? cv::norm(armors[i].center - expected_center) / std::max(10., p.width) : 1e9; // 代价函数
@@ -151,23 +156,23 @@ static std::vector<int> solver_temporal_matches(const Solver &self, const std::v
 }
 
 // 根据上一帧装甲板信息计算yaw_hints
-std::vector<double> solver_yaw_hints(const Solver &self, const std::vector<Armor> &armors, double timestamp)
+std::vector<double> Solver::yaw_hints(const std::vector<Armor> &armors, double timestamp) const
 {
-    const auto matches = solver_temporal_matches(self, armors, timestamp);
+    const auto matches = temporal_matches(armors, timestamp);
     std::vector<double> hints(armors.size(), std::numeric_limits<double>::quiet_NaN());
     for (size_t i = 0; i < armors.size(); ++i)
         if (matches[i] >= 0)
         {
-            const auto &p = self.previous[matches[i]];
-            hints[i] = p.yaw + p.yaw_rate * (timestamp - self.previous_time);
+            const auto &p = previous[matches[i]];
+            hints[i] = p.yaw + p.yaw_rate * (timestamp - previous_time);
         }
     return hints;
 }
 
 // 整理新的Track
-void solver_finish_frame(Solver &self, const std::vector<Armor> &armors, double timestamp)
+void Solver::finish_frame(const std::vector<Armor> &armors, double timestamp)
 {
-    const auto matches = solver_temporal_matches(self, armors, timestamp); // 解出上一帧对应装甲板
+    const auto matches = temporal_matches(armors, timestamp); // 解出上一帧对应装甲板
     std::vector<SolverTrack> next;
 
     // 对当前帧装甲板进行Track更新
@@ -179,8 +184,8 @@ void solver_finish_frame(Solver &self, const std::vector<Armor> &armors, double 
         // 如果匹配到上一帧的Track，则更新速度和角速度
         if (matches[i] >= 0)
         {
-            const auto &p = self.previous[matches[i]];
-            const double dt = timestamp - self.previous_time;
+            const auto &p = previous[matches[i]];
+            const double dt = timestamp - previous_time;
             track.velocity = (a.center - p.center) * static_cast<float>(1 / dt);
             const double delta_yaw = std::remainder(a.yaw - p.yaw, 360.0);
             if (std::abs(delta_yaw) < 35)
@@ -189,36 +194,36 @@ void solver_finish_frame(Solver &self, const std::vector<Armor> &armors, double 
         next.push_back(track);
     }
     // 保存Track信息
-    self.previous = std::move(next);
-    self.previous_time = timestamp;
+    previous = std::move(next);
+    previous_time = timestamp;
 }
 
-SolvedFrame solver_solve_frame(Solver &self, std::vector<Armor> armors, double timestamp_ms,
+SolvedFrame Solver::solve_frame(std::vector<Armor> armors, double timestamp_ms,
                                const std::string &video_stem)
 {
-    if (self.camera_matrix.empty())
+    if (camera_matrix.empty())
     {
         if (video_stem.find("video_2") != std::string::npos)
         {
-            self.camera_matrix = (cv::Mat_<double>(3, 3) << 1711.311186, 0, 732.488057, 0, 1714.616882, 546.930868, 0, 0, 1);
-            self.distort_coeffs = (cv::Mat_<double>(1, 5) << -.119922, -.078593, .007511, -.028028, 0);
+            camera_matrix = (cv::Mat_<double>(3, 3) << 1711.311186, 0, 732.488057, 0, 1714.616882, 546.930868, 0, 0, 1);
+            distort_coeffs = (cv::Mat_<double>(1, 5) << -.119922, -.078593, .007511, -.028028, 0);
         }
         else
         {
-            self.camera_matrix = (cv::Mat_<double>(3, 3) << 1286.307063384126, 0, 645.34450819155256,
+            camera_matrix = (cv::Mat_<double>(3, 3) << 1286.307063384126, 0, 645.34450819155256,
                                   0, 1288.1400736562441, 483.6163720308021, 0, 0, 1);
-            self.distort_coeffs = (cv::Mat_<double>(1, 5) << -.47562935060124745, .21831745829617311,
+            distort_coeffs = (cv::Mat_<double>(1, 5) << -.47562935060124745, .21831745829617311,
                                    .0004957613589406044, -.00034617769548693592, 0);
         }
     }
 
     const double timestamp = timestamp_ms / 1000;
-    const auto hints = solver_yaw_hints(self, armors, timestamp);
+    const auto hints = yaw_hints(armors, timestamp);
     SolvedFrame result;
     for (std::size_t i = 0; i < armors.size(); ++i)
     {
         auto &a = armors[i];
-        if (!solver_solve(self, a, hints[i]))
+        if (!solve(a, hints[i]))
             continue;
         const Eigen::Vector3d p(a.tvec.at<double>(0), a.tvec.at<double>(1), a.tvec.at<double>(2));
         const Eigen::Vector4d z(std::atan2(p(0), p(2)), std::atan2(p(1), std::hypot(p(0), p(2))),
@@ -226,6 +231,6 @@ SolvedFrame solver_solve_frame(Solver &self, std::vector<Armor> armors, double t
         result.observations.push_back({p, z});
         result.armors.push_back(std::move(a));
     }
-    solver_finish_frame(self, result.armors, timestamp);
+    finish_frame(result.armors, timestamp);
     return result;
 }

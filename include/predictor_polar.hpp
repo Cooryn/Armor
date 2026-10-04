@@ -1,28 +1,24 @@
 #pragma once
 #include <Eigen/Dense>
 
-using PolarState = Eigen::Matrix<double, 9, 1>;
-using PolarCovariance = Eigen::Matrix<double, 9, 9>;
-using PolarObservation = Eigen::Vector4d;
-using PolarJacobian = Eigen::Matrix<double, 4, 9>;
-using PolarGain = Eigen::Matrix<double, 9, 4>;
 constexpr double polar_pi = 3.14159265358979323846;
 
-// State only; all operations are ordinary functions below.
-struct PolarEKF
+class PolarEKF
 {
-  PolarState X = PolarState::Zero();
-  PolarCovariance F = PolarCovariance::Identity();
-  PolarCovariance P = (PolarState() << 10, 10, 10, 10, 10, 10, 10, 10, .01).finished().asDiagonal();
-  PolarCovariance Q = (PolarState() << .01, .1, .01, .1, .01, .1, .01, .5, .0001).finished().asDiagonal();
-  Eigen::Matrix4d R = PolarObservation(.005, .005, .05, .05).asDiagonal();
+public:
+  void predict(double dt);
+  void update(const Eigen::Vector4d &z);
+
+  Eigen::Matrix<double, 9, 1> X = Eigen::Matrix<double, 9, 1>::Zero();
+  Eigen::Matrix<double, 9, 9> F = Eigen::Matrix<double, 9, 9>::Identity();
+  Eigen::Matrix<double, 9, 9> P = (Eigen::Matrix<double, 9, 1>() << 10, 10, 10, 10, 10, 10, 10, 10, .01).finished().asDiagonal();
+  Eigen::Matrix<double, 9, 9> Q = (Eigen::Matrix<double, 9, 1>() << .01, .1, .01, .1, .01, .1, .01, .5, .0001).finished().asDiagonal();
+  Eigen::Matrix4d R = Eigen::Vector4d(.005, .005, .05, .05).asDiagonal();
   bool is_initialized = false;
 };
 
 double polar_wrap_to_pi(double a);
-PolarObservation polar_angular_residual(const PolarObservation &a, const PolarObservation &b);
+Eigen::Vector4d polar_angular_residual(const Eigen::Vector4d &a, const Eigen::Vector4d &b);
 int polar_round_even(double x);
-void polar_predict(PolarEKF &filter, double dt);
-PolarObservation polar_h(const PolarState &s, int plate_idx);
-PolarJacobian polar_get_jacobian(const PolarState &s, int id);
-void polar_update(PolarEKF &filter, const PolarObservation &z);
+Eigen::Vector4d polar_h(const Eigen::Matrix<double, 9, 1> &s, int plate_idx);
+Eigen::Matrix<double, 4, 9> polar_get_jacobian(const Eigen::Matrix<double, 9, 1> &s, int id);

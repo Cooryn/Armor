@@ -24,23 +24,23 @@ int main(int argc, char **argv) {
         long long frame;
         double time, previous_time = -1;
         while (input >> frame) {
-            ArmorMeasurement z;
+            Eigen::Vector4d z;
             if (!(input >> time >> z(0) >> z(1) >> z(2) >> z(3)))
                 throw std::runtime_error("Incomplete fixture");
-            if (!armor_valid_observation(filter, z) || time <= previous_time)
+            if (!filter.valid_observation(z) || time <= previous_time)
                 throw std::runtime_error("Invalid observation or clock");
             if (!filter.is_initialized) {
-                armor_initialize(filter, z);
+                filter.initialize(z);
                 previous_time = time;
                 continue;
             }
-            armor_predict(filter, (time - previous_time) / 1000);
+            filter.predict((time - previous_time) / 1000);
             previous_time = time;
-            const auto matches = armor_update_multi(filter, {{z}}).first;
+            const auto matches = filter.update_multi({{z}}).first;
             states << frame << ',' << time;
             for (int i : {0, 2, 4, 1, 3, 5, 7}) states << ',' << filter.X(i);
             states << ',' << matches.size() << ',' << (matches.empty() ? "prediction_only" : "updated") << '\n';
-            const auto future = armor_forecast(filter, .05);
+            const auto future = filter.forecast(.05);
             for (int i = 0; i < 4; ++i) {
                 const auto p = future.plates.row(i);
                 futures << frame << ',' << time << ',' << i << ',' << p(0) << ',' << p(1) << ',' << p(2)

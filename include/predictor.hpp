@@ -8,29 +8,29 @@
 #include <fstream>
 #include <optional>
 
-using SinglePlateState = Eigen::Matrix<double, 6, 1>; // [x, vx, y, vy, z, vz]
-using SinglePlateCovariance = Eigen::Matrix<double, 6, 6>;
-using SinglePlateObservation = Eigen::Vector3d; // [yaw rad, pitch rad, distance m]
-using SinglePlateJacobian = Eigen::Matrix<double, 3, 6>;
 constexpr double single_plate_pi = 3.14159265358979323846;
 constexpr double single_plate_geometry_epsilon = 1e-6;
 constexpr double single_plate_process_noise = .01;
 
-struct SinglePlateEKF
+class SinglePlateEKF
 {
-    SinglePlateState state_ = SinglePlateState::Zero();
-    SinglePlateCovariance covariance_ = SinglePlateCovariance::Identity() * 10;
+public:
+    // Observation: [yaw rad, pitch rad, distance m].
+    void initialize(const Eigen::Vector3d &z);
+    void predict(double dt);
+    bool update(const Eigen::Vector3d &z);
+
+    // State: [x, vx, y, vy, z, vz].
+    Eigen::Matrix<double, 6, 1> state_ = Eigen::Matrix<double, 6, 1>::Zero();
+    Eigen::Matrix<double, 6, 6> covariance_ = Eigen::Matrix<double, 6, 6>::Identity() * 10;
     bool initialized_ = false;
 };
 
 double single_plate_wrap_to_pi(double angle);
 
-bool single_plate_valid_observation(const SinglePlateObservation &z);
-SinglePlateObservation single_plate_h(const SinglePlateState &s);
-SinglePlateJacobian single_plate_jacobian(const SinglePlateState &s);
-void single_plate_initialize(SinglePlateEKF &self, const SinglePlateObservation &z);
-void single_plate_predict(SinglePlateEKF &self, double dt);
-bool single_plate_update(SinglePlateEKF &self, const SinglePlateObservation &z);
+bool single_plate_valid_observation(const Eigen::Vector3d &z);
+Eigen::Vector3d single_plate_h(const Eigen::Matrix<double, 6, 1> &s);
+Eigen::Matrix<double, 3, 6> single_plate_jacobian(const Eigen::Matrix<double, 6, 1> &s);
 
 enum PredictorType
 {
@@ -64,8 +64,14 @@ struct VideoPrediction
     std::vector<Diagnostic> diagnostics;
 };
 
-struct VideoPredictor
+class VideoPredictor
 {
+public:
+    VideoPredictor(PredictorType model = PREDICTOR_ARMOR, double prediction_horizon_ms = 50);
+    VideoPrediction update(std::int64_t frame, double timestamp,
+                           const std::vector<VideoObservation> &observations);
+
+private:
     PredictorType type = PREDICTOR_ARMOR;
     double horizon_ms = 50;
     SinglePlateEKF basic;
@@ -75,16 +81,22 @@ struct VideoPredictor
     double last_timestamp = -1;
 };
 
-VideoPrediction video_predictor_update(VideoPredictor &self, std::int64_t frame, double timestamp,
-                                       const std::vector<VideoObservation> &observations);
-
 struct CsvOutput
 {
     std::ofstream stream_;
     bool first_ = true;
 };
-struct PredictionOutput
+class PredictionOutput
 {
+public:
+    PredictionOutput();
+    PredictionOutput(PredictorType model, const std::filesystem::path &directory,
+                     const std::string &suffix);
+    void write(std::int64_t frame, double timestamp,
+               const std::vector<VideoObservation> &observations, const VideoPrediction &prediction);
+    void finish();
+
+private:
     PredictorType type;
     std::filesystem::path metrics_path;
     CsvOutput results, logs, futures;
@@ -92,8 +104,3 @@ struct PredictionOutput
     std::array<std::size_t, 4> error_counts{};
     bool finished = false;
 };
-PredictionOutput open_prediction_output(PredictorType model, const std::filesystem::path &directory,
-                                        const std::string &suffix);
-void prediction_output_write(PredictionOutput &self, std::int64_t frame, double timestamp,
-                             const std::vector<VideoObservation> &obs, const VideoPrediction &prediction);
-void prediction_output_finish(PredictionOutput &self);

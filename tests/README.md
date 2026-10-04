@@ -58,7 +58,7 @@ EKF 统计窗口：视频 1 为 2–25 秒，视频 2 为 2–10 秒；
 
 `include/predictor*.hpp` 声明 EKF 接口，`src/predictor*.cpp` 实现算法。
 `src/Armor.cpp` 只包含统一视频配置及模块调用链。
-`predictor.hpp/.cpp` 提供 `video_predictor_*`、`prediction_output_*` 普通函数，状态使用只存数据的结构体，均不依赖 OpenCV；
+`predictor.hpp/.cpp` 提供 `VideoPredictor::update`、`PredictionOutput::write/finish` 成员接口，均不依赖 OpenCV；
 `lightbar_detector.hpp/.cpp` 只负责检测与检测结果绘制，`solver.hpp/.cpp` 提供逐帧 PnP。
 视频输入、窗口及预测画面输出放在现有 `camera_tracking.hpp/.cpp`。
 程序通过 `predictor_filters`、`armor_vision`、`armor_video` 链接对应实现，无新增模块文件；
@@ -69,7 +69,7 @@ EKF 统计窗口：视频 1 为 2–25 秒，视频 2 为 2–10 秒；
 协方差正定性，以及 Eigen 增益/NIS 与独立 LU 计算。
 `test_video_predictor.cpp` 验证最近有效板、并列首条、四板联合更新、连续漏检、
 末尾预测、空/单帧输入、非变异未来预测、非法时钟和写入错误；
-测试通过公共头文件调用 `video_predictor_update` 和 `prediction_output_write/finish`，
+测试通过公共头文件调用 `VideoPredictor::update` 和 `PredictionOutput::write/finish`，
 不再包含入口 `.cpp` 或依赖排除入口的编译宏。
 同一测试程序提供测试专用的 `--replay`，不作为正式 CSV 工具。
 

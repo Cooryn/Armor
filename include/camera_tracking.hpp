@@ -25,15 +25,18 @@ struct CameraGimbalOutput
     bool angle_limited = false, speed_limited = false, acceleration_limited = false;
     std::string status = "hold";
 };
-struct CameraGimbal
+class CameraGimbal
 {
+public:
+    explicit CameraGimbal(const CameraGimbalConfig &config = CameraGimbalConfig{});
+    CameraGimbalOutput update(double timestamp_ms, const Eigen::Vector3d &center_camera, bool observed);
+
     CameraGimbalConfig config_;
+
+private:
     double last_time_ = -1; // Source time in ms; -1 means no previous frame.
     Eigen::Vector2d last_rate_ = Eigen::Vector2d::Zero();
 };
-
-CameraGimbalOutput camera_gimbal_update(CameraGimbal &self, double timestamp_ms,
-                                        const Eigen::Vector3d &center_camera, bool observed);
 
 enum CameraTrackingMode
 {
@@ -42,51 +45,61 @@ enum CameraTrackingMode
     TRACKING_CENTER
 };
 constexpr double camera_tracking_horizon_s = .05;
-// Live tracking data. Moving-platform compensation requires telemetry.
-struct CameraTracking
+// Moving-platform compensation requires telemetry.
+class CameraTracking
 {
+public:
+    void update(const std::vector<Observation> &observations, double timestamp_ms);
+    void key(int key);
+    const char *mode_name() const;
+    bool visible() const;
+    void draw(cv::Mat &image, const cv::Mat &camera, const cv::Mat &distortion, int frame_id = 0);
+
     ArmorEKF ekf_ = ArmorEKF{};
     CameraGimbal controller_ = CameraGimbal{};
     CameraTrackingMode mode_ = TRACKING_AUTOMATIC;
     Eigen::Vector2d simulated_angles_ = Eigen::Vector2d::Zero();
     Eigen::Vector2d manual_target_ = Eigen::Vector2d::Zero();
     Eigen::Vector3d predicted_target_ = Eigen::Vector3d::Zero();
-    double last_time_ = -1, last_observation_ = -1;
     size_t accepted_ = 0;
     std::string status_ = "waiting";
     CameraGimbalOutput command_;
-    std::vector<Observation> observations_;
     std::vector<Diagnostic> diagnostics_;
+
+private:
+    double last_time_ = -1, last_observation_ = -1;
+    std::vector<Observation> observations_;
     std::deque<cv::Point> trail_;
     double drawn_time_ = -1;
 };
-void camera_tracking_update(CameraTracking &self, const std::vector<Observation> &observations, double timestamp_ms);
-
-void camera_tracking_key(CameraTracking &self, int key);
-
-const char *camera_tracking_mode_name(const CameraTracking &self);
-
-bool camera_tracking_visible(const CameraTracking &self);
-
-void camera_tracking_draw(CameraTracking &self, cv::Mat &image, const cv::Mat &camera,
-                          const cv::Mat &distortion, int frame_id = 0);
-
-struct VideoInput
+class VideoInput
 {
+public:
+    explicit VideoInput(const std::filesystem::path &path);
+    bool next();
+
     std::filesystem::path path_;
-    cv::VideoCapture stream_;
     cv::Mat image_;
-    double fps_ = 0, frame_count_ = 0, timestamp_ms = 0;
+    double fps_ = 0, timestamp_ms = 0;
     std::int64_t frame_id_ = 0;
     std::string stem_, suffix_;
-};
-VideoInput open_video_input(const std::filesystem::path &path);
-bool video_input_next(VideoInput &self);
 
-struct Solver;
+private:
+    cv::VideoCapture stream_;
+    double frame_count_ = 0;
+};
+class Solver;
 struct SolvedFrame;
-struct VideoOutput
+class VideoOutput
 {
+public:
+    VideoOutput(const std::filesystem::path &root, const VideoInput &input,
+                PredictorType model, bool preview);
+    bool write(const VideoInput &input, const Solver &solver, const SolvedFrame &poses,
+               const VideoPrediction &prediction, std::chrono::steady_clock::time_point frame_start);
+    void finish();
+
+private:
     PredictorType type_;
     bool preview_, finished_ = false;
     std::filesystem::path output_path_, raw_path_;
@@ -95,9 +108,3 @@ struct VideoOutput
     PredictionOutput predictions_;
     std::int64_t processed_ = 0;
 };
-VideoOutput open_video_output(const std::filesystem::path &root, const VideoInput &input,
-                              PredictorType model, bool preview);
-bool video_output_write(VideoOutput &self, const VideoInput &input, const Solver &solver,
-                        const SolvedFrame &poses,
-                        const VideoPrediction &prediction, std::chrono::steady_clock::time_point frame_start);
-void video_output_finish(VideoOutput &self);

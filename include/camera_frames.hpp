@@ -24,48 +24,49 @@ struct CameraSample
 {
     double timestamp_ms, yaw_deg, pitch_deg, roll_deg;
 };
-struct CameraFrames
+class CameraFrames
 {
+public:
+    static CameraFrames load(const std::filesystem::path &telemetry,
+                             const std::filesystem::path &calibration, double max_gap_ms = 100,
+                             double reference_time_ms = -1);
+    Eigen::Isometry3d at(double timestamp_ms) const;
+    Eigen::Isometry3d reset_origin(double timestamp_ms);
+
     CameraCalibration calibration_;
     std::vector<CameraSample> samples_;
     double max_gap_ms_ = 100;
     Eigen::Vector3d origin_in_mechanical_ = Eigen::Vector3d::Zero();
     double reference_time_ms_ = 0;
+
+private:
+    Eigen::Isometry3d mechanical_at(double timestamp_ms) const;
+    Eigen::Isometry3d transform(const CameraSample &s) const;
+    static std::vector<std::map<std::string, double>> read_numeric_csv(const std::filesystem::path &path);
 };
 
-inline Eigen::Isometry3d camera_frames_at(const CameraFrames &self, double timestamp_ms);
-
-inline Eigen::Isometry3d camera_frames_reset_origin(CameraFrames &self, double timestamp_ms);
-// Reference time is in ms; -1 selects the first telemetry sample.
-inline CameraFrames camera_frames_load(const std::filesystem::path &telemetry,
-                                       const std::filesystem::path &calibration, double max_gap_ms = 100,
-                                       double reference_time_ms = -1);
-inline Eigen::Isometry3d camera_frames_mechanical_at(const CameraFrames &self, double timestamp_ms);
-inline Eigen::Isometry3d camera_frames_transform(const CameraFrames &self, const CameraSample &s);
-inline std::vector<std::map<std::string, double>> camera_frames_read_numeric_csv(const std::filesystem::path &path);
-
-inline Eigen::Isometry3d camera_frames_at(const CameraFrames &self, double timestamp_ms)
+inline Eigen::Isometry3d CameraFrames::at(double timestamp_ms) const
 {
-    Eigen::Isometry3d pose = camera_frames_mechanical_at(self, timestamp_ms);
-    pose.translation() -= self.origin_in_mechanical_;
+    Eigen::Isometry3d pose = mechanical_at(timestamp_ms);
+    pose.translation() -= origin_in_mechanical_;
     return pose;
 }
 
-inline Eigen::Isometry3d camera_frames_reset_origin(CameraFrames &self, double timestamp_ms)
+inline Eigen::Isometry3d CameraFrames::reset_origin(double timestamp_ms)
 {
-    const Eigen::Vector3d new_origin = camera_frames_mechanical_at(self, timestamp_ms).translation();
+    const Eigen::Vector3d new_origin = mechanical_at(timestamp_ms).translation();
     Eigen::Isometry3d new_from_old = Eigen::Isometry3d::Identity();
-    new_from_old.translation() = self.origin_in_mechanical_ - new_origin;
-    self.origin_in_mechanical_ = new_origin;
-    self.reference_time_ms_ = timestamp_ms;
+    new_from_old.translation() = origin_in_mechanical_ - new_origin;
+    origin_in_mechanical_ = new_origin;
+    reference_time_ms_ = timestamp_ms;
     return new_from_old;
 }
 
-inline CameraFrames camera_frames_load(const std::filesystem::path &telemetry,
+inline CameraFrames CameraFrames::load(const std::filesystem::path &telemetry,
                                        const std::filesystem::path &calibration, double max_gap_ms,
                                        double reference_time_ms)
 {
-    const auto values = camera_frames_read_numeric_csv(calibration);
+    const auto values = CameraFrames::read_numeric_csv(calibration);
     if (values.size() != 1)
         throw std::invalid_argument("Calibration CSV must contain exactly one row");
     const auto &r = values.front();
@@ -75,7 +76,7 @@ inline CameraFrames camera_frames_load(const std::filesystem::path &telemetry,
     c.camera_to_pitch = Eigen::Quaterniond(r.at("mount_qw"), r.at("mount_qx"),
                                            r.at("mount_qy"), r.at("mount_qz"));
     std::vector<CameraSample> samples;
-    for (const auto &row : camera_frames_read_numeric_csv(telemetry))
+    for (const auto &row : CameraFrames::read_numeric_csv(telemetry))
         samples.push_back({row.at("timestamp"), row.at("yaw_deg"), row.at("pitch_deg"), row.at("roll_deg")});
     CameraFrames self{std::move(c), std::move(samples), max_gap_ms};
 
@@ -93,37 +94,37 @@ inline CameraFrames camera_frames_load(const std::filesystem::path &telemetry,
             throw std::invalid_argument("Telemetry must have increasing finite timestamps and finite angles");
         previous = s.timestamp_ms;
     }
-    camera_frames_reset_origin(self, reference_time_ms == -1 ? self.samples_.front().timestamp_ms : reference_time_ms);
+    self.reset_origin(reference_time_ms == -1 ? self.samples_.front().timestamp_ms : reference_time_ms);
 
     return self;
 }
 
-inline Eigen::Isometry3d camera_frames_mechanical_at(const CameraFrames &self, double timestamp_ms)
+inline Eigen::Isometry3d CameraFrames::mechanical_at(double timestamp_ms) const
 {
     if (!std::isfinite(timestamp_ms))
         throw std::invalid_argument("Invalid frame timestamp");
-    auto right = std::lower_bound(self.samples_.begin(), self.samples_.end(), timestamp_ms,
+    auto right = std::lower_bound(samples_.begin(), samples_.end(), timestamp_ms,
                                   [](const CameraSample &s, double t)
                                   { return s.timestamp_ms < t; });
     // CSV serialization can round otherwise identical video/encoder times.
     constexpr double timestamp_tolerance_ms = 1e-6;
-    if (right != self.samples_.end() && std::abs(right->timestamp_ms - timestamp_ms) <= timestamp_tolerance_ms)
-        return camera_frames_transform(self, *right);
-    if (right != self.samples_.begin() && std::abs(std::prev(right)->timestamp_ms - timestamp_ms) <= timestamp_tolerance_ms)
-        return camera_frames_transform(self, *std::prev(right));
-    if (right == self.samples_.begin() || right == self.samples_.end())
+    if (right != samples_.end() && std::abs(right->timestamp_ms - timestamp_ms) <= timestamp_tolerance_ms)
+        return transform(*right);
+    if (right != samples_.begin() && std::abs(std::prev(right)->timestamp_ms - timestamp_ms) <= timestamp_tolerance_ms)
+        return transform(*std::prev(right));
+    if (right == samples_.begin() || right == samples_.end())
         throw std::invalid_argument("Frame timestamp is outside telemetry coverage (no extrapolation)");
     const auto &left = *std::prev(right);
-    if (right->timestamp_ms - left.timestamp_ms > self.max_gap_ms_)
+    if (right->timestamp_ms - left.timestamp_ms > max_gap_ms_)
         throw std::invalid_argument("Telemetry synchronization gap exceeds limit");
     const double f = (timestamp_ms - left.timestamp_ms) / (right->timestamp_ms - left.timestamp_ms);
     auto angle = [f](double a, double b)
     { return a + f * std::remainder(b - a, 360.0); };
-    return camera_frames_transform(self, {timestamp_ms, angle(left.yaw_deg, right->yaw_deg),
+    return transform({timestamp_ms, angle(left.yaw_deg, right->yaw_deg),
                                           angle(left.pitch_deg, right->pitch_deg), angle(left.roll_deg, right->roll_deg)});
 }
 
-inline Eigen::Isometry3d camera_frames_transform(const CameraFrames &self, const CameraSample &s)
+inline Eigen::Isometry3d CameraFrames::transform(const CameraSample &s) const
 {
     constexpr double radians = 3.14159265358979323846 / 180;
     const Eigen::Matrix3d yaw = Eigen::AngleAxisd(s.yaw_deg * radians, Eigen::Vector3d::UnitY()).toRotationMatrix();
@@ -131,12 +132,12 @@ inline Eigen::Isometry3d camera_frames_transform(const CameraFrames &self, const
                                         Eigen::AngleAxisd(s.roll_deg * radians, Eigen::Vector3d::UnitZ()))
                                            .toRotationMatrix();
     Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
-    pose.linear() = yaw * pitch_roll * self.calibration_.camera_to_pitch.toRotationMatrix();
-    pose.translation() = yaw * (self.calibration_.yaw_to_pitch + pitch_roll * self.calibration_.camera_in_pitch);
+    pose.linear() = yaw * pitch_roll * calibration_.camera_to_pitch.toRotationMatrix();
+    pose.translation() = yaw * (calibration_.yaw_to_pitch + pitch_roll * calibration_.camera_in_pitch);
     return pose;
 }
 
-inline std::vector<std::map<std::string, double>> camera_frames_read_numeric_csv(const std::filesystem::path &path)
+inline std::vector<std::map<std::string, double>> CameraFrames::read_numeric_csv(const std::filesystem::path &path)
 {
     std::ifstream in(path);
     if (!in)

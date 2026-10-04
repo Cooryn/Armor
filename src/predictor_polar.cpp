@@ -10,8 +10,8 @@ double polar_wrap_to_pi(double a) {
     return r - polar_pi;
 }
 
-PolarObservation polar_angular_residual(const PolarObservation &a, const PolarObservation &b) {
-    PolarObservation d = a - b;
+Eigen::Vector4d polar_angular_residual(const Eigen::Vector4d &a, const Eigen::Vector4d &b) {
+    Eigen::Vector4d d = a - b;
     for (int i : {0, 1, 3})
         d(i) = polar_wrap_to_pi(d(i));
     return d;
@@ -25,15 +25,16 @@ int polar_round_even(double x) {
                                                               : lo + 1);
 }
 
-void polar_predict(PolarEKF &self, double dt) {
+void PolarEKF::predict(double dt)
+{
     for (int i : {0, 2, 4, 6})
-        self.F(i, i + 1) = dt;
-    self.X = self.F * self.X;
-    self.X(6) = polar_wrap_to_pi(self.X(6));
-    self.P = self.F * self.P * self.F.transpose() + self.Q;
+        F(i, i + 1) = dt;
+    X = F * X;
+    X(6) = polar_wrap_to_pi(X(6));
+    P = F * P * F.transpose() + Q;
 }
 
-PolarObservation polar_h(const PolarState &s, int plate_idx) {
+Eigen::Vector4d polar_h(const Eigen::Matrix<double, 9, 1> &s, int plate_idx) {
     double yaw = s(6) + plate_idx * polar_pi / 2, x = s(0) + s(8) * std::sin(yaw),
            z = s(4) - s(8) * std::cos(yaw), y = s(2);
     return {polar_wrap_to_pi(std::atan2(x, z)),
@@ -41,34 +42,35 @@ PolarObservation polar_h(const PolarState &s, int plate_idx) {
             std::sqrt(x * x + y * y + z * z), polar_wrap_to_pi(yaw)};
 }
 
-PolarJacobian polar_get_jacobian(const PolarState &s, int id) {
-    PolarJacobian H = PolarJacobian::Zero();
-    const PolarObservation base = polar_h(s, id);
+Eigen::Matrix<double, 4, 9> polar_get_jacobian(const Eigen::Matrix<double, 9, 1> &s, int id) {
+    Eigen::Matrix<double, 4, 9> H = Eigen::Matrix<double, 4, 9>::Zero();
+    const Eigen::Vector4d base = polar_h(s, id);
     for (int i = 0; i < 9; ++i)
     {
-        PolarState t = s;
+        Eigen::Matrix<double, 9, 1> t = s;
         t(i) += 1e-5;
-        const PolarObservation d = polar_angular_residual(polar_h(t, id), base);
+        const Eigen::Vector4d d = polar_angular_residual(polar_h(t, id), base);
         H.col(i) = d / 1e-5;
     }
     return H;
 }
 
-void polar_update(PolarEKF &self, const PolarObservation &z) {
-    int id = polar_round_even(polar_wrap_to_pi(z(3) - self.X(6)) / (polar_pi / 2));
-    const PolarJacobian H = polar_get_jacobian(self.X, id);
-    const PolarObservation Y = polar_angular_residual(z, polar_h(self.X, id));
-    const Eigen::Matrix4d S = H * self.P * H.transpose() + self.R;
+void PolarEKF::update(const Eigen::Vector4d &z)
+{
+    int id = polar_round_even(polar_wrap_to_pi(z(3) - X(6)) / (polar_pi / 2));
+    const Eigen::Matrix<double, 4, 9> H = polar_get_jacobian(X, id);
+    const Eigen::Vector4d Y = polar_angular_residual(z, polar_h(X, id));
+    const Eigen::Matrix4d S = H * P * H.transpose() + R;
     if (!S.allFinite() || !Y.allFinite())
         throw std::runtime_error("Non-finite polar innovation");
     const Eigen::LDLT<Eigen::Matrix4d> solver(S);
     if (solver.info() != Eigen::Success || solver.vectorD().minCoeff() <= 0)
         throw std::runtime_error("Polar innovation covariance must be positive definite");
-    const PolarGain PHt = self.P * H.transpose();
-    const PolarGain K = solver.solve(PHt.transpose()).transpose();
+    const Eigen::Matrix<double, 9, 4> PHt = P * H.transpose();
+    const Eigen::Matrix<double, 9, 4> K = solver.solve(PHt.transpose()).transpose();
     if (!K.allFinite())
         throw std::runtime_error("Non-finite polar Kalman gain");
-    self.X = self.X + K * Y;
-    self.X(6) = polar_wrap_to_pi(self.X(6));
-    self.P = (PolarCovariance::Identity() - K * H) * self.P;
+    X = X + K * Y;
+    X(6) = polar_wrap_to_pi(X(6));
+    P = (Eigen::Matrix<double, 9, 9>::Identity() - K * H) * P;
 }

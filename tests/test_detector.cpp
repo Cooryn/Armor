@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
         Armor armor;
         std::copy(projected.begin(), projected.end(), armor.vertices);
         Solver solver{K, distortion};
-        require(solver_solve(solver, armor), "Rejected exact physical rectangle");
+        require(solver.solve(armor), "Rejected exact physical rectangle");
         require(armor.reprojection_error < .01, "Unexpected reprojection error");
         require(std::abs(armor.yaw+ .4*180/CV_PI) < .01, "PnP yaw sign changed");
         require(armor.pnp_candidate_count >= 1, "No validated PnP candidates recorded");
@@ -106,7 +106,7 @@ int main(int argc, char **argv) {
             cv::projectPoints(object, rotation, position, K, lens, projected);
             Armor sample;
             std::copy(projected.begin(), projected.end(), sample.vertices);
-            require(solver_solve(distorted_solver, sample), "Exact distorted plate rejected");
+            require(distorted_solver.solve(sample), "Exact distorted plate rejected");
             cv::Mat expected_rotation, recovered_rotation;
             cv::Rodrigues(rotation, expected_rotation);
             cv::Rodrigues(sample.rvec, recovered_rotation);
@@ -125,18 +125,18 @@ int main(int argc, char **argv) {
             a->vertices[2] = a->center+cv::Point2f(40,15);
             a->vertices[3] = a->center+cv::Point2f(40,-15);
         }
-        solver_finish_frame(solver, {first,second}, 0);
-        auto hints = solver_yaw_hints(solver, {second,first}, 1./30);
+        solver.finish_frame({first,second}, 0);
+        auto hints = solver.yaw_hints({second,first}, 1./30);
         require(hints[0] == 30 && hints[1] == -20, "Temporal matching depends on order");
-        hints = solver_yaw_hints(solver, {first,first}, 1./30);
+        hints = solver.yaw_hints({first,first}, 1./30);
         require(hints[0] == -20 && hints[1] == -20, "Nearest matching failed to reuse prior");
-        hints = solver_yaw_hints(solver, {first}, .2);
+        hints = solver.yaw_hints({first}, .2);
         require(!std::isfinite(hints[0]), "Stale pose used after long time gap");
-        solver_finish_frame(solver, {}, 1./30);
-        hints = solver_yaw_hints(solver, {first}, 2./30);
+        solver.finish_frame({}, 1./30);
+        hints = solver.yaw_hints({first}, 2./30);
         require(!std::isfinite(hints[0]), "Missing frame failed to clear pose history");
         armor.vertices[1] = armor.vertices[0];
-        require(!solver_solve(solver, armor), "Accepted degenerate vertices");
+        require(!solver.solve(armor), "Accepted degenerate vertices");
 
         if (argc > 1) {
             cv::VideoCapture cap(std::string(argv[1]) + "/assets/video/video_1.avi");
@@ -179,7 +179,7 @@ int main(int argc, char **argv) {
             Solver solver2{K2, D2};
             bool recovered = false;
             for (auto a : selected) {
-                bool solved = solver_solve(solver2, a);
+                bool solved = solver2.solve(a);
                 recovered |= solved;
             }
             require(recovered, "Endpoint refinement lost video 2 frame 220");

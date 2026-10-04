@@ -9,7 +9,7 @@
 #include <stdexcept>
 struct Frame {
     double time;
-    ArmorState truth = ArmorState::Zero();
+    Eigen::Matrix<double, 11, 1> truth = Eigen::Matrix<double, 11, 1>::Zero();
     std::vector<Observation> observations;
 };
 struct Sequence { std::string name; bool synthetic; std::vector<Frame> frames; };
@@ -36,7 +36,7 @@ int main(int argc, char **argv) {
                     for (int i = 0; i < 11; ++i) input >> f.truth(i);
                 }
                 for (int k = 0; k < n; ++k) {
-                    ArmorMeasurement z = ArmorMeasurement::Zero();
+                    Eigen::Vector4d z = Eigen::Vector4d::Zero();
                     for (int j = 0; j < 4; ++j) input >> z(j);
                     f.observations.push_back({z});
                 }
@@ -52,19 +52,19 @@ int main(int argc, char **argv) {
                 ArmorEKF b{};
                 b.R = Eigen::Vector4d(v0, v1, v2, v3).asDiagonal();
                 std::array<Stats, 2> stats{};
-                std::optional<ArmorState> previous;
+                std::optional<Eigen::Matrix<double, 11, 1>> previous;
                 double last = 0;
                 for (size_t i = 0; i < s.frames.size(); ++i) {
                     const auto &f = s.frames[i];
                     if (!b.is_initialized) {
                         for (const auto &o : f.observations)
-                            if (armor_valid_observation(b, o.Z_obs)) { armor_initialize(b, o.Z_obs); break; }
+                            if (b.valid_observation(o.Z_obs)) { b.initialize(o.Z_obs); break; }
                         last = f.time;
                         continue;
                     }
-                    armor_predict(b, f.time - last);
+                    b.predict(f.time - last);
                     last = f.time;
-                    const auto result = armor_update_multi(b, f.observations);
+                    const auto result = b.update_multi(f.observations);
                     auto &m = stats[i < s.frames.size() * 7 / 10 ? 0 : 1];
                     m.observations += static_cast<int>(f.observations.size());
                     m.accepted += static_cast<int>(result.first.size());
@@ -81,10 +81,10 @@ int main(int argc, char **argv) {
                         while (future < s.frames.size() && s.frames[future].time < f.time + .05 - 1e-8) ++future;
                         if (future < s.frames.size()) {
                             const auto &target = s.frames[future];
-                            auto forecast = armor_forecast(b, target.time - f.time);
+                            auto forecast = b.forecast(target.time - f.time);
                             for (const auto &o : target.observations) {
-                                if (!armor_valid_observation(b, o.Z_obs)) continue;
-                                ArmorMeasurement residual;
+                                if (!b.valid_observation(o.Z_obs)) continue;
+                                Eigen::Vector4d residual;
                                 double smallest = std::numeric_limits<double>::infinity();
                                 for (int id = 0; id < 4; ++id) {
                                     auto r = armor_angular_residual(o.Z_obs, armor_h(forecast.state, id));
@@ -100,8 +100,8 @@ int main(int argc, char **argv) {
                                 // Ground truth is scored at exactly 50 ms; recordings use the next available image.
                                 const auto &left = s.frames[future - 1];
                                 double fraction = (f.time + .05 - left.time) / (target.time - left.time);
-                                const ArmorState truth = left.truth + fraction * (target.truth - left.truth);
-                                const auto lead = armor_forecast(b, .05);
+                                const Eigen::Matrix<double, 11, 1> truth = left.truth + fraction * (target.truth - left.truth);
+                                const auto lead = b.forecast(.05);
                                 for (int axis : {0, 2, 4}) m.center_truth += std::pow(lead.state(axis) - truth(axis), 2);
                                 double error = 0;
                                 for (int id = 0; id < 4; ++id) {

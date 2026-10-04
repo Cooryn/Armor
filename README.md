@@ -279,11 +279,11 @@ PnP 与叠加边框采用灯条中心间距 **135 mm**、灯条长度 **56 mm**�
 
 ### 7.4 C++ 调用
 
-观测的 `armor_id` 使用普通整数：`-1` 表示自动关联，`0～3` 表示指定板号，其余编号不参与关联。内部时间戳使用普通 `double`，`-1` 表示尚未设置，`0` 是有效时间；`camera_frames_load` 的参考时间默认 `-1`，表示使用第一条遥测。命令行显式传入的原点时间必须是有限的非负数。投影和预测中心仍通过 `optional` 表达无有效结果。
+观测的 `armor_id` 使用普通整数：`-1` 表示自动关联，`0～3` 表示指定板号，其余编号不参与关联。内部时间戳使用普通 `double`，`-1` 表示尚未设置，`0` 是有效时间；`CameraFrames::load` 的参考时间默认 `-1`，表示使用第一条遥测。命令行显式传入的原点时间必须是有限的非负数。投影和预测中心仍通过 `optional` 表达无有效结果。
 
-默认滤波参数直接保存在数据结构中，使用 `ArmorEKF ekf;` 或 `VideoPredictor predictor{PREDICTOR_ARMOR, 50};` 初始化，不再提供 `make_*` 工厂和只读取字段的查询函数。模型选择、最近板选择、更新及显示结果组装集中在 `video_predictor_update`；CSV 的开关文件、分隔符和换行操作放在对应导出函数内。PnP 视频标定在首次 `solver_solve_frame` 调用时按视频文件名选择；已有标定可用 `Solver{camera_matrix, distort_coeffs}` 直接设置。预测提前量和控制参数在首次使用时检查。
+默认滤波参数直接保存在 EKF 类中，使用 `ArmorEKF ekf;` 或 `VideoPredictor predictor{PREDICTOR_ARMOR, 50};` 初始化；矩阵和调参字段保持公开，便于离线评估。模型选择、最近板选择、更新及显示结果组装集中在 `VideoPredictor::update`；CSV 的开关文件、分隔符和换行操作放在 `PredictionOutput` 内。PnP 视频标定在首次 `Solver::solve_frame` 调用时按视频文件名选择；已有标定可用 `Solver{camera_matrix, distort_coeffs}` 直接设置。预测提前量和控制参数在首次使用时检查。
 
-三个预测器保持声明与实现分离：`include/predictor*.hpp` 声明普通函数和只存数据的结构体，`src/predictor*.cpp` 实现算法。项目接口不使用自定义类、成员函数、嵌套类型或命名空间。`predictor.hpp/.cpp` 的 `video_predictor_update` 负责在线预测，`prediction_output_write/finish` 负责 CSV/RMSE 导出，均不依赖 OpenCV；CSV 辅助函数仅在对应 `.cpp` 内使用。`lightbar_detector.hpp/.cpp` 只负责检测及检测结果绘制；`solver.hpp/.cpp` 的 `solver_solve_frame` 负责相机参数选择、逐帧 PnP 和类型化观测。`camera_tracking.hpp/.cpp` 的 `video_input_*`、`video_output_*` 负责视频读写、窗口及预测画面。`Armor.cpp` 保留顶部配置和“检测 → PnP → 预测 → 输出”调用链，无新增模块文件。CMake 的 `predictor_filters` 包含滤波及预测结果导出，`armor_vision` 包含检测与 PnP，`armor_video` 复用现有相机文件的视频实现；共享库编译时排除相机程序的独立入口。自己的滤波目标可使用 `target_link_libraries(your_target PRIVATE predictor_filters)`。
+三个预测器保持声明与实现分离：`include/predictor*.hpp` 声明类和接口，`src/predictor*.cpp` 实现算法。有状态的 EKF、PnP、视频预测、读写、控制和坐标变换使用类，观测和结果使用结构体，无自定义命名空间，也不使用 `using namespace`。`predictor.hpp/.cpp` 的 `VideoPredictor::update` 负责在线预测，`PredictionOutput::write/finish` 负责 CSV/RMSE 导出，均不依赖 OpenCV；CSV 辅助操作仅在对应 `.cpp` 内使用。`lightbar_detector.hpp/.cpp` 只负责检测及检测结果绘制；`solver.hpp/.cpp` 的 `Solver::solve_frame` 负责相机参数选择、逐帧 PnP 和类型化观测。`camera_tracking.hpp/.cpp` 的 `VideoInput`、`VideoOutput` 负责视频读写、窗口及预测画面。`Armor.cpp` 保留顶部配置和“检测 → PnP → 预测 → 输出”调用链，无新增模块文件。CMake 的 `predictor_filters` 包含滤波及预测结果导出，`armor_vision` 包含检测与 PnP，`armor_video` 复用现有相机文件的视频实现；共享库编译时排除相机程序的独立入口。自己的滤波目标可使用 `target_link_libraries(your_target PRIVATE predictor_filters)`。
 
 三个模型的状态、协方差、观测和雅可比均使用固定尺寸 Eigen 类型：基础单板为 6 维状态 / 3 维观测，极坐标为 9 维状态 / 4 维观测，装甲板为 11 维状态 / 4 维单板观测。四板联合更新按实际关联数量组合 4–16 维观测，矩阵存储上限固定为 16；卡尔曼增益和 NIS 直接通过 Eigen LDLT 求解，不构造逆矩阵，也不切换备用求解器。向量初始化使用 Eigen 构造函数或 `<<`，对角矩阵使用 `asDiagonal()`。
 
@@ -291,13 +291,13 @@ PnP 与叠加边框采用灯条中心间距 **135 mm**、灯条长度 **56 mm**�
 #include "predictor_armor.hpp"
 
 ArmorEKF ekf; // 默认使用固定观测噪声
-ArmorMeasurement z(0, 0, 3, 0); // yaw, pitch, distance, plate yaw
-armor_initialize(ekf, z);
-armor_predict(ekf, .03);
-armor_update_multi(ekf, {{z}});
-const auto future = armor_forecast(ekf, .05); // 不推进当前状态
-// 在线预测：video_predictor_update(predictor, frame_id, timestamp_ms, observations)。
-// 导出：prediction_output_write/finish，或 video_output_write/finish。
+Eigen::Vector4d z(0, 0, 3, 0); // yaw, pitch, distance, plate yaw
+ekf.initialize(z);
+ekf.predict(.03);
+ekf.update_multi({{z}});
+const auto future = ekf.forecast(.05); // 不推进当前状态
+// 在线预测：predictor.update(frame_id, timestamp_ms, observations)。
+// 导出：output.write(...)、output.finish()。
 ```
 
 旧 Python 实现保存在 `tests/reference/predictor/`，仅供回归对照；原 `import predictor...` 接口已移除。
@@ -579,7 +579,7 @@ timestamp,yaw_deg,pitch_deg,roll_deg
 
 pose_base 的基座系 CSV 携带 `base_reference_timestamp_ms` 和 `base_origin_x_m/base_origin_y_m/base_origin_z_m`；后三项表示参考光心在机械系 M 中的位置，单位米。调用者必须保持参考原点一致；控制导出程序核对所用参考时间和原点。
 
-`camera_frames_reset_origin(frames, timestamp_ms)` 可将固定原点改为指定时刻的光心，并返回旧固定系到新固定系的平移变换。轴方向、姿态和速度方向保持不变。当前离线流程通过相同的 `--origin-time-ms` 重新转换、预测、导出；在线重置时还需同步迁移 EKF 的位置状态或重新初始化跟踪器，本次尚未接入在线重置流程。
+`frames.reset_origin(timestamp_ms)` 可将固定原点改为指定时刻的光心，并返回旧固定系到新固定系的平移变换。轴方向、姿态和速度方向保持不变。当前离线流程通过相同的 `--origin-time-ms` 重新转换、预测、导出；在线重置时还需同步迁移 EKF 的位置状态或重新初始化跟踪器，本次尚未接入在线重置流程。
 
 ### 相机跟踪指令
 

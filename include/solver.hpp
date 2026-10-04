@@ -14,16 +14,20 @@ struct SolverTrack
     cv::Point2f center, velocity;
     double width, yaw, yaw_rate;
 };
-struct Solver
+class Solver
 {
+public:
+    Solver() = default;
+    Solver(const cv::Mat &camera, const cv::Mat &distortion);
+    SolvedFrame solve_frame(std::vector<Armor> armors, double timestamp_ms, const std::string &video_stem);
+    bool solve(Armor &armor, double yaw_hint = std::numeric_limits<double>::quiet_NaN());
+    std::vector<double> yaw_hints(const std::vector<Armor> &armors, double timestamp) const;
+    void finish_frame(const std::vector<Armor> &armors, double timestamp);
+
     cv::Mat camera_matrix, distort_coeffs;
+
+private:
     std::vector<SolverTrack> previous;
     double previous_time = std::numeric_limits<double>::quiet_NaN();
+    std::vector<int> temporal_matches(const std::vector<Armor> &armors, double timestamp) const;
 };
-
-SolvedFrame solver_solve_frame(Solver &self, std::vector<Armor> armors, double timestamp_ms,
-                               const std::string &video_stem);
-
-bool solver_solve(Solver &self, Armor &armor, double yaw_hint = std::numeric_limits<double>::quiet_NaN());
-std::vector<double> solver_yaw_hints(const Solver &self, const std::vector<Armor> &armors, double timestamp);
-void solver_finish_frame(Solver &self, const std::vector<Armor> &armors, double timestamp);
