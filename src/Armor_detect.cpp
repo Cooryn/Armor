@@ -8,16 +8,21 @@
 #include <iostream>
 #include <utility>
 
-CameraSource camera_source = VIDEO;
-const int camera_device = 0;
-const double camera_recording_fps = 30;
+CameraSource camera_source = CAMERA;
+const int camera_device = 1; // AX USB2.0（外接 OV2710），0 为笔记本内置摄像头
+const double camera_recording_fps = 60;
 const int video_camera_profile = 2;
 const char *const video_file = "assets/video/video_2.avi";
 const EnemyColor target_color = ENEMY_RED;
 bool preview = true;
 
-const cv::Mat live_camera_matrix;
-const cv::Mat live_distortion;
+// 临时使用视频 2 的 1280×1024 标定，OV2710 标定完成后替换。
+const cv::Mat live_camera_matrix = (cv::Mat_<double>(3, 3) <<
+    1711.311186, 0, 732.488057,
+    0, 1714.616882, 546.930868,
+    0, 0, 1);
+const cv::Mat live_distortion = (cv::Mat_<double>(1, 5) <<
+    -.119922, -.078593, .007511, -.028028, 0);
 
 int main()
 {
@@ -27,9 +32,9 @@ int main()
         const char *const window = "Armor detection - Esc to stop";
         Camera camera;
         camera.open(camera_source, root / std::filesystem::u8path(video_file), camera_device, camera_recording_fps);
-        Solver pnp(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
+        Solver solver(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
         if (camera_source == VIDEO)
-            pnp.use_video_profile(video_camera_profile);
+            solver.use_video_profile(video_camera_profile);
         if (preview)
         {
             cv::namedWindow(window, cv::WINDOW_NORMAL);
@@ -41,7 +46,7 @@ int main()
         {
             const auto frame_start = std::chrono::steady_clock::now();
             auto detections = detectArmors(camera.image_, target_color);
-            const auto poses = pnp.solve_frame(std::move(detections), camera.timestamp_ms);
+            const auto poses = solver.solve_frame(std::move(detections), camera.timestamp_ms);
             cv::Mat canvas = camera.image_.clone();
             drawArmors(canvas, poses.armors);
             drawVideoInfo(canvas, poses.armors, cv::format("%s Detect frame %lld",

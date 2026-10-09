@@ -4,26 +4,26 @@
 #include <stdexcept>
 
 ControlTarget solve_gimbal(const VideoPrediction &prediction, const PoseBase &pose_base,
-                                 double image_timestamp_ms, double now_ms, const GimbalConfig &config)
+                                 double image_timestamp_ms, double now_ms, const GimbalConfig &gimbal_config)
 {
-    const auto &state = pose_base.latest_state_;
-    ControlTarget result;
-    result.yaw_rad = state.yaw_rad;
-    result.pitch_rad = state.pitch_rad;
-    if (now_ms - state.receive_timestamp_ms > config.max_age_ms || now_ms - image_timestamp_ms > config.max_age_ms)
+    const auto &gimbal_state = pose_base.latest_state_;
+    ControlTarget control;
+    control.yaw_rad = gimbal_state.yaw_rad;
+    control.pitch_rad = gimbal_state.pitch_rad;
+    if (now_ms - gimbal_state.receive_timestamp_ms > gimbal_config.max_age_ms || now_ms - image_timestamp_ms > gimbal_config.max_age_ms)
     {
-        result.status = "stale_pose";
-        return result;
+        control.status = "stale_pose";
+        return control;
     }
     if (!prediction.initialized || (prediction.status != "updated" && prediction.status != "initialized"))
-        return result;
-    if (prediction.position_variance > config.max_position_variance)
+        return control;
+    if (prediction.position_variance > gimbal_config.max_position_variance)
     {
-        result.status = "uncertain";
-        return result;
+        control.status = "uncertain";
+        return control;
     }
     const auto camera_from_base = pose_base.at(image_timestamp_ms).inverse();
-    const Eigen::Vector4d *selected = nullptr;
+    const Eigen::Vector4d *selected_plate = nullptr;
     double nearest = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < prediction.future.plates.size(); ++i)
     {
@@ -31,18 +31,18 @@ ControlTarget solve_gimbal(const VideoPrediction &prediction, const PoseBase &po
         const Eigen::Vector3d camera_position = camera_from_base * plate.head<3>();
         if (camera_position.z() > .1 && camera_position.norm() < nearest)
         {
-            selected = &plate;
+            selected_plate = &plate;
             nearest = camera_position.norm();
-            result.armor_id = static_cast<int>(i);
+            control.armor_id = static_cast<int>(i);
         }
     }
-    if (!selected)
-        return result;
-    Eigen::Vector3d angles(state.yaw_rad, state.pitch_rad, state.roll_rad);
+    if (!selected_plate)
+        return control;
+    Eigen::Vector3d angles(gimbal_state.yaw_rad, gimbal_state.pitch_rad, gimbal_state.roll_rad);
     const auto residual = [&](const Eigen::Vector3d &candidate)
     {
-        const Eigen::Vector3d p = pose_base.at_angles(candidate).inverse() * selected->head<3>();
-        return Eigen::Vector2d(std::atan2(p.x(), p.z()), std::atan2(p.y(), std::hypot(p.x(), p.z())));
+        const Eigen::Vector3d camera_position = pose_base.at_angles(candidate).inverse() * selected_plate->head<3>();
+        return Eigen::Vector2d(std::atan2(camera_position.x(), camera_position.z()), std::atan2(camera_position.y(), std::hypot(camera_position.x(), camera_position.z())));
     };
     bool converged = false;
     for (int iteration = 0; iteration < 20; ++iteration)
@@ -70,16 +70,16 @@ ControlTarget solve_gimbal(const VideoPrediction &prediction, const PoseBase &po
     }
     if (!converged)
         throw std::runtime_error("Optical alignment did not converge");
-    angles.x() = state.yaw_rad + std::remainder(angles.x() - state.yaw_rad, 2 * CV_PI);
-    if (angles.x() < config.yaw_min_rad || angles.x() > config.yaw_max_rad ||
-        angles.y() < config.pitch_min_rad || angles.y() > config.pitch_max_rad)
+    angles.x() = gimbal_state.yaw_rad + std::remainder(angles.x() - gimbal_state.yaw_rad, 2 * CV_PI);
+    if (angles.x() < gimbal_config.yaw_min_rad || angles.x() > gimbal_config.yaw_max_rad ||
+        angles.y() < gimbal_config.pitch_min_rad || angles.y() > gimbal_config.pitch_max_rad)
     {
-        result.status = "out_of_limits";
-        return result;
+        control.status = "out_of_limits";
+        return control;
     }
-    result.yaw_rad = static_cast<float>(angles.x());
-    result.pitch_rad = static_cast<float>(angles.y());
-    result.valid = true;
-    result.status = "tracking";
-    return result;
+    control.yaw_rad = static_cast<float>(angles.x());
+    control.pitch_rad = static_cast<float>(angles.y());
+    control.valid = true;
+    control.status = "tracking";
+    return control;
 }

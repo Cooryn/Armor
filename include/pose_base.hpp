@@ -38,7 +38,7 @@ public:
     bool covered(double timestamp_ms) const;
     SolvedFrame convert(const SolvedFrame &camera_poses, double timestamp_ms) const;
     Eigen::Isometry3d at_angles(const Eigen::Vector3d &raw_angles) const;
-    void push(const GimbalState &state);
+    void push(const GimbalState &gimbal_state);
     Eigen::Isometry3d at(double timestamp_ms) const;
     BaseArmorPose to_base(const Eigen::Vector3d &camera_position, const Eigen::Vector3d &camera_rvec,
                           double image_timestamp_ms) const;
@@ -53,5 +53,5 @@ public:
 
 private:
     Eigen::Isometry3d mechanical_at(double timestamp_ms) const;
-    Eigen::Isometry3d transform(const CameraSample &s) const;
+    Eigen::Isometry3d transform(const CameraSample &sample) const;
 };

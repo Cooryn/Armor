@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="145mm" height="56mm" viewBox="-72.5 -28 145 56">
+  <title>Red armor: light center spacing 135 mm, light length 56 mm</title>
+  <rect x="-72.5" y="-28" width="145" height="56" fill="black"/>
+  <g fill="#ff0000">
+    <rect x="-72.5" y="-28" width="10" height="56"/>
+    <rect x="62.5" y="-28" width="10" height="56"/>
+  </g>
+  <path d="M-13,-23 L13,-23 L13,23 L-13,23 L-13,16 L6,16 L6,3.5 L-9,3.5 L-9,-3.5 L6,-3.5 L6,-16 L-13,-16 Z" fill="white"/>
+</svg>

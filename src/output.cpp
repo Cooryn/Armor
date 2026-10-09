@@ -5,24 +5,24 @@
 #include <initializer_list>
 #include <stdexcept>
 
-void Output::open(const std::filesystem::path &root, const Camera &input, PredictorType model, bool preview)
+void Output::open(const std::filesystem::path &root, const Camera &camera, PredictorType model, bool preview)
 {
     type_ = model;
     preview_ = preview;
     processed_ = 0;
-    output_path_ = root / "results" / (input.stem_ + ".avi");
-    raw_path_ = root / "data" / ("pose_raw_" + input.suffix_ + ".csv");
-    if (!input.live() && std::filesystem::weakly_canonical(input.path_) == std::filesystem::weakly_canonical(output_path_))
+    output_path_ = root / "results" / (camera.stem_ + ".avi");
+    raw_path_ = root / "data" / ("pose_raw_" + camera.suffix_ + ".csv");
+    if (!camera.live() && std::filesystem::weakly_canonical(camera.path_) == std::filesystem::weakly_canonical(output_path_))
         throw std::invalid_argument("Output video must not overwrite the input video");
-    predictions_ = PredictionOutput(model, root / "results", input.suffix_, true);
-    writer_.open(output_path_.string(), cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), input.fps_, input.image_.size());
+    predictions_ = PredictionOutput(model, root / "results", camera.suffix_, true);
+    writer_.open(output_path_.string(), cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), camera.fps_, camera.image_.size());
     if (!writer_.isOpened())
         throw std::runtime_error("Cannot write video: " + output_path_.string());
     std::filesystem::create_directories(root / "data");
     raw_.open(raw_path_);
-    base_.open(root / "data" / ("pose_base_" + input.suffix_ + ".csv"));
-    transforms_.open(root / "data" / ("camera_pose_" + input.suffix_ + ".csv"));
-    controls_.open(root / "results" / ("control_target_" + input.suffix_ + ".csv"));
+    base_.open(root / "data" / ("pose_base_" + camera.suffix_ + ".csv"));
+    transforms_.open(root / "data" / ("camera_pose_" + camera.suffix_ + ".csv"));
+    controls_.open(root / "results" / ("control_target_" + camera.suffix_ + ".csv"));
     for (auto *stream : {&raw_, &base_, &transforms_, &controls_})
     {
         if (!*stream)
@@ -51,11 +51,11 @@ static void draw_prediction(cv::Mat &image, const PredictionGeometry &geometry, 
                                             cv::Scalar(255, 0, 255), cv::Scalar(0, 255, 100)};
     const auto project = [&](const Eigen::Vector3d &base_point) -> std::optional<cv::Point>
     {
-        const Eigen::Vector3d p = camera_from_base * base_point;
-        if (p.z() <= .1)
+        const Eigen::Vector3d position = camera_from_base * base_point;
+        if (position.z() <= .1)
             return std::nullopt;
         std::vector<cv::Point2d> pixels;
-        cv::projectPoints(std::vector<cv::Point3d>{{p.x(), p.y(), p.z()}}, cv::Vec3d(0, 0, 0),
+        cv::projectPoints(std::vector<cv::Point3d>{{position.x(), position.y(), position.z()}}, cv::Vec3d(0, 0, 0),
                           cv::Vec3d(0, 0, 0), solver.camera_matrix, solver.distort_coeffs, pixels);
         const auto &pixel = pixels.front();
         return cv::Point(cvRound(pixel.x), cvRound(pixel.y));
@@ -108,9 +108,9 @@ static void draw_prediction(cv::Mat &image, const PredictionGeometry &geometry, 
     }
 }
 
-bool Output::write(const Camera &input, const Solver &solver, const SolvedFrame &camera_poses,
+bool Output::write(const Camera &camera, const Solver &solver, const SolvedFrame &camera_poses,
                    const SolvedFrame &base_poses, const PoseBase &pose_base,
-                   const VideoPrediction &prediction, const ControlTarget &command,
+                   const VideoPrediction &prediction, const ControlTarget &control,
                    std::chrono::steady_clock::time_point frame_start)
 {
     for (const auto *poses : {&camera_poses, &base_poses})
@@ -120,9 +120,9 @@ bool Output::write(const Camera &input, const Solver &solver, const SolvedFrame 
         for (std::size_t i = 0; i < poses->observations.size(); ++i)
         {
             const auto &armor = poses->armors.at(i);
-            const auto &p = poses->observations[i].position;
+            const auto &position = poses->observations[i].position;
             const auto &z = poses->observations[i].measurement;
-            stream << input.frame_id_ << ',' << input.timestamp_ms << ',' << p.x() << ',' << p.y() << ',' << p.z();
+            stream << camera.frame_id_ << ',' << camera.timestamp_ms << ',' << position.x() << ',' << position.y() << ',' << position.z();
             for (int j = 0; j < 4; ++j)
                 stream << ',' << z(j);
             stream << ',' << armor.detection_score << ',' << armor.reprojection_error << ',' << armor.pnp_candidate_count << ',' << armor.pnp_used_temporal;
@@ -145,13 +145,13 @@ bool Output::write(const Camera &input, const Solver &solver, const SolvedFrame 
             }
         }
     }
-    predictions_.write(input.frame_id_, input.timestamp_ms, prediction);
-    const auto base_from_camera = pose_base.at(input.timestamp_ms);
+    predictions_.write(camera.frame_id_, camera.timestamp_ms, prediction);
+    const auto base_from_camera = pose_base.at(camera.timestamp_ms);
     const Eigen::Quaterniond q(base_from_camera.linear());
-    const auto &p = base_from_camera.translation();
-    transforms_ << input.frame_id_ << ',' << input.timestamp_ms << ",1," << q.w() << ',' << q.x() << ',' << q.y() << ',' << q.z()
-                << ',' << p.x() << ',' << p.y() << ',' << p.z();
-    cv::Mat canvas = input.image_.clone();
+    const auto &position = base_from_camera.translation();
+    transforms_ << camera.frame_id_ << ',' << camera.timestamp_ms << ",1," << q.w() << ',' << q.x() << ',' << q.y() << ',' << q.z()
+                << ',' << position.x() << ',' << position.y() << ',' << position.z();
+    cv::Mat canvas = camera.image_.clone();
     drawArmors(canvas, camera_poses.armors);
     const auto camera_from_base = base_from_camera.inverse();
     draw_prediction(canvas, prediction.current, camera_from_base, solver, false, type_);
@@ -160,18 +160,18 @@ bool Output::write(const Camera &input, const Solver &solver, const SolvedFrame 
     for (int j = 0; j < 3; ++j)
         transforms_ << ',' << pose_base.origin_in_mechanical_(j);
     transforms_ << '\n';
-    controls_ << input.frame_id_ << ',' << input.timestamp_ms << ',' << command.yaw_rad << ',' << command.pitch_rad << ','
-              << command.valid << ',' << command.armor_id << ',' << command.status << ',' << prediction.position_variance << '\n';
+    controls_ << camera.frame_id_ << ',' << camera.timestamp_ms << ',' << control.yaw_rad << ',' << control.pitch_rad << ','
+              << control.valid << ',' << control.armor_id << ',' << control.status << ',' << prediction.position_variance << '\n';
     const char *model = type_ == PREDICTOR_SINGLE_PLATE ? "SinglePlate" : type_ == PREDICTOR_POLAR ? "Polar" : "Armor";
     drawVideoInfo(canvas, camera_poses.armors, cv::format("%s %s frame %lld %s  control %s",
-        input.live() ? "LIVE" : "REPLAY", model, static_cast<long long>(input.frame_id_),
-        prediction.status.c_str(), command.status.c_str()));
+        camera.live() ? "LIVE" : "REPLAY", model, static_cast<long long>(camera.frame_id_),
+        prediction.status.c_str(), control.status.c_str()));
     writer_.write(canvas);
     ++processed_;
     if (!preview_)
         return true;
     cv::imshow(window, canvas);
-    const auto deadline = frame_start + std::chrono::duration<double>(input.live() ? 0 : 1 / input.fps_);
+    const auto deadline = frame_start + std::chrono::duration<double>(camera.live() ? 0 : 1 / camera.fps_);
     do
     {
         const double remaining = std::chrono::duration<double, std::milli>(deadline - std::chrono::steady_clock::now()).count();
@@ -212,7 +212,7 @@ void Output::finish()
 constexpr double missing = std::numeric_limits<double>::quiet_NaN();
 
 
-void PredictionOutput::write(std::int64_t frame, double timestamp,
+void PredictionOutput::write(std::int64_t frame_id, double timestamp_ms,
                              const VideoPrediction &prediction)
 {
     auto numbers = [](std::ofstream &csv, std::initializer_list<double> values, bool first = false)
@@ -236,9 +236,9 @@ void PredictionOutput::write(std::int64_t frame, double timestamp,
         results << "," << prediction.status;
         for (std::size_t i = 0; i < prediction.future.plates.size(); ++i)
         {
-            const auto &p = prediction.future.plates[i];
-            numbers(futures, {double(frame), timestamp, timestamp + prediction.horizon_ms, prediction.horizon_ms,
-                              double(i), p(0), p(1), p(2), p(3)}, true);
+            const auto &position = prediction.future.plates[i];
+            numbers(futures, {double(frame_id), timestamp_ms, timestamp_ms + prediction.horizon_ms, prediction.horizon_ms,
+                              double(i), position(0), position(1), position(2), position(3)}, true);
             futures << "," << prediction.status;
             futures << (base_coordinates ? ",base\n" : "\n");
 

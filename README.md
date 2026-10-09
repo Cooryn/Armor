@@ -9,7 +9,7 @@ Camera → lightbar_detector → Solver/PnP → PoseBase → EKF → Gimbal → 
                                  Output：CSV、RMSE、叠加视频及窗口
 ```
 
-支持 OpenCV 摄像头和视频回放。实时图像使用下位机姿态转换到固定坐标系后进入 EKF；视频回放使用明确的零角度虚拟相机，不接现场串口。默认保留视频 2、红色检测、四板 Armor EKF、50 ms 提前预测和预览。三种 EKF 的状态模型、噪声参数和四板联合更新保持不变。
+支持 OpenCV 摄像头和视频回放。实时图像使用下位机姿态转换到固定坐标系后进入 EKF；视频回放使用明确的零角度虚拟相机，不接现场串口。默认使用 USB OV2710 摄像头（MJPG、1280×720、60 FPS）、红色检测、四板 Armor EKF、50 ms 提前预测和预览，实时镜头参数暂用视频 2 标定。三种 EKF 的状态模型、噪声参数和四板联合更新保持不变。
 
 只检测入口为 `src/Armor_detect.cpp` / `Armor_detect.exe`：Camera → detectArmors → Solver/PnP → 检测框与坐标窗口，不运行 EKF、固定系转换或云台控制，不打开串口。
 
@@ -47,9 +47,9 @@ cmake --build build --config Release --target Armor --parallel
 程序不接受命令行参数，修改 `src/Armor.cpp` 顶部配置并重新编译：
 
 ```cpp
-CameraSource camera_source = VIDEO; // 或 CAMERA
-const int camera_device = 0;
-const double camera_recording_fps = 30;
+CameraSource camera_source = CAMERA; // 视频回放改为 VIDEO
+const int camera_device = 1; // 当前电脑的外接 AX USB2.0 摄像头
+const double camera_recording_fps = 60;
 const int video_camera_profile = 2; // 显式选择视频 1 或视频 2 的标定
 const char *const video_file = "assets/video/video_2.avi";
 const EnemyColor target_color = ENEMY_RED; // 或 ENEMY_BLUE
@@ -61,7 +61,9 @@ const char *const serial_port = "COM3";
 
 视频路径相对编译时的项目根目录解析。预览模式按源 FPS 播放视频；关闭预览时不限速。摄像头按实际取帧时刻处理，录制帧率显式使用 `camera_recording_fps`，不参与实时滤波时钟。
 
-实时模式在顶部直接配置 `live_camera_matrix`、`live_distortion`、`camera_calibration` 和 `gimbal_config`。实时内参传入 Solver；视频调用 `use_video_profile(video_camera_profile)`，不再根据文件名或空矩阵自动选择标定。视频 1 为 1440×1080，视频 2 为 1280×1024。
+摄像头采集分辨率和帧率在 `src/camera.cpp` 顶部配置为 1280×720、60 FPS，格式为 MJPG；Windows 使用 DirectShow。驱动拒绝采集设置时直接报错。当前电脑的设备 0 是内置 `ASUS FHD webcam`，设备 1 是外接 `AX USB2.0`（OV2710），两个入口均选择设备 1。若设备顺序变化，应按实际 DirectShow 设备列表修改设备号。
+
+实时模式在顶部直接配置 `live_camera_matrix`、`live_distortion`、`camera_calibration` 和 `gimbal_config`。实时内参传入 Solver；视频调用 `use_video_profile(video_camera_profile)`，不再根据文件名或空矩阵自动选择标定。视频 1 为 1440×1080，视频 2 为 1280×1024。两个入口的实时内参和畸变系数暂时原样使用视频 2 标定；该标定不对应 OV2710 镜头和 1280×720 采集模式，测距及位姿仅用于调试，实际标定完成后应同时替换两个入口的矩阵。
 
 Esc 或关闭窗口结束处理并完成已处理帧的输出。输入、窗口、串口或写入失败返回非零退出码。正常退出实时模式会发送无效目标及 IDLE；异常退出停止通信，下位机原有目标/链路超时保持生效。
 
@@ -74,7 +76,7 @@ cmake --build build --config Release --target Armor_detect
 .\Armor_detect.exe
 ```
 
-默认使用视频 2、红色检测和预览。摄像头模式直接取图，不需要下位机；需先填写该文件的 `live_camera_matrix` 和 `live_distortion`。窗口左上角列出每块 PnP 成功装甲板的 XYZ，单位 m，X 向右、Y 向下、Z 向前。框旁序号对应当前帧的坐标行，不表示跨帧身份。没有观测时显示 No armor detected，不保留上一帧坐标。Esc 或关闭窗口退出；视频按源 FPS 播放。此入口只显示画面，不生成预测、控制、CSV 或录制视频；`preview=false` 可用于无窗口处理。
+默认使用 USB 摄像头、红色检测和预览，镜头参数暂用视频 2 标定。摄像头模式直接取图，不需要下位机；OV2710 标定完成后，填写该文件的 `live_camera_matrix` 和 `live_distortion`。窗口左上角列出每块 PnP 成功装甲板的 XYZ，单位 m，X 向右、Y 向下、Z 向前。框旁序号对应当前帧的坐标行，不表示跨帧身份。没有观测时显示 No armor detected，不保留上一帧坐标。Esc 或关闭窗口退出；视频按源 FPS 播放。此入口只显示画面，不生成预测、控制、CSV 或录制视频；`preview=false` 可用于无窗口处理。
 
 ## 3. 每帧行为
 
@@ -141,12 +143,14 @@ PnP 与绘制板尺寸为 135×56 mm。尺寸在 `solver.cpp` 顶部配置，绘
 
 ### 5.2 同帧多板
 
+代码按含义统一命名：单条观测向量为 `z`，观测集合为 `observations`，残差为 `residual`，装甲板编号为 `armor_id`；滤波器状态和协方差为 `X`、`P`。主流程对象使用 `camera`、`solver`、`pose_base`、`prediction`、`control`、`serial`、`output`。时间戳以 `_ms`、`_s` 区分单位。相同矩阵类型但用途不同的数据仍使用不同名称。
+
 每帧所有观测一起处理，先预测一次，再联合关联和更新：
 
 1. 将观测转换为三维位置，并尝试关联 A0–A3。
 2. 使用三维位置距离和装甲板朝向差门限筛选候选。
 3. 按距离从小到大贪心匹配；距离相同时按输入顺序、板号排序。
-4. 每条观测和板号只能使用一次，板间朝向关系须一致；不再搜索全局最优组合。
+4. 每条观测和板号只能使用一次；不再搜索全局最优组合。
 5. 将选中观测联合更新到同一个车体状态，每条观测使用相同的固定协方差。
 
 初始化帧只使用最近的一条有效观测，将其定义为 A0；该帧其他观测不参与更新。当前流程没有多车分组，同帧输入默认属于同一辆小车。
@@ -161,7 +165,6 @@ PnP 与绘制板尺寸为 135×56 mm。尺寸在 `solver.cpp` 顶部配置，绘
 | --- | --- | --- |
 | `max_yaw_error` | 45°，单位为弧度 | 观测与预测装甲板的朝向差上限 |
 | `max_distance_error` | `0.5` m | 观测与预测装甲板的三维位置距离上限 |
-| `pair_yaw_tolerance` | 25°，传参单位为弧度 | 板间朝向关系容差 |
 
 过程噪声、固定观测协方差和初始化设置位于 `src/predictor_armor.cpp`，构造参数的默认值在 `include/predictor_armor.hpp` 的接口声明中。调参时应同时检查残差、中心漂移、接受率和运动变化时的响应。
 

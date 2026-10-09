@@ -12,9 +12,9 @@
 #include <filesystem>
 #include <iostream>
 
-CameraSource camera_source = VIDEO;
-const int camera_device = 0;
-const double camera_recording_fps = 30;
+CameraSource camera_source = CAMERA;
+const int camera_device = 1; // AX USB2.0（外接 OV2710），0 为笔记本内置摄像头
+const double camera_recording_fps = 60;
 const int video_camera_profile = 2;
 const char *const video_file = "assets/video/video_2.avi";
 const EnemyColor target_color = ENEMY_RED;
@@ -23,8 +23,13 @@ bool preview = true;
 const double prediction_horizon_ms = 50;
 const char *const serial_port = "COM3";
 
-const cv::Mat live_camera_matrix;
-const cv::Mat live_distortion;
+// 临时使用视频 2 的 1280×1024 标定，OV2710 标定完成后替换。
+const cv::Mat live_camera_matrix = (cv::Mat_<double>(3, 3) <<
+    1711.311186, 0, 732.488057,
+    0, 1714.616882, 546.930868,
+    0, 0, 1);
+const cv::Mat live_distortion = (cv::Mat_<double>(1, 5) <<
+    -.119922, -.078593, .007511, -.028028, 0);
 const CameraCalibration camera_calibration{
     {0, 0, 0},
     {0, 0, 0},
@@ -47,9 +52,9 @@ int main()
             pose_base.receive(serial);
         Camera camera;
         camera.open(camera_source, root / std::filesystem::u8path(video_file), camera_device, camera_recording_fps);
-        Solver pnp(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
+        Solver solver(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
         if (camera_source == VIDEO)
-            pnp.use_video_profile(video_camera_profile);
+            solver.use_video_profile(video_camera_profile);
         SinglePlateEKF single_plate;
         PolarEKF polar;
         ArmorEKF armor;
@@ -61,7 +66,7 @@ int main()
         {
             const auto frame_start = std::chrono::steady_clock::now();
             auto detections = detectArmors(camera.image_, target_color);
-            const auto camera_poses = pnp.solve_frame(std::move(detections), camera.timestamp_ms);
+            const auto camera_poses = solver.solve_frame(std::move(detections), camera.timestamp_ms);
             if (camera_source == VIDEO)
                 pose_base.push({camera.timestamp_ms, 0, 0, 0, HOST_IDLE, 0});
             if (camera_source == CAMERA)
@@ -74,11 +79,11 @@ int main()
                 prediction = polar.update_frame(camera.frame_id_, camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
             else
                 prediction = armor.update_frame(camera.frame_id_, camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
-            const auto command = solve_gimbal(prediction, pose_base, camera.timestamp_ms,
+            const auto control = solve_gimbal(prediction, pose_base, camera.timestamp_ms,
                 camera_source == CAMERA ? monotonic_time_ms() : camera.timestamp_ms, gimbal_config);
             if (camera_source == CAMERA)
-                serial.send_target(command.yaw_rad, command.pitch_rad, command.valid);
-            if (!output.write(camera, pnp, camera_poses, base_poses, pose_base, prediction, command, frame_start))
+                serial.send_target(control.yaw_rad, control.pitch_rad, control.valid);
+            if (!output.write(camera, solver, camera_poses, base_poses, pose_base, prediction, control, frame_start))
                 break;
             if (camera_source == CAMERA)
                 pose_base.receive(serial);

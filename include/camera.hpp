@@ -8,7 +8,7 @@ enum CameraSource { VIDEO, CAMERA };
 class Camera
 {
 public:
-    void open(CameraSource source, const std::filesystem::path &video, int device = 0, double recording_fps = 30);
+    void open(CameraSource source, const std::filesystem::path &video_path, int camera_device = 0, double recording_fps = 30);
     bool next();
     bool live() const;
 

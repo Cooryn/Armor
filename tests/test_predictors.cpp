@@ -57,23 +57,23 @@ static void single_plate_regressions() {
         near(single_plate_jacobian(truth), numerical, 1e-7);
         filter.initialize(single_plate_h(truth));
         for (int axis = 0; axis < 3; ++axis) {
-            check(std::abs(filter.state_(axis * 2) - position(axis)) < 1e-12, "spherical initialization");
-            check(filter.state_(axis * 2 + 1) == 0, "zero initial velocity");
+            check(std::abs(filter.X(axis * 2) - position(axis)) < 1e-12, "spherical initialization");
+            check(filter.X(axis * 2 + 1) == 0, "zero initial velocity");
         }
-        const auto state = filter.state_;
+        const auto state = filter.X;
         check(filter.update(single_plate_h(state)), "zero innovation single-plate update");
-        near(filter.state_, state, 1e-12);
+        near(filter.X, state, 1e-12);
     }
 
     filter.initialize({0, 0, 3});
     check(filter.update({0, 0, 3.1}), "single-plate range update");
-    check(std::abs(filter.state_(4) - (3 + .1 * 10 / 10.16)) < 1e-12, "single-plate range gain");
-    check(std::abs(filter.covariance_(4, 4) - 10 * .16 / 10.16) < 1e-12, "single-plate range variance");
-    const auto state = filter.state_;
-    const auto covariance = filter.covariance_;
+    check(std::abs(filter.X(4) - (3 + .1 * 10 / 10.16)) < 1e-12, "single-plate range gain");
+    check(std::abs(filter.P(4, 4) - 10 * .16 / 10.16) < 1e-12, "single-plate range variance");
+    const auto state = filter.X;
+    const auto covariance = filter.P;
     filter.predict(0);
-    near(filter.state_, state, 0);
-    near(filter.covariance_, covariance, 0);
+    near(filter.X, state, 0);
+    near(filter.P, covariance, 0);
 
     for (bool moving : {false, true}) {
         Eigen::Matrix<double, 6, 1> truth;
@@ -86,25 +86,25 @@ static void single_plate_regressions() {
             filter.predict(dt);
             if (frame < 110 || frame >= 140)
                 check(filter.update(single_plate_h(truth)), "single-plate trajectory update");
-            near(filter.covariance_, filter.covariance_.transpose(), 1e-12);
-            Eigen::LLT<Eigen::Matrix<double, 6, 6>> cholesky(filter.covariance_);
+            near(filter.P, filter.P.transpose(), 1e-12);
+            Eigen::LLT<Eigen::Matrix<double, 6, 6>> cholesky(filter.P);
             check(cholesky.info() == Eigen::Success, "single-plate covariance positive definite");
         }
-        near(filter.state_, truth, 1e-4);
+        near(filter.X, truth, 1e-4);
     }
     filter.initialize({single_plate_pi - .001, .01, 3});
     check(filter.update({-single_plate_pi + .001, .01, 3}), "single-plate yaw wrap update");
-    check(std::abs(filter.state_(0)) < .01, "single-plate yaw wrap uses short residual");
+    check(std::abs(filter.X(0)) < .01, "single-plate yaw wrap uses short residual");
 
     filter.initialize({single_plate_pi / 2, 0, 1});
     filter.predict(.1);
     check(filter.update({single_plate_pi / 2, 0, .9}), "single-plate approach to origin");
-    filter.predict(-filter.state_(0) / filter.state_(1));
-    const auto singular_state = filter.state_;
-    const auto singular_covariance = filter.covariance_;
+    filter.predict(-filter.X(0) / filter.X(1));
+    const auto singular_state = filter.X;
+    const auto singular_covariance = filter.P;
     check(!filter.update({single_plate_pi / 2, 0, .9}), "singular single-plate prior skips update");
-    near(filter.state_, singular_state, 0);
-    near(filter.covariance_, singular_covariance, 0);
+    near(filter.X, singular_state, 0);
+    near(filter.P, singular_covariance, 0);
 }
 static void eigen_filter_regressions() {
     for (int count = 1; count <= 4; ++count) {
@@ -213,7 +213,13 @@ int main() {
         auto bad = measurement(0, 1);
         bad(3) = 0;
         check(b.associate({measurement(0), bad}).size() == 1,
-              "pair geometry");
+              "duplicate plate rejected");
+        auto first = measurement(0), second = measurement(0, 1);
+        first(3) += .3;
+        second(3) -= .3;
+        const auto independent_yaws = b.associate({first, second});
+        check(independent_yaws.size() == 2 && independent_yaws[0].armor_id != independent_yaws[1].armor_id,
+              "individually valid yaw observations can update together");
         b = tracker();
         b.predict(.03);
         bad = measurement(0);

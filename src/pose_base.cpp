@@ -26,8 +26,8 @@ Eigen::Isometry3d PoseBase::reset_origin(double timestamp_ms)
 Eigen::Isometry3d PoseBase::mechanical_at(double timestamp_ms) const
 {
     auto right = std::lower_bound(samples_.begin(), samples_.end(), timestamp_ms,
-                                  [](const CameraSample &s, double t)
-                                  { return s.timestamp_ms < t; });
+                                  [](const CameraSample &sample, double t)
+                                  { return sample.timestamp_ms < t; });
     if (right->timestamp_ms == timestamp_ms)
         return transform(*right);
     const auto &left = *std::prev(right);
@@ -38,12 +38,12 @@ Eigen::Isometry3d PoseBase::mechanical_at(double timestamp_ms) const
                       angle(left.pitch_deg, right->pitch_deg), angle(left.roll_deg, right->roll_deg)});
 }
 
-Eigen::Isometry3d PoseBase::transform(const CameraSample &s) const
+Eigen::Isometry3d PoseBase::transform(const CameraSample &sample) const
 {
     constexpr double radians = 3.14159265358979323846 / 180;
-    const Eigen::Matrix3d yaw = Eigen::AngleAxisd(s.yaw_deg * radians, Eigen::Vector3d::UnitY()).toRotationMatrix();
-    const Eigen::Matrix3d pitch_roll = (Eigen::AngleAxisd(s.pitch_deg * radians, Eigen::Vector3d::UnitX()) *
-                                        Eigen::AngleAxisd(s.roll_deg * radians, Eigen::Vector3d::UnitZ()))
+    const Eigen::Matrix3d yaw = Eigen::AngleAxisd(sample.yaw_deg * radians, Eigen::Vector3d::UnitY()).toRotationMatrix();
+    const Eigen::Matrix3d pitch_roll = (Eigen::AngleAxisd(sample.pitch_deg * radians, Eigen::Vector3d::UnitX()) *
+                                        Eigen::AngleAxisd(sample.roll_deg * radians, Eigen::Vector3d::UnitZ()))
                                            .toRotationMatrix();
     Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
     pose.linear() = yaw * pitch_roll * calibration_.camera_to_pitch.toRotationMatrix();
@@ -51,18 +51,18 @@ Eigen::Isometry3d PoseBase::transform(const CameraSample &s) const
     return pose;
 }
 
-void PoseBase::push(const GimbalState &state)
+void PoseBase::push(const GimbalState &gimbal_state)
 {
-    const Eigen::Vector3d raw(state.yaw_rad, state.pitch_rad, state.roll_rad);
-    const Eigen::Vector3d angles = calibration_.angle_direction.cwiseProduct(raw - calibration_.angle_zero_rad) *
+    const Eigen::Vector3d raw_angles(gimbal_state.yaw_rad, gimbal_state.pitch_rad, gimbal_state.roll_rad);
+    const Eigen::Vector3d angles = calibration_.angle_direction.cwiseProduct(raw_angles - calibration_.angle_zero_rad) *
                                    (180 / 3.14159265358979323846);
-    const CameraSample sample{state.receive_timestamp_ms, angles.x(), angles.y(), angles.z()};
+    const CameraSample sample{gimbal_state.receive_timestamp_ms, angles.x(), angles.y(), angles.z()};
     if (samples_.empty())
     {
         origin_in_mechanical_ = transform(sample).translation();
         reference_time_ms_ = sample.timestamp_ms;
     }
-    latest_state_ = state;
+    latest_state_ = gimbal_state;
     samples_.push_back(sample);
     if (samples_.size() > 256)
         samples_.erase(samples_.begin(), samples_.end() - 256);
@@ -92,7 +92,7 @@ BaseArmorPose PoseBase::to_base(const Eigen::Vector3d &camera_position,
 bool PoseBase::covered(double timestamp_ms) const
 {
     auto right = std::lower_bound(samples_.begin(), samples_.end(), timestamp_ms,
-        [](const CameraSample &s, double t) { return s.timestamp_ms < t; });
+        [](const CameraSample &sample, double t) { return sample.timestamp_ms < t; });
     if (right != samples_.end() && right->timestamp_ms == timestamp_ms)
         return true;
     return right != samples_.begin() && right != samples_.end() &&
@@ -101,15 +101,15 @@ bool PoseBase::covered(double timestamp_ms) const
 
 void PoseBase::receive(Serial &serial)
 {
-    GimbalState sample;
+    GimbalState gimbal_state;
     const double deadline = monotonic_time_ms() + 100;
-    while (!serial.receive(sample))
+    while (!serial.receive(gimbal_state))
     {
         if (monotonic_time_ms() >= deadline)
             throw std::runtime_error("Timed out waiting for MCU STATE");
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    push(sample);
+    push(gimbal_state);
 }
 
 void PoseBase::synchronize(Serial &serial, double timestamp_ms)

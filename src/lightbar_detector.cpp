@@ -5,11 +5,11 @@
 #include <limits>
 
 // 提取灯条mask
-cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gray_th)
+cv::Mat extractColor(const cv::Mat &image, EnemyColor color, int color_th, int gray_th)
 {
     // 分离BGR通道
     std::vector<cv::Mat> channels;
-    cv::split(src, channels);
+    cv::split(image, channels);
 
     cv::Mat color_mask;
 
@@ -29,7 +29,7 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
 
     // 将图片二值化，提取出高亮部分
     cv::Mat gray, highlight_mask;
-    cv::cvtColor(src, gray, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
     cv::threshold(gray, highlight_mask, 210, 255, cv::THRESH_BINARY);
 
     // 处理过曝
@@ -48,7 +48,7 @@ cv::Mat extractColor(const cv::Mat &src, EnemyColor color, int color_th, int gra
 
 // 筛选有效灯条的旋转矩形
 std::vector<cv::RotatedRect> getValidLightRects(
-    const std::vector<std::vector<cv::Point>> &lightBars, std::vector<float> &quality,
+    const std::vector<std::vector<cv::Point>> &light_bars, std::vector<float> &quality,
     float min_angle,
     double minAspectRatio, double minArea)
 {
@@ -57,7 +57,7 @@ std::vector<cv::RotatedRect> getValidLightRects(
     // 清空拟合质量
     quality.clear();
 
-    for (const auto &c : lightBars)
+    for (const auto &c : light_bars)
     {
         // 硬性条件筛选轮廓
         if (c.size() < 3)
@@ -153,7 +153,7 @@ struct Candidate
 };
 
 // 灯条匹配装甲板
-std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
+std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &light_bars,
                                const std::vector<float> &light_quality,
                                float max_angle_diff,
                                float max_length_ratio,
@@ -166,21 +166,21 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
 
     // 按照灯条中心位置从左往右、从上到下排序，将顺序存入order
     std::vector<cv::RotatedRect> bars;
-    bars.reserve(lightBars.size());
-    std::vector<size_t> order(lightBars.size());
+    bars.reserve(light_bars.size());
+    std::vector<size_t> order(light_bars.size());
     for (size_t i = 0; i < order.size(); ++i)
         order[i] = i;
     std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
               {
-        if (lightBars[a].center.x != lightBars[b].center.x)
-            return lightBars[a].center.x < lightBars[b].center.x;
-        return lightBars[a].center.y < lightBars[b].center.y; });
+        if (light_bars[a].center.x != light_bars[b].center.x)
+            return light_bars[a].center.x < light_bars[b].center.x;
+        return light_bars[a].center.y < light_bars[b].center.y; });
 
     // 将light_quality按照排序后的顺序存入qualities
     std::vector<float> qualities;
     for (size_t i = 0; i < order.size(); ++i)
     {
-        bars.push_back(lightBars[order[i]]);
+        bars.push_back(light_bars[order[i]]);
         qualities.push_back(light_quality[order[i]]);
     }
 
@@ -276,13 +276,13 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
     return armors;
 }
 
-void drawArmors(cv::Mat &src, const std::vector<Armor> &armors)
+void drawArmors(cv::Mat &image, const std::vector<Armor> &armors)
 {
     for (const auto &armor : armors)
     {
         for (int i = 0; i < 4; i++)
         {
-            cv::line(src, armor.vertices[i], armor.vertices[(i + 1) % 4], cv::Scalar(0, 255, 0), 2);
+            cv::line(image, armor.vertices[i], armor.vertices[(i + 1) % 4], cv::Scalar(0, 255, 0), 2);
         }
     }
 }

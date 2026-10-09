@@ -16,4 +16,4 @@ struct ControlTarget
     std::string status = "no_target";
 };
 ControlTarget solve_gimbal(const VideoPrediction &prediction, const PoseBase &pose_base,
-                           double image_timestamp_ms, double now_ms, const GimbalConfig &config = GimbalConfig{});
+                           double image_timestamp_ms, double now_ms, const GimbalConfig &gimbal_config = GimbalConfig{});

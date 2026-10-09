@@ -5,7 +5,7 @@ def wrap_to_pi(angle):
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
 class ArmorEKF:
-    def __init__(self, max_yaw_error=np.deg2rad(45), pair_yaw_tolerance=np.deg2rad(25),
+    def __init__(self, max_yaw_error=np.deg2rad(45),
                  max_distance_error=0.5):
         # 🌟 11维状态量: [xc, vxc, yc, vyc, zc, vzc, body_yaw, w, r, dl, dh]^T
         self.X = np.zeros((11, 1))
@@ -28,7 +28,6 @@ class ArmorEKF:
         self.R = np.diag([0.0016, 0.0016, 0.16, 0.0576])
 
         self.max_yaw_error = max_yaw_error
-        self.pair_yaw_tolerance = pair_yaw_tolerance
         self.max_distance_error = max_distance_error
         self.is_initialized = False
 
@@ -179,9 +178,7 @@ class ArmorEKF:
                     diagnostics[index]['reason'] = 'association_conflict'
         matches = []
         for candidate in sorted(candidates, key=lambda m: m['distance']):
-            if any(candidate['index'] == m['index'] or candidate['armor_id'] == m['armor_id'] or
-                   abs(wrap_to_pi(candidate['Z_obs'][3, 0] - m['Z_obs'][3, 0] -
-                                 (candidate['armor_id'] - m['armor_id'])*np.pi/2)) > self.pair_yaw_tolerance
+            if any(candidate['index'] == m['index'] or candidate['armor_id'] == m['armor_id']
                    for m in matches):
                 continue
             matches.append(candidate)

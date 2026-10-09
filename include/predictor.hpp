@@ -47,18 +47,18 @@ public:
     void predict(double dt);
     bool update(const Eigen::Vector3d &z);
 
-    VideoPrediction update_frame(std::int64_t frame, double timestamp_ms,
+    VideoPrediction update_frame(std::int64_t frame_id, double timestamp_ms,
                                  const std::vector<VideoObservation> &observations, double horizon_ms = 50);
 
-    Eigen::Matrix<double, 6, 1> state_ = Eigen::Matrix<double, 6, 1>::Zero();
-    Eigen::Matrix<double, 6, 6> covariance_ = Eigen::Matrix<double, 6, 6>::Identity() * 10;
-    bool initialized_ = false;
+    Eigen::Matrix<double, 6, 1> X = Eigen::Matrix<double, 6, 1>::Zero();
+    Eigen::Matrix<double, 6, 6> P = Eigen::Matrix<double, 6, 6>::Identity() * 10;
+    bool is_initialized = false;
 private:
-    double last_timestamp_ms_ = -1;
+    double last_timestamp_ms = -1;
 };
 
 double single_plate_wrap_to_pi(double angle);
 
 bool single_plate_valid_observation(const Eigen::Vector3d &z);
-Eigen::Vector3d single_plate_h(const Eigen::Matrix<double, 6, 1> &s);
-Eigen::Matrix<double, 3, 6> single_plate_jacobian(const Eigen::Matrix<double, 6, 1> &s);
+Eigen::Vector3d single_plate_h(const Eigen::Matrix<double, 6, 1> &state);
+Eigen::Matrix<double, 3, 6> single_plate_jacobian(const Eigen::Matrix<double, 6, 1> &state);

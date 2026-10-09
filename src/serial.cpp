@@ -35,14 +35,14 @@ Serial::~Serial()
     try { close(); } catch (...) {}
 }
 
-void Serial::open(const std::string &device)
+void Serial::open(const std::string &serial_port)
 {
     close();
 #ifdef _WIN32
-    const auto path = device.rfind("\\\\.\\", 0) == 0 ? device : "\\\\.\\" + device;
+    const auto path = serial_port.rfind("\\\\.\\", 0) == 0 ? serial_port : "\\\\.\\" + serial_port;
     HANDLE opened = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
     if (opened == INVALID_HANDLE_VALUE)
-        throw std::runtime_error("Cannot open " + device + " (Win32 " + std::to_string(GetLastError()) + ")");
+        throw std::runtime_error("Cannot open " + serial_port + " (Win32 " + std::to_string(GetLastError()) + ")");
     DCB settings{};
     settings.DCBlength = sizeof(settings);
     settings.BaudRate = 921600;
@@ -93,14 +93,14 @@ void Serial::close()
         throw std::runtime_error(failure);
 }
 
-bool Serial::receive(GimbalState &state)
+bool Serial::receive(GimbalState &gimbal_state)
 {
     std::lock_guard<std::mutex> lock(mutex);
     if (!error.empty())
         throw std::runtime_error(error);
     if (!has_state)
         return false;
-    state = latest;
+    gimbal_state = latest_state;
     has_state = false;
     return true;
 }
@@ -162,7 +162,7 @@ void Serial::run()
                 if (!ClearCommError(handle, &errors, nullptr) || !ReadFile(handle, bytes, sizeof(bytes), &count, nullptr))
                     throw std::runtime_error("Serial read failed (Win32 " + std::to_string(GetLastError()) + ")");
                 buffer.insert(buffer.end(), bytes, bytes + count);
-                GimbalState state;
+                GimbalState gimbal_state;
                 bool received = false;
                 while (buffer.size() >= 18)
                 {
@@ -170,7 +170,7 @@ void Serial::run()
                         throw std::runtime_error("Invalid MCU STATE packet header");
                     if (serial_crc8(buffer.data() + 1, 16) != buffer[17])
                         throw std::runtime_error("MCU STATE CRC mismatch");
-                    float *angles[] = {&state.yaw_rad, &state.pitch_rad, &state.roll_rad};
+                    float *angles[] = {&gimbal_state.yaw_rad, &gimbal_state.pitch_rad, &gimbal_state.roll_rad};
                     for (unsigned angle = 0; angle < 3; ++angle)
                     {
                         std::uint32_t bits = 0;
@@ -178,16 +178,16 @@ void Serial::run()
                             bits |= static_cast<std::uint32_t>(buffer[3 + angle * 4 + byte]) << (byte * 8);
                         std::memcpy(angles[angle], &bits, sizeof(bits));
                     }
-                    state.mode = buffer[15];
-                    state.flags = buffer[16];
-                    state.receive_timestamp_ms = monotonic_time_ms();
+                    gimbal_state.mode = buffer[15];
+                    gimbal_state.flags = buffer[16];
+                    gimbal_state.receive_timestamp_ms = monotonic_time_ms();
                     received = true;
                     buffer.erase(buffer.begin(), buffer.begin() + 18);
                 }
                 if (received)
                 {
                     std::lock_guard<std::mutex> lock(mutex);
-                    latest = state;
+                    latest_state = gimbal_state;
                     has_state = true;
                 }
             }

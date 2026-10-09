@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="按代码尺寸显示红方装甲板：灯条中心间距 135 mm，长度 56 mm。适配 iPad Air 7 11 寸，支持实体尺校准。">
+  <title>红方装甲板 · 1:1</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+    canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+    [hidden] { display: none !important; }
+    #panel { position: fixed; bottom: max(12px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); width: min(710px, calc(100% - 28px)); max-height: 50vh; overflow: auto; border: 1px solid #333; border-radius: 18px; background: #151515; padding: 20px 24px; }
+    h1 { font-size: 22px; margin: 0 0 6px; font-weight: 650; }
+    p { font-size: 14px; line-height: 1.55; margin: 6px 0; color: #b8b8b8; }
+    .tag { color: #ff6b6b; font-size: 12px; letter-spacing: 1px; }
+    .row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    .field { flex: 1; min-width: 160px; }
+    label { display: block; font-size: 13px; color: #ddd; margin-bottom: 5px; }
+    input, select, button { font: inherit; border-radius: 9px; }
+    input, select { background: #252525; border: 1px solid #444; padding: 10px; color: #fff; width: 100%; }
+    button { border: 1px solid #444; background: #252525; padding: 11px 16px; color: white; cursor: pointer; min-height: 44px; }
+    button.primary { background: #b71928; border-color: #cf2939; font-weight: 600; }
+    a { color: #a9c9ff; text-decoration: none; }
+    #message { min-height: 19px; color: #ffb3b3; }
+    #status { color: #bdbdbd; }
+    .links { font-size: 12px; margin-top: 10px; }
+    .links a { display: inline-block; margin-right: 14px; padding: 4px 0; }
+    #back { position: fixed; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); font-size: 12px; }
+    #hint { position: fixed; bottom: max(10px, env(safe-area-inset-bottom)); width: 100%; text-align: center; color: #aaa; font-size: 12px; pointer-events: none; }
+    @media (max-height: 740px) { #panel { padding: 12px 18px; } h1 { font-size: 19px; } .row { margin-top: 8px; } }
+  </style>
+</head>
+<body>
+  <canvas id="target" aria-label="两根红色灯条，中心间距 135 毫米，长度 56 毫米"></canvas>
+  <section id="panel" aria-label="尺寸校准">
+    <div class="tag">IPAD AIR 7 · 11 寸</div>
+    <h1>红方装甲板 · 1:1</h1>
+    <p id="dimensions"></p>
+    <p>用实体尺测量白色横线和竖线，填入实际长度后校准。建议先用 Safari「添加到主屏幕」，全屏打开后再测量。</p>
+    <div class="row">
+      <div class="field"><label for="measured-x">横线实测长度（目标 100 mm）</label><input id="measured-x" type="number" inputmode="decimal" min="10" max="300" step="0.1" value="100"></div>
+      <div class="field"><label for="measured-y">竖线实测长度（目标 50 mm）</label><input id="measured-y" type="number" inputmode="decimal" min="10" max="200" step="0.1" value="50"></div>
+      <div class="field"><label for="number">中间数字</label><select id="number"><option value="3">3</option><option value="">不显示</option><option>1</option><option>2</option><option>4</option><option>5</option></select></div>
+    </div>
+    <div class="row">
+      <button id="calibrate">按实测值校准</button><button id="reset">恢复 Air 7 默认尺寸</button><button id="start" class="primary">开始显示</button>
+    </div>
+    <p id="status" aria-live="polite"></p>
+    <p id="message" role="status"></p>
+    <p class="links"><a href="red-armor-air7-landscape.png" download>下载横屏图</a><a href="red-armor-air7-portrait.png" download>下载竖屏图</a><a href="red-armor-air7-plain-landscape.png" download>下载无数字图</a><a href="calibration-air7-landscape.png" download>下载校准图</a></p>
+  </section>
+  <button id="back" hidden>校准 / 设置</button>
+  <div id="hint" hidden>轻触屏幕隐藏按钮 · 双击屏幕返回设置</div>
+  <script>
+  'use strict';
+  const CONFIG = {"widthMm": 135.0, "heightMm": 56.0, "barWidthMm": 10, "ppi": 264, "digit3Path": "M-13,-23 L13,-23 L13,23 L-13,23 L-13,16 L6,16 L6,3.5 L-9,3.5 L-9,-3.5 L6,-3.5 L6,-16 L-13,-16 Z"};
+  const canvas = document.querySelector('#target');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const panel = document.querySelector('#panel');
+  const back = document.querySelector('#back');
+  const hint = document.querySelector('#hint');
+  const status = document.querySelector('#status');
+  const message = document.querySelector('#message');
+  const number = document.querySelector('#number');
+  const STORAGE_KEY = 'red-armor-air7-calibration-v1';
+  const defaultPPM = () => CONFIG.ppi / 25.4 / (window.devicePixelRatio || 1);
+  let settings = { ppmX: defaultPPM(), ppmY: defaultPPM(), digit: '3', calibrated: false, dpr: window.devicePixelRatio || 1 };
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (saved && Number.isFinite(saved.ppmX) && Number.isFinite(saved.ppmY) && saved.ppmX > 0 && saved.ppmY > 0 && saved.dpr === settings.dpr) settings = saved;
+  } catch (_) {}
+  number.value = settings.digit;
+  let presenting = false;
+  let controlsVisible = false;
+  let wakeLock;
+  let hideTimer;
+  let viewportWidth = 0;
+  let viewportHeight = 0;
+  let lastTap = 0;
+  document.querySelector('#dimensions').textContent = `灯条中心间距 ${CONFIG.widthMm} mm · 灯条长度 ${CONFIG.heightMm} mm · 灯条宽度 ${CONFIG.barWidthMm} mm`;
+  function save() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch (_) {} }
+  function ruler(x, y, length, vertical, label) {
+    ctx.strokeStyle = '#fff'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (vertical) { ctx.moveTo(x, y); ctx.lineTo(x, y + length); ctx.moveTo(x - 7, y); ctx.lineTo(x + 7, y); ctx.moveTo(x - 7, y + length); ctx.lineTo(x + 7, y + length); }
+    else { ctx.moveTo(x, y); ctx.lineTo(x + length, y); ctx.moveTo(x, y - 7); ctx.lineTo(x, y + 7); ctx.moveTo(x + length, y - 7); ctx.lineTo(x + length, y + 7); }
+    ctx.stroke(); ctx.font = '13px -apple-system, sans-serif'; ctx.textAlign = 'center';
+    if (vertical) { ctx.save(); ctx.translate(x + 21, y + length / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(label, 0, 0); ctx.restore(); }
+    else ctx.fillText(label, x + length / 2, y + 23);
+  }
+  function draw() {
+    const w = viewportWidth, h = viewportHeight;
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+    const available = presenting ? h : Math.max(100, panel.getBoundingClientRect().top);
+    const centerX = w / 2;
+    const centerY = presenting ? h / 2 : (available - 54) / 2;
+    ctx.save(); ctx.translate(centerX, centerY); ctx.scale(settings.ppmX, settings.ppmY);
+    ctx.fillStyle = '#ff0000';
+    for (const x of [-CONFIG.widthMm / 2, CONFIG.widthMm / 2]) ctx.fillRect(x - CONFIG.barWidthMm / 2, -CONFIG.heightMm / 2, CONFIG.barWidthMm, CONFIG.heightMm);
+    if (settings.digit) {
+      ctx.fillStyle = '#fff';
+      if (settings.digit === '3') ctx.fill(new Path2D(CONFIG.digit3Path));
+      else { ctx.font = 'bold 48px Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(settings.digit, 0, 2); }
+    }
+    ctx.restore();
+    const fits = (CONFIG.widthMm + CONFIG.barWidthMm) * settings.ppmX + 8 <= w && CONFIG.heightMm * settings.ppmY + 8 <= available;
+    const zoom = window.visualViewport ? window.visualViewport.scale : 1;
+    message.textContent = !fits ? '当前窗口容不下完整的 1:1 装甲板，请横屏或全屏打开；图案不会自动缩小。' : Math.abs(zoom - 1) > 0.01 ? '页面被缩放了。请恢复 100% 后重新校准。' : '';
+    if (!presenting) {
+      ruler(centerX - 50 * settings.ppmX, available - 43, 100 * settings.ppmX, false, '100 mm（量两端刻线的中心）');
+      ruler(24, centerY - 25 * settings.ppmY, 50 * settings.ppmY, true, '50 mm');
+    }
+    status.textContent = settings.calibrated ? '已按实测值校准并保存。重新打开后仍建议用尺复核。' : '当前为 264 ppi 默认尺寸；用尺校准后即可确认 1:1。';
+  }
+  function resize() {
+    viewportWidth = window.innerWidth; viewportHeight = window.innerHeight;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(viewportWidth * dpr); canvas.height = Math.round(viewportHeight * dpr);
+    if (settings.dpr !== dpr) { settings.ppmX = defaultPPM(); settings.ppmY = defaultPPM(); settings.dpr = dpr; settings.calibrated = false; save(); }
+    draw();
+  }
+  async function stayAwake() {
+    if (presenting && 'wakeLock' in navigator) { try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {} }
+  }
+  function showControls() {
+    controlsVisible = true; back.hidden = false; hint.hidden = false; clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => { controlsVisible = false; back.hidden = true; hint.hidden = true; }, 2500);
+  }
+  document.querySelector('#calibrate').addEventListener('click', () => {
+    const measuredX = Number(document.querySelector('#measured-x').value);
+    const measuredY = Number(document.querySelector('#measured-y').value);
+    if (!(measuredX >= 10 && measuredX <= 300 && measuredY >= 10 && measuredY <= 200)) { message.textContent = '请输入尺子测得的有效长度，单位为毫米。'; return; }
+    settings.ppmX *= 100 / measuredX; settings.ppmY *= 50 / measuredY; settings.calibrated = true;
+    save(); document.querySelector('#measured-x').value = 100; document.querySelector('#measured-y').value = 50; draw();
+  });
+  document.querySelector('#reset').addEventListener('click', () => {
+    settings.ppmX = defaultPPM(); settings.ppmY = defaultPPM(); settings.calibrated = false; settings.dpr = window.devicePixelRatio || 1;
+    document.querySelector('#measured-x').value = 100; document.querySelector('#measured-y').value = 50; save(); draw();
+  });
+  number.addEventListener('change', () => { settings.digit = number.value; save(); draw(); });
+  document.querySelector('#start').addEventListener('click', async () => {
+    presenting = true; panel.hidden = true; resize(); showControls();
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) { try { await document.documentElement.requestFullscreen(); } catch (_) {} }
+    resize(); await stayAwake();
+  });
+  function openSettings() {
+    presenting = false; panel.hidden = false; back.hidden = true; hint.hidden = true; clearTimeout(hideTimer); resize();
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = undefined; }
+  }
+  back.addEventListener('click', openSettings);
+  canvas.addEventListener('pointerup', () => {
+    if (!presenting) return;
+    const now = performance.now();
+    if (now - lastTap < 350) { lastTap = 0; openSettings(); return; }
+    lastTap = now;
+    if (controlsVisible) { controlsVisible = false; back.hidden = true; hint.hidden = true; clearTimeout(hideTimer); } else showControls();
+  });
+  window.addEventListener('keydown', event => { if (event.key === 'Escape') openSettings(); });
+  window.addEventListener('resize', resize);
+  document.addEventListener('fullscreenchange', resize);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { resize(); stayAwake(); } });
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+  if ('ResizeObserver' in window) new ResizeObserver(draw).observe(panel);
+  resize();
+  </script>
+</body>
+</html>

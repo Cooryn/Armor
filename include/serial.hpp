@@ -23,9 +23,9 @@ class Serial
 {
 public:
     ~Serial();
-    void open(const std::string &device);
+    void open(const std::string &serial_port);
     void close();
-    bool receive(GimbalState &state);
+    bool receive(GimbalState &gimbal_state);
     void send_target(float yaw_rad, float pitch_rad, bool valid);
     void send_mode(std::uint8_t mode);
 private:
@@ -34,7 +34,7 @@ private:
     std::thread worker;
     std::atomic<bool> running{false};
     std::mutex mutex;
-    GimbalState latest;
+    GimbalState latest_state;
     bool has_state = false;
     std::vector<std::uint8_t> pending_target, pending_mode;
     std::string error;

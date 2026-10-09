@@ -57,7 +57,7 @@ public:
             if (csv->is_open())
                 *csv << (base_coordinates ? ",coordinate_frame\n" : "\n") << std::setprecision(17);
     }
-    void write(std::int64_t frame, double timestamp,
+    void write(std::int64_t frame_id, double timestamp_ms,
                const VideoPrediction &prediction);
     void finish();
 
@@ -75,10 +75,10 @@ private:
 class Output
 {
 public:
-    void open(const std::filesystem::path &root, const Camera &input, PredictorType model, bool preview);
-    bool write(const Camera &input, const Solver &solver, const SolvedFrame &camera_poses,
+    void open(const std::filesystem::path &root, const Camera &camera, PredictorType model, bool preview);
+    bool write(const Camera &camera, const Solver &solver, const SolvedFrame &camera_poses,
                const SolvedFrame &base_poses, const PoseBase &pose_base,
-               const VideoPrediction &prediction, const ControlTarget &command,
+               const VideoPrediction &prediction, const ControlTarget &control,
                std::chrono::steady_clock::time_point frame_start);
     void finish();
 private:

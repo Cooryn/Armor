@@ -97,7 +97,7 @@ int main() {
             Eigen::AngleAxisd(.12, Eigen::Vector3d::UnitX()) * Eigen::AngleAxisd(-.15, Eigen::Vector3d::UnitZ())).toRotationMatrix();
         const cv::Mat camera = (cv::Mat_<double>(3, 3) << 800, 0, 320, 0, 800, 240, 0, 0, 1);
         const cv::Mat distortion = cv::Mat::zeros(1, 5, CV_64F);
-        Solver pnp(camera, distortion);
+        Solver solver(camera, distortion);
         const std::vector<cv::Point3f> object_points = {{-.0675f, -.028f, 0}, {-.0675f, .028f, 0},
                                                        {.0675f, .028f, 0}, {.0675f, -.028f, 0}};
         for (double timestamp : {0., 10., 30., 50., 80.})
@@ -117,7 +117,7 @@ int main() {
             cv::projectPoints(object_points, rvec, tvec, camera, distortion, pixels);
             Armor detected;
             for (int i = 0; i < 4; ++i) detected.vertices[i] = pixels[i];
-            check(pnp.solve(detected), "moving-camera synthetic armor PnP solved");
+            check(solver.solve(detected), "moving-camera synthetic armor PnP solved");
             const auto solved = moving.to_base({detected.tvec.at<double>(0), detected.tvec.at<double>(1), detected.tvec.at<double>(2)},
                 {detected.rvec.at<double>(0), detected.rvec.at<double>(1), detected.rvec.at<double>(2)}, timestamp);
             const Eigen::Matrix3d solved_rotation = Eigen::AngleAxisd(solved.rvec.norm(), solved.rvec.normalized()).toRotationMatrix();
