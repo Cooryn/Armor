@@ -15,7 +15,7 @@ def plot_armor(prediction_csv, raw_csv, output_dir, suffix='1'):
     closest = raw.sort_values('distance').groupby('frame_id', sort=True).head(1).sort_values('frame_id')
     obs_trajectory = list(closest[['x', 'z']].itertuples(index=False, name=None))
     os.makedirs(output_dir, exist_ok=True)
-    obs_traj = np.array(obs_trajectory if obs_trajectory else [(np.nan, np.nan)])  # (N, 2): [x, z]
+    obs_traj = np.asarray(obs_trajectory).reshape(-1, 2)  # (N, 2): [x, z]
     fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
     fig.suptitle('Top-down Trajectory (X-Z plane)', fontsize=14, fontweight='bold')
 
@@ -83,8 +83,8 @@ def plot_armor(prediction_csv, raw_csv, output_dir, suffix='1'):
 
 def main():
     args = parse_paths(__doc__, default_suffix='1')
-    plot_armor(args.results_dir / f'armor_prediction_result_{args.suffix}.csv',
-               args.data_dir / f'pose_raw_{args.suffix}.csv', args.output_dir, args.suffix)
+    prediction = args.results_dir / f'armor_prediction_result_{args.suffix}.csv'
+    plot_armor(prediction, args.data_dir / f'pose_base_{args.suffix}.csv', args.output_dir, args.suffix)
 
 if __name__ == '__main__':
     main()

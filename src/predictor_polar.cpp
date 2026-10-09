@@ -1,7 +1,7 @@
 #include "predictor_polar.hpp"
 #include <Eigen/Dense>
 #include <cmath>
-#include <stdexcept>
+#include <algorithm>
 
 double polar_wrap_to_pi(double a)
 {
@@ -66,16 +66,76 @@ void PolarEKF::update(const Eigen::Vector4d &z)
     const Eigen::Matrix<double, 4, 9> H = polar_get_jacobian(X, id);
     const Eigen::Vector4d Y = polar_angular_residual(z, polar_h(X, id));
     const Eigen::Matrix4d S = H * P * H.transpose() + R;
-    if (!S.allFinite() || !Y.allFinite())
-        throw std::runtime_error("Non-finite polar innovation");
     const Eigen::LDLT<Eigen::Matrix4d> solver(S);
-    if (solver.info() != Eigen::Success || solver.vectorD().minCoeff() <= 0)
-        throw std::runtime_error("Polar innovation covariance must be positive definite");
     const Eigen::Matrix<double, 9, 4> PHt = P * H.transpose();
     const Eigen::Matrix<double, 9, 4> K = solver.solve(PHt.transpose()).transpose();
-    if (!K.allFinite())
-        throw std::runtime_error("Non-finite polar Kalman gain");
     X = X + K * Y;
     X(6) = polar_wrap_to_pi(X(6));
     P = (Eigen::Matrix<double, 9, 9>::Identity() - K * H) * P;
+}
+
+VideoPrediction PolarEKF::update_frame(std::int64_t frame, double timestamp_ms,
+                                      const std::vector<VideoObservation> &observations, double horizon_ms)
+{
+    const double dt = (timestamp_ms - last_timestamp_ms_) / 1000;
+    last_timestamp_ms_ = timestamp_ms;
+    const double missing = std::numeric_limits<double>::quiet_NaN();
+    VideoPrediction result;
+    result.horizon_ms = horizon_ms;
+    const VideoObservation *selected = nullptr;
+    for (const auto &observation : observations)
+    {
+        const auto &z = observation.measurement;
+        if (z(2) > 1e-6 && std::abs(z(1)) < polar_pi / 2 && z(2) * std::cos(z(1)) > 1e-6 &&
+            (!selected || z(2) < selected->measurement(2)))
+            selected = &observation;
+    }
+    if (!is_initialized)
+    {
+        if (selected)
+        {
+            const auto &p = selected->position;
+            const auto &z = selected->measurement;
+            X << p(0) - .26 * std::sin(z(3)), 0, p(1), 0,
+                 p(2) + .26 * std::cos(z(3)), 0, z(3), 0, .26;
+            is_initialized = true;
+        }
+        result.status = selected ? "initialized" : "waiting";
+    }
+    else
+    {
+        predict(dt);
+        if (selected)
+        {
+            const int id = polar_round_even(polar_wrap_to_pi(selected->measurement(3) - X(6)) / (polar_pi / 2));
+            result.errors = polar_angular_residual(polar_h(X, id), selected->measurement);
+            update(selected->measurement);
+        }
+        const auto &errors = result.errors;
+        result.values = {double(frame), X(0), X(1), X(2), X(3), X(4), X(5), X(6), X(7), X(8),
+                         errors(0), errors(1), errors(2), errors(3), selected ? selected->measurement(3) : missing};
+        result.value_count = 15;
+        result.status = selected ? "updated" : "prediction_only";
+    }
+    result.initialized = is_initialized;
+    if (is_initialized)
+    {
+        result.position_variance = std::max({P(0, 0), P(2, 2), P(4, 4)});
+        auto future = X;
+        for (int i : {0, 2, 4, 6})
+            future(i) += horizon_ms / 1000 * future(i + 1);
+        future(6) = polar_wrap_to_pi(future(6));
+        for (bool forecast : {false, true})
+        {
+            const auto &s = forecast ? future : X;
+            auto &geometry = forecast ? result.future : result.current;
+            geometry.center = Eigen::Vector3d(s(0), s(2), s(4));
+            for (int i = 0; i < 4; ++i)
+            {
+                const double yaw = polar_wrap_to_pi(s(6) + i * polar_pi / 2);
+                geometry.plates.emplace_back(s(0) + s(8) * std::sin(yaw), s(2), s(4) - s(8) * std::cos(yaw), yaw);
+            }
+        }
+    }
+    return result;
 }

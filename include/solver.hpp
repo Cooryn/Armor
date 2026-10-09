@@ -23,7 +23,8 @@ public:
         camera_matrix = camera;
         distort_coeffs = distortion;
     }
-    SolvedFrame solve_frame(std::vector<Armor> armors, double timestamp_ms, const std::string &video_stem);
+    void use_video_profile(int profile);
+    SolvedFrame solve_frame(std::vector<Armor> armors, double timestamp_ms);
     bool solve(Armor &armor, double yaw_hint = std::numeric_limits<double>::quiet_NaN());
     std::vector<double> yaw_hints(const std::vector<Armor> &armors, double timestamp) const;
     void finish_frame(const std::vector<Armor> &armors, double timestamp);

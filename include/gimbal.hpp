@@ -1,0 +1,29 @@
+#pragma once
+#include "pose_base.hpp"
+
+struct GimbalConfig
+{
+    double yaw_min_rad = -0.7853981633974483, yaw_max_rad = 0.7853981633974483;
+    double pitch_min_rad = -0.5235987755982988, pitch_max_rad = 0.5235987755982988;
+    double max_age_ms = 100;
+    double max_position_variance = 1; // m^2; only affects command validity, not EKF.
+};
+struct ControlTarget
+{
+    float yaw_rad = 0, pitch_rad = 0; // Absolute raw joint angles expected by MC02.
+    bool valid = false;
+    int armor_id = -1;
+    std::string status = "no_target";
+};
+class Gimbal
+{
+public:
+    explicit Gimbal(const GimbalConfig &config = GimbalConfig{})
+    {
+        config_ = config;
+    }
+    ControlTarget solve(const VideoPrediction &prediction, const PoseBase &pose_base,
+                        double image_timestamp_ms, double now_ms) const;
+private:
+    GimbalConfig config_;
+};

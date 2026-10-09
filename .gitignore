@@ -3,6 +3,8 @@
 /tests/build/
 /Armor
 /Armor.exe
+/Armor_detect
+/Armor_detect.exe
 *.obj
 *.o
 *.a
@@ -73,7 +75,3 @@ Desktop.ini
 /predictor_armor.exe
 /camera_gimbal
 /camera_gimbal.exe
-/camera_tracking
-/camera_tracking.exe
-/pose_base
-/pose_base.exe

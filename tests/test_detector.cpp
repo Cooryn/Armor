@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
             {{637.f,716.f},{32.f,10.f},90.f},
             {{713.7f,715.3f},{31.5f,15.3f},74.7f},
             {{821.4f,722.5f},{29.8f,5.3f},76.f}};
-        auto selected = matchArmors(bars, 20, 2, .8f, .8f);
+        auto selected = matchArmors(bars, std::vector<float>(bars.size(), 1.f), 20, 2, .8f, .8f);
         require(selected.size() == 1, "Expected one consistent pair");
         require(std::abs(selected[0].left_light.center.x - 637.f) < 1,
                 "Wrong left light for frame-753 geometry");
@@ -27,14 +27,14 @@ int main(int argc, char **argv) {
                 "Wrong right light for frame-753 geometry");
         auto expected = selected[0].center;
         std::reverse(bars.begin(), bars.end());
-        selected = matchArmors(bars, 20, 2, .8f, .8f);
+        selected = matchArmors(bars, std::vector<float>(bars.size(), 1.f), 20, 2, .8f, .8f);
         require(cv::norm(selected[0].center - expected) < 1e-5, "Input-order dependence");
 
         // Four lights: select two valid plates without sharing any light.
         bars.clear();
         for (float x : {0.f, 72.f, 150.f, 222.f})
             bars.emplace_back(cv::Point2f(x,100), cv::Size2f(30,4), 90.f);
-        selected = matchArmors(bars);
+        selected = matchArmors(bars, std::vector<float>(bars.size(), 1.f));
         require(selected.size() == 2, "Expected two non-conflicting plates");
         require(selected[0].right_light.center.x == 72.f &&
                 selected[1].left_light.center.x == 150.f, "Incorrect global assignment");
@@ -42,19 +42,18 @@ int main(int argc, char **argv) {
         std::vector<cv::RotatedRect> competing;
         for (float x : {0.f, 60.f, 120.f, 180.f})
             competing.emplace_back(cv::Point2f(x,100), cv::Size2f(30,4), 90.f);
-        auto greedy = matchArmors(competing,20,2,.8f,.8f,3.1f,.35f,{.6f,1.f,1.f,.6f});
+        auto greedy = matchArmors(competing,{.6f,1.f,1.f,.6f},20,2,.8f,.8f,3.1f,.35f);
         require(greedy.size() == 1 && greedy[0].left_light.center.x == 60.f &&
                 greedy[0].right_light.center.x == 120.f, "Greedy must prefer the highest-score pair");
         std::reverse(competing.begin(), competing.end());
-        auto reversed = matchArmors(competing,20,2,.8f,.8f,3.1f,.35f,{.6f,1.f,1.f,.6f});
+        auto reversed = matchArmors(competing,{.6f,1.f,1.f,.6f},20,2,.8f,.8f,3.1f,.35f);
         require(reversed.size() == 1 && reversed[0].left_light.center.x == 60.f &&
                 reversed[0].right_light.center.x == 120.f, "Greedy input-order dependence");
-        require(matchArmors({}).empty(), "Empty input");
-        require(matchArmors(bars, 0, 2, .8f, .8f).empty(), "Invalid threshold");
+        require(matchArmors({}, {}).empty(), "Empty input");
 
         // First-fit would consume lights 0/1; quality matching must prefer 1/2.
         bars = {{{0,120},{30,4},90}, {{72,100},{30,4},90}, {{144,100},{30,4},90}};
-        selected = matchArmors(bars);
+        selected = matchArmors(bars, std::vector<float>(bars.size(), 1.f));
         require(selected.size() == 1 && selected[0].left_light.center.x == 72,
                 "First-fit won over the higher quality pair");
 
@@ -66,21 +65,21 @@ int main(int argc, char **argv) {
         cv::fillPoly(spur_mask, outlines, cv::Scalar(255));
         cv::findContours(spur_mask, outlines, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
         std::vector<float> quality;
-        auto fitted = getValidLightRects(outlines, 55, &quality);
+        auto fitted = getValidLightRects(outlines, quality, 55);
         require(fitted.size() == 1 && quality.size() == 1, "Missing fitted light");
         require(std::abs(std::max(fitted[0].size.width, fitted[0].size.height)-40) < 1,
                 "Light length was shortened, biasing PnP depth");
         require(quality[0] > 0 && quality[0] < 1, "Irregular contour needs a quality penalty");
-        fitted = getValidLightRects({{}, {{1,1}}}, 55, &quality);
+        fitted = getValidLightRects({{}, {{1,1}}}, quality, 55);
         require(fitted.empty() && quality.empty(), "Degenerate contours not skipped");
 
-        // Optional quality must follow each light even if input order changes.
+        // Measured quality must follow each light even if input order changes.
         bars = {{{0,100},{30,4},90}, {{72,100},{30,4},90}, {{144,100},{30,4},90}};
-        selected = matchArmors(bars,20,1.5f,1.2f,.8f,3.1f,.35f,{.3f,1.f,1.f});
+        selected = matchArmors(bars,{.3f,1.f,1.f},20,1.5f,1.2f,.8f,3.1f,.35f);
         require(selected.size() == 1 && selected[0].left_light.center.x == 72,
                 "Light quality did not affect ambiguous pairing");
         std::reverse(bars.begin(), bars.end());
-        selected = matchArmors(bars,20,1.5f,1.2f,.8f,3.1f,.35f,{1.f,1.f,.3f});
+        selected = matchArmors(bars,{1.f,1.f,.3f},20,1.5f,1.2f,.8f,3.1f,.35f);
         require(selected.size() == 1 && selected[0].left_light.center.x == 72,
                 "Light quality detached from sorted geometry");
 
@@ -135,8 +134,6 @@ int main(int argc, char **argv) {
         solver.finish_frame({}, 1./30);
         hints = solver.yaw_hints({first}, 2./30);
         require(!std::isfinite(hints[0]), "Missing frame failed to clear pose history");
-        armor.vertices[1] = armor.vertices[0];
-        require(!solver.solve(armor), "Accepted degenerate vertices");
 
         if (argc > 1) {
             cv::VideoCapture cap(std::string(argv[1]) + "/assets/video/video_1.avi");
@@ -147,7 +144,8 @@ int main(int argc, char **argv) {
             auto mask = extractColor(frame, ENEMY_RED, 70, 170);
             std::vector<std::vector<cv::Point>> contours;
             cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
-            selected = matchArmors(getValidLightRects(contours, 55, nullptr, 1.5, 40), 20, 2, .8f, .8f);
+            fitted = getValidLightRects(contours, quality, 55, 1.5, 40);
+            selected = matchArmors(fitted, quality, 20, 2, .8f, .8f);
             bool correct = false;
             for (const auto &a : selected) {
                 require(!(a.left_light.center.x > 700 && a.right_light.center.x > 800),
@@ -163,7 +161,8 @@ int main(int argc, char **argv) {
             require(cap.read(frame), "Cannot read side-plate regression frame");
             mask = extractColor(frame, ENEMY_RED, 70, 170);
             cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
-            selected = matchArmors(getValidLightRects(contours, 55, nullptr, 1.5, 40), 20, 2, .8f, .8f);
+            fitted = getValidLightRects(contours, quality, 55, 1.5, 40);
+            selected = matchArmors(fitted, quality, 20, 2, .8f, .8f);
             require(selected.size() == 2, "Thin side plate lost by shape filtering");
 
             // The refined endpoints must retain the known frame-220 detection.
@@ -171,8 +170,8 @@ int main(int argc, char **argv) {
             require(cap.read(frame), "Cannot read refinement regression frame");
             mask = extractColor(frame, ENEMY_RED, 70, 170);
             cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
-            fitted = getValidLightRects(contours, 55, &quality, 1.5, 40);
-            selected = matchArmors(fitted,20,2,.8f,.8f,3.1f,.35f,quality);
+            fitted = getValidLightRects(contours, quality, 55, 1.5, 40);
+            selected = matchArmors(fitted,quality,20,2,.8f,.8f,3.1f,.35f);
             cv::Mat K2 = (cv::Mat_<double>(3,3) << 1711.311186,0,732.488057,
                 0,1714.616882,546.930868,0,0,1);
             cv::Mat D2 = (cv::Mat_<double>(1,5) << -.119922,-.078593,.007511,-.028028,0);

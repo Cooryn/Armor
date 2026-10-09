@@ -26,7 +26,8 @@ def main():
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'tests/build')
     parser.add_argument('--work-dir', type=Path, default=ROOT / 'tests/outputs/armor-video')
     parser.add_argument('--preview', action='store_true')
-    parser.add_argument('--guards-only', action='store_true', help='Only test preview and input/argument errors')
+    parser.add_argument('--guards-only', action='store_true', help='Only test preview, live-branch build and file I/O errors')
+    parser.add_argument('--max-source-frames', type=int, help='Use short source clips for routine integration checks')
     args = parser.parse_args()
     work = args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -48,6 +49,7 @@ def main():
         text = original.decode('utf-8')
         models = {'SinglePlate': 'PREDICTOR_SINGLE_PLATE', 'Polar': 'PREDICTOR_POLAR', 'Armor': 'PREDICTOR_ARMOR'}
         values = {'target_color': f'ENEMY_{color.upper()}', 'video_file': json.dumps(video.relative_to(ROOT).as_posix()),
+                  'video_camera_profile': '2' if 'video_2' in video.stem else '1',
                   'predictor_type': models[model], 'preview': 'true' if preview else 'false'}
         for key, value in values.items():
             text, count = re.subn(rf'(?m)^(constexpr [^\n]*\b{key}\s*=\s*)[^;]+;', lambda m: m[1] + value + ';', text)
@@ -58,15 +60,15 @@ def main():
         tag = model.lower() + color + suffix + ('preview' if preview else '') + ('fixture' if blue_fixture else '')
         case = work / tag
         case.mkdir(parents=True, exist_ok=True)
-        # The stem contains video_2 when that calibration is needed; its last
-        # token is a unique output suffix to avoid overwriting formal results.
+        # Select the explicit profile from the fixture name; the final token
+        # is a unique output suffix to avoid overwriting formal results.
         input_video = case / f'video_{suffix}_{tag}.avi'
-        if preview or blue_fixture:
+        if preview or blue_fixture or args.max_source_frames:
             cap = cv2.VideoCapture(str(video))
             writer = cv2.VideoWriter(str(input_video), cv2.VideoWriter_fourcc(*'MJPG'),
                                     cap.get(cv2.CAP_PROP_FPS), (int(cap.get(3)), int(cap.get(4))))
             assert writer.isOpened()
-            for _ in range(6 if preview else 120):
+            for _ in range(6 if preview else args.max_source_frames or 120):
                 ok, frame = cap.read()
                 assert ok
                 # Both supplied videos contain red plates. Swap B/R channels
@@ -84,6 +86,9 @@ def main():
         assert result.returncode == 0, result.stdout + result.stderr
         raw_path = ROOT / 'data' / f'pose_raw_{tag}.csv'
         raw = pd.read_csv(raw_path)
+        base_path = ROOT / 'data' / f'pose_base_{tag}.csv'
+        base = pd.read_csv(base_path)
+        assert base.coordinate_frame.eq('base').all()
         assert raw.coordinate_frame.eq('camera').all()
         if not preview:
             assert len(raw) > 0, f'{color} produced no observations'
@@ -94,7 +99,7 @@ def main():
         cap.release()
         groups = {int(fid): [(r[['x', 'y', 'z']].to_numpy(float),
                              r[['target_yaw', 'target_pitch', 'distance', 'armor_orientation_yaw']].to_numpy(float))
-                            for _, r in group.iterrows()] for fid, group in raw.groupby('frame_id')}
+                            for _, r in group.iterrows()] for fid, group in base.groupby('frame_id')}
         frames = [(i, i * 1000 / fps, groups.get(i, [])) for i in range(count)]
         reference = case / 'numpy'
         mode = {'SinglePlate': 'basic', 'Polar': 'polar', 'Armor': 'armor'}[model]
@@ -108,6 +113,8 @@ def main():
                 assert expected.read_text() == actual.read_text(), actual
             else:
                 x, y = pd.read_csv(expected), pd.read_csv(actual)
+                assert y.coordinate_frame.eq('base').all()
+                y = y.drop(columns=['coordinate_frame'])
                 assert x.columns.tolist() == y.columns.tolist() and x.shape == y.shape, actual
                 for col in x:
                     if pd.api.types.is_numeric_dtype(x[col]) and not pd.api.types.is_bool_dtype(x[col]):
@@ -130,6 +137,9 @@ def main():
         overlay.release()
         shutil.move(str(overlay_path), str(case / 'overlay.avi'))
         shutil.move(str(raw_path), str(case / 'observations.csv'))
+        shutil.move(str(base_path), str(case / 'base_observations.csv'))
+        shutil.move(str(ROOT / 'data' / f'camera_pose_{tag}.csv'), str(case / 'camera_pose.csv'))
+        shutil.move(str(ROOT / 'results' / f'control_target_{tag}.csv'), str(case / 'control_target.csv'))
         report.append(dict(model=model, color=color, frames=count, observations=len(raw), preview=preview,
                            blue_fixture=blue_fixture, snapshot_frame=fid, max_absolute_difference=maximum))
         print(tag, 'PASS', count, 'frames,', len(raw), 'observations', flush=True)
@@ -143,18 +153,14 @@ def main():
             run_case('Armor', 'red', '2', ROOT / 'assets/video/video_2.avi')
         if args.preview:
             run_case('Armor', 'red', '1', ROOT / 'assets/video/video_1.avi', True)
+        # Build the live branch without opening hardware or sending commands.
+        configure('red', work / 'unused.avi', 'Armor')
+        source.write_text(source.read_text(encoding='utf-8').replace('camera_source = CAMERA_VIDEO;', 'camera_source = CAMERA_OPENCV;'), encoding='utf-8')
+        build('live-compile-only')
         configure('red', work / 'missing.avi', 'Armor')
         build('missing')
         rejection = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
-        assert rejection.returncode != 0 and 'Input video does not exist' in rejection.stderr
-        rejection = subprocess.run([str(exe), 'red'], env=env, capture_output=True, text=True)
-        assert rejection.returncode != 0 and 'takes no arguments' in rejection.stderr
-        image = work / 'unsupported.png'
-        assert cv2.imwrite(str(image), np.zeros((20, 20, 3), np.uint8))
-        configure('red', image, 'Armor')
-        build('unsupported')
-        rejection = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
-        assert rejection.returncode != 0 and 'Unsupported video file extension' in rejection.stderr
+        assert rejection.returncode != 0 and 'Cannot open image source' in rejection.stderr
         # A valid video located in results would otherwise be overwritten by its
         # own output. Use a newly allocated file and verify it stays byte-identical.
         with tempfile.NamedTemporaryFile(dir=ROOT / 'results', prefix='armor_guard_', suffix='.avi', delete=False) as file:

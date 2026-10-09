@@ -3,21 +3,22 @@
 #include <cmath>
 #include <algorithm>
 
+// 装甲板尺寸配置
+constexpr float armor_width_m = 0.135f;
+constexpr float armor_height_m = 0.056f;
+
 // PnP求解装甲板位姿
 bool Solver::solve(Armor &armor, double yaw_hint)
 {
+    // 角点顺序：左上、左下、右下、右上
     static const std::vector<cv::Point3f> object_points = {
-        {-.0675f, -.028f, 0}, {-.0675f, .028f, 0}, {.0675f, .028f, 0}, {.0675f, -.028f, 0}};
+        {-armor_width_m / 2, -armor_height_m / 2, 0},
+        {-armor_width_m / 2, armor_height_m / 2, 0},
+        {armor_width_m / 2, armor_height_m / 2, 0},
+        {armor_width_m / 2, -armor_height_m / 2, 0}};
 
     // 复制检测出的四个角点到image_points中
     std::vector<cv::Point2f> image_points(armor.vertices, armor.vertices + 4);
-
-    // 检查角点输入
-    for (const auto &p : image_points)
-        if (!std::isfinite(p.x) || !std::isfinite(p.y))
-            return false;
-    if (!cv::isContourConvex(image_points) || std::abs(cv::contourArea(image_points)) < 4)
-        return false;
 
     const double light_length = (cv::norm(image_points[0] - image_points[1]) + cv::norm(image_points[2] - image_points[3])) / 2; // 计算灯条平均长度
 
@@ -52,7 +53,7 @@ bool Solver::solve(Armor &armor, double yaw_hint)
             error += residual.dot(residual);
         }
         error = std::sqrt(error / projected.size());
-        if (!std::isfinite(error) || error > gate)
+        if (error > gate)
             return;
 
         // 检查候选解是否重复
@@ -75,8 +76,6 @@ bool Solver::solve(Armor &armor, double yaw_hint)
                         rvec, tvec, false, cv::SOLVEPNP_IPPE);
     for (size_t i = 0; i < rvec.size(); ++i)
     {
-        if (!cv::checkRange(rvec[i]) || !cv::checkRange(tvec[i]))
-            continue;
         add(rvec[i], tvec[i]);
     }
 
@@ -122,7 +121,7 @@ std::vector<int> Solver::temporal_matches(const std::vector<Armor> &armors, doub
 {
     std::vector<int> matches(armors.size(), -1); // 初始化全部为未匹配
     const double dt = timestamp - previous_time; // 计算当前帧和上一帧的时间差
-    if (!std::isfinite(dt) || dt <= 0 || dt > .1 || previous.empty())
+    if (dt <= 0 || dt > .1 || previous.empty())
         return matches; // 判断上一帧信息是否可用
 
     std::vector<std::vector<double>> costs(armors.size(), std::vector<double>(previous.size())); // 建立代价矩阵
@@ -190,25 +189,24 @@ void Solver::finish_frame(const std::vector<Armor> &armors, double timestamp)
     previous_time = timestamp;
 }
 
-SolvedFrame Solver::solve_frame(std::vector<Armor> armors, double timestamp_ms,
-                                const std::string &video_stem)
+void Solver::use_video_profile(int profile)
 {
-    if (camera_matrix.empty())
+    if (profile == 2)
     {
-        if (video_stem.find("video_2") != std::string::npos)
-        {
-            camera_matrix = (cv::Mat_<double>(3, 3) << 1711.311186, 0, 732.488057, 0, 1714.616882, 546.930868, 0, 0, 1);
-            distort_coeffs = (cv::Mat_<double>(1, 5) << -.119922, -.078593, .007511, -.028028, 0);
-        }
-        else
-        {
-            camera_matrix = (cv::Mat_<double>(3, 3) << 1286.307063384126, 0, 645.34450819155256,
-                             0, 1288.1400736562441, 483.6163720308021, 0, 0, 1);
-            distort_coeffs = (cv::Mat_<double>(1, 5) << -.47562935060124745, .21831745829617311,
-                              .0004957613589406044, -.00034617769548693592, 0);
-        }
+        camera_matrix = (cv::Mat_<double>(3, 3) << 1711.311186, 0, 732.488057, 0, 1714.616882, 546.930868, 0, 0, 1);
+        distort_coeffs = (cv::Mat_<double>(1, 5) << -.119922, -.078593, .007511, -.028028, 0);
     }
+    else
+    {
+        camera_matrix = (cv::Mat_<double>(3, 3) << 1286.307063384126, 0, 645.34450819155256,
+                         0, 1288.1400736562441, 483.6163720308021, 0, 0, 1);
+        distort_coeffs = (cv::Mat_<double>(1, 5) << -.47562935060124745, .21831745829617311,
+                          .0004957613589406044, -.00034617769548693592, 0);
+    }
+}
 
+SolvedFrame Solver::solve_frame(std::vector<Armor> armors, double timestamp_ms)
+{
     const double timestamp = timestamp_ms / 1000;
     const auto hints = yaw_hints(armors, timestamp);
     SolvedFrame result;

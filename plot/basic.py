@@ -79,8 +79,8 @@ def plot_basic(prediction_csv, raw_csv, output_dir, suffix='2'):
 
 def main():
     args = parse_paths(__doc__)
-    plot_basic(args.results_dir / f'prediction_result_{args.suffix}.csv',
-                  args.data_dir / f'pose_raw_{args.suffix}.csv', args.output_dir, args.suffix)
+    prediction = args.results_dir / f'prediction_result_{args.suffix}.csv'
+    plot_basic(prediction, args.data_dir / f'pose_base_{args.suffix}.csv', args.output_dir, args.suffix)
 
 if __name__ == '__main__':
     main()

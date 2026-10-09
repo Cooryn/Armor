@@ -1,11 +1,13 @@
 #pragma once
-#include <Eigen/Dense>
+#include "predictor.hpp"
 
 constexpr double polar_pi = 3.14159265358979323846;
 
 class PolarEKF
 {
 public:
+  VideoPrediction update_frame(std::int64_t frame, double timestamp_ms,
+                               const std::vector<VideoObservation> &observations, double horizon_ms = 50);
   void predict(double dt);
   void update(const Eigen::Vector4d &z);
 
@@ -15,6 +17,8 @@ public:
   Eigen::Matrix<double, 9, 9> Q = (Eigen::Matrix<double, 9, 1>() << .01, .1, .01, .1, .01, .1, .01, .5, .0001).finished().asDiagonal();
   Eigen::Matrix4d R = Eigen::Vector4d(.005, .005, .05, .05).asDiagonal();
   bool is_initialized = false;
+private:
+  double last_timestamp_ms_ = -1;
 };
 
 double polar_wrap_to_pi(double a);

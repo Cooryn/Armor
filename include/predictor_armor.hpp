@@ -1,5 +1,5 @@
 #pragma once
-#include <Eigen/Dense>
+#include "predictor.hpp"
 #include <cstddef>
 #include <limits>
 #include <string>
@@ -19,16 +19,6 @@ struct Match
     Eigen::Matrix<double, 4, 11> H;
     Eigen::Vector4d Z_obs;
 };
-struct Diagnostic
-{
-    std::size_t observation_index;
-    bool accepted = false;
-    int armor_id = -1;
-    double nis = std::numeric_limits<double>::quiet_NaN();
-    std::string reason = "invalid";
-    int best_candidate_id = -1;
-    double distance_residual = std::numeric_limits<double>::quiet_NaN();
-};
 struct Forecast
 {
     Eigen::Matrix<double, 11, 1> state;
@@ -40,6 +30,8 @@ constexpr double armor_pi = 3.14159265358979323846;
 class ArmorEKF
 {
 public:
+    VideoPrediction update_frame(std::int64_t frame, double timestamp_ms,
+                                 const std::vector<VideoObservation> &observations, double horizon_ms = 50);
     void initialize(const Eigen::Vector4d &z);
     void predict(double dt);
     Forecast forecast(double horizon_s = .05) const;
@@ -57,6 +49,7 @@ public:
     double nis_gate = 16, pair_yaw_tolerance = 25 * armor_pi / 180, max_distance_error = .5;
 
 private:
+    double last_timestamp_ms_ = -1;
     std::pair<Eigen::Matrix<double, 11, 11>, Eigen::Matrix<double, 11, 11>> transition(double dt) const;
 };
 

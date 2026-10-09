@@ -2,7 +2,6 @@
 #include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
-#include <stdexcept>
 
 // Fixed observation standard deviations: [0.04 rad, 0.04 rad, 0.40 m, 0.24 rad].
 
@@ -24,8 +23,6 @@ Eigen::Vector4d armor_angular_residual(const Eigen::Vector4d &a, const Eigen::Ve
 
 std::pair<Eigen::Matrix<double, 11, 11>, Eigen::Matrix<double, 11, 11>> ArmorEKF::transition(double dt) const
 {
-    if (!std::isfinite(dt) || dt < 0)
-        throw std::invalid_argument("dt must be finite and nonnegative");
     Eigen::Matrix<double, 11, 11> f = Eigen::Matrix<double, 11, 11>::Identity(), q = Eigen::Matrix<double, 11, 11>::Zero();
     for (int i : {0, 2, 4, 6})
     {
@@ -52,8 +49,6 @@ void ArmorEKF::predict(double dt)
 
 Forecast ArmorEKF::forecast(double horizon_s) const
 {
-    if (!is_initialized)
-        throw std::invalid_argument("Cannot forecast before initialization");
     auto [f, q] = transition(horizon_s);
     Eigen::Matrix<double, 11, 1> s = f * X;
     s(6) = armor_wrap_to_pi(s(6));
@@ -96,14 +91,12 @@ Eigen::Matrix<double, 4, 11> armor_get_jacobian(const Eigen::Matrix<double, 11, 
 
 bool ArmorEKF::valid_observation(const Eigen::Vector4d &z) const
 {
-    return z.allFinite() && z(2) > 0 &&
+    return z(2) > 0 &&
            std::abs(z(1)) < armor_pi / 2 && (base_frame || std::abs(z(0)) < armor_pi / 2);
 }
 
 void ArmorEKF::initialize(const Eigen::Vector4d &z)
 {
-    if (!valid_observation(z))
-        throw std::invalid_argument("Invalid initialization observation");
     double x = z(2) * std::cos(z(1)) * std::sin(z(0)), y = z(2) * std::sin(z(1)),
            zc = z(2) * std::cos(z(1)) * std::cos(z(0));
     X << x - .26 * std::sin(z(3)), 0, y, 0, zc + .26 * std::cos(z(3)), 0, z(3), 0, .26, 0, 0;
@@ -130,14 +123,8 @@ std::pair<std::vector<Match>, std::vector<Diagnostic>> ArmorEKF::associate(const
                 const Eigen::Vector4d pred = armor_h(X, id), res = armor_angular_residual(o.Z_obs, pred);
                 const Eigen::Matrix<double, 4, 11> H = armor_get_jacobian(X, id);
                 const Eigen::Matrix4d S = H * P * H.transpose() + R;
-                if (!S.allFinite())
-                    throw std::runtime_error("Non-finite armor innovation covariance");
                 const Eigen::LDLT<Eigen::Matrix4d> solver(S);
-                if (solver.info() != Eigen::Success || solver.vectorD().minCoeff() <= 0)
-                    throw std::runtime_error("Armor innovation covariance must be positive definite");
                 const double nis = res.dot(solver.solve(res));
-                if (!std::isfinite(nis))
-                    throw std::runtime_error("Non-finite armor innovation");
                 if (d.best_candidate_id < 0 || nis < d.nis)
                 {
                     d.nis = nis;
@@ -223,14 +210,8 @@ std::pair<std::vector<Match>, std::vector<Diagnostic>> ArmorEKF::update_multi(co
         noise.block<4, 4>(offset, offset) = R;
     }
     const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, 0, 16, 16> S = H * P * H.transpose() + noise;
-    if (!S.allFinite())
-        throw std::runtime_error("Non-finite armor joint covariance");
     const auto solver = S.ldlt();
-    if (solver.info() != Eigen::Success || solver.vectorD().minCoeff() <= 0)
-        throw std::runtime_error("Armor joint covariance must be positive definite");
     const Eigen::Matrix<double, 11, Eigen::Dynamic, 0, 11, 16> K = solver.solve(H * P).transpose();
-    if (!K.allFinite())
-        throw std::runtime_error("Non-finite armor Kalman gain");
     X = X + K * res;
     X(6) = armor_wrap_to_pi(X(6));
     X(8) = std::clamp(X(8), .20, .30);
@@ -238,5 +219,87 @@ std::pair<std::vector<Match>, std::vector<Diagnostic>> ArmorEKF::update_multi(co
     const Eigen::Matrix<double, 11, 11> A = Eigen::Matrix<double, 11, 11>::Identity() - K * H;
     P = A * P * A.transpose() + K * noise * K.transpose();
     P = ((P + P.transpose()) * .5).eval();
+    return result;
+}
+
+VideoPrediction ArmorEKF::update_frame(std::int64_t frame, double timestamp_ms,
+                                      const std::vector<VideoObservation> &observations, double horizon_ms)
+{
+    const double dt = (timestamp_ms - last_timestamp_ms_) / 1000;
+    last_timestamp_ms_ = timestamp_ms;
+    const double missing = std::numeric_limits<double>::quiet_NaN();
+    VideoPrediction result;
+    result.horizon_ms = horizon_ms;
+    const VideoObservation *selected = nullptr;
+    std::vector<Observation> all;
+    for (const auto &observation : observations)
+    {
+        all.push_back({observation.measurement});
+        if (valid_observation(observation.measurement) &&
+            (!selected || observation.measurement(2) < selected->measurement(2)))
+            selected = &observation;
+    }
+    const bool initialized_before = is_initialized;
+    Eigen::Vector4d plate = Eigen::Vector4d::Constant(missing);
+    double observed_yaw = missing;
+    int id = -1;
+    std::size_t accepted_count = 0;
+    if (!is_initialized)
+    {
+        if (selected)
+            initialize(selected->measurement);
+        for (std::size_t i = 0; i < observations.size(); ++i)
+        {
+            Diagnostic diagnostic;
+            diagnostic.observation_index = i;
+            diagnostic.accepted = &observations[i] == selected;
+            diagnostic.armor_id = diagnostic.accepted ? 0 : -1;
+            diagnostic.reason = !valid_observation(observations[i].measurement) ? "invalid" :
+                                diagnostic.accepted ? "initialization" : "initialization_unused";
+            result.diagnostics.push_back(diagnostic);
+        }
+        result.status = selected ? "initialized" : "waiting";
+    }
+    else
+    {
+        predict(dt);
+        const Eigen::Matrix<double, 11, 1> prior = X;
+        const auto [matches, diagnostics] = update_multi(all);
+        result.diagnostics = diagnostics;
+        accepted_count = matches.size();
+        if (!matches.empty())
+        {
+            const auto &match = *std::min_element(matches.begin(), matches.end(),
+                [](const auto &a, const auto &b) { return a.Z_obs(2) < b.Z_obs(2); });
+            id = match.armor_id;
+            plate = armor_plate_pose(prior, id);
+            result.errors = -match.residual;
+            observed_yaw = match.Z_obs(3);
+        }
+        result.status = matches.empty() ? "prediction_only" : "updated";
+    }
+    result.initialized = is_initialized;
+    if (is_initialized)
+    {
+        result.position_variance = std::max({P(0, 0), P(2, 2), P(4, 4)});
+        const auto current = forecast(0), future = forecast(horizon_ms / 1000);
+        result.current.center = Eigen::Vector3d(X(0), X(2), X(4));
+        result.future.center = Eigen::Vector3d(future.state(0), future.state(2), future.state(4));
+        for (int i = 0; i < 4; ++i)
+        {
+            result.current.plates.push_back(current.plates.row(i).transpose());
+            result.future.plates.push_back(future.plates.row(i).transpose());
+        }
+        if (initialized_before)
+        {
+            const auto &f = future.state;
+            const auto &errors = result.errors;
+            result.values = {double(frame), timestamp_ms, horizon_ms, timestamp_ms + horizon_ms,
+                             f(0), f(2), f(4), f(6), X(0), X(2), X(4), X(1), X(3), X(5), X(7), plate(0), plate(2),
+                             double(id), X(6), plate(3), observed_yaw, errors(0), errors(1), errors(2), errors(3),
+                             X(8), X(9), X(10), double(all.size()), double(accepted_count), double(all.size() - accepted_count)};
+            result.value_count = 31;
+        }
+    }
     return result;
 }

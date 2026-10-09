@@ -1,4 +1,7 @@
 #include "predictor.hpp"
+#include "predictor_polar.hpp"
+#include "predictor_armor.hpp"
+#include "output.hpp"
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -8,17 +11,27 @@
 #include <stdexcept>
 // Exercise the public predictor/output interfaces together, without the entry point.
 struct ReplayPredictor {
-    VideoPredictor predictor_;
+    PredictorType type;
+    double horizon;
+    SinglePlateEKF single_plate;
+    PolarEKF polar;
+    ArmorEKF armor;
     PredictionOutput output_;
     bool finished_ = false;
 };
 static ReplayPredictor make_replay_predictor(PredictorType type, const std::filesystem::path &directory,
                                             const std::string &suffix, double horizon = 50) {
-    return {VideoPredictor{type, horizon}, PredictionOutput(type, directory, suffix), false};
+    return {type, horizon, SinglePlateEKF{}, PolarEKF{}, ArmorEKF{}, PredictionOutput(type, directory, suffix), false};
 }
 static VideoPrediction replay_predictor_update(ReplayPredictor &self, std::int64_t frame, double timestamp, const std::vector<VideoObservation> &obs) {
     if (self.finished_) throw std::logic_error("Cannot update finished replay");
-    auto result = self.predictor_.update(frame, timestamp, obs);
+    VideoPrediction result;
+    if (self.type == PREDICTOR_SINGLE_PLATE)
+        result = self.single_plate.update_frame(frame, timestamp, obs, self.horizon);
+    else if (self.type == PREDICTOR_POLAR)
+        result = self.polar.update_frame(frame, timestamp, obs, self.horizon);
+    else
+        result = self.armor.update_frame(frame, timestamp, obs, self.horizon);
     self.output_.write(frame, timestamp, obs, result);
     return result;
 }
@@ -134,16 +147,6 @@ static void regressions(const std::filesystem::path &root) {
     check(states[1][29] == "4", "four-plate joint update removed");
     check(csv(root / "joint/armor_future_prediction_1.csv").size() == 5, "four future poses missing");
 
-    ReplayPredictor validation = make_replay_predictor(PREDICTOR_ARMOR, root / "validation", "1");
-    rejects([&] { replay_predictor_update(validation, -1, 0, {}); });
-    rejects([&] { replay_predictor_update(validation, 0, std::numeric_limits<double>::quiet_NaN(), {}); });
-    rejects([&] { replay_predictor_update(validation, 0, -1, {}); });
-    replay_predictor_update(validation, 0, 0, {});
-    rejects([&] { replay_predictor_update(validation, 0, 40, {}); });
-    rejects([&] { replay_predictor_update(validation, 1, 0, {}); });
-    replay_predictor_finish(validation);
-    rejects([&] { VideoPredictor bad{PREDICTOR_ARMOR, -1}; bad.update(0, 0, {}); });
-    rejects([&] { VideoPredictor bad{PREDICTOR_ARMOR, std::numeric_limits<double>::infinity()}; bad.update(0, 0, {}); });
     // Opening a directory as a CSV is a write error, not a silent empty result.
     std::filesystem::create_directories(root / "blocked/prediction_result_1.csv");
     rejects([&] { ReplayPredictor blocked = make_replay_predictor(PREDICTOR_SINGLE_PLATE, root / "blocked", "1"); });

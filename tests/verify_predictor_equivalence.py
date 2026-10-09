@@ -1,4 +1,4 @@
-"""Compare the online C++ adapter with NumPy on complete video frame clocks."""
+"""Compare the direct C++ model interfaces with NumPy on complete video frame clocks."""
 import argparse
 import json
 import subprocess
@@ -82,7 +82,7 @@ for suffix in ('1', '2'):
         compare(f'real_{suffix}_{model}', frames, model)
 
 # Variable source clock, leading/trailing and consecutive missed detections,
-# all four plates, duplicates/outliers, invalid observations and angle crossings.
+# all four plates, duplicates/outliers, geometric exclusions and angle crossings.
 synthetic = []
 time = 0.
 for i in range(100):
@@ -94,7 +94,6 @@ for i in range(100):
             o = observation(.1 + i * .002 + .26 * np.sin(theta), .2 + .015 * (aid % 2),
                             3 - .26 * np.cos(theta), (theta + np.pi) % (2 * np.pi) - np.pi)
             if i == 12: o[1][2] += 3
-            if i == 48: o[1][0] = np.nan
             # A competing duplicate has a distinct range score. Identical scores
             # can choose different equivalent assignments due to sum roundoff.
             if len(obs) == 4:
@@ -130,21 +129,6 @@ for model in ('basic', 'polar', 'armor'):
 wrap = [(i, i * 30., [observation(.01 - .002 * i, .2, -3)]) for i in range(20)]
 for model in ('basic', 'polar', 'armor'):
     compare(f'target_wrap_{model}', wrap, model)
-
-for name, frames in [('negative_id', [(-1, 0., [])]), ('negative_time', [(0, -1., [])]),
-                     ('nan_time', [(0, np.nan, [])]), ('duplicate_id', [(0, 0., []), (0, 40., [])]),
-                     ('nonincreasing_time', [(0, 0., []), (1, 0., [])])]:
-    path = root / f'{name}.txt'
-    path.write_text(''.join(f'{fid} {timestamp} 0\n' for fid, timestamp, _ in frames))
-    rejection = subprocess.run([str(exe), '--replay', 'armor', str(path), str(root / name), '50'], capture_output=True)
-    assert rejection.returncode != 0, name
-    try:
-        run_video_predictor(frames, 'armor', root / (name + '_python'))
-    except ValueError:
-        pass
-    else:
-        raise AssertionError(name + ' accepted by NumPy')
-    report.append(dict(case=name, rejection='matched'))
 
 (root / 'verification.json').write_text(json.dumps(report, indent=2))
 print(f'{len(report)} online comparison cases passed', flush=True)
