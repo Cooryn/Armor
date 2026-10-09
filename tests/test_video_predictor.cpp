@@ -9,7 +9,6 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
-// Exercise the public predictor/output interfaces together, without the entry point.
 struct ReplayPredictor {
     PredictorType type;
     double horizon;
@@ -67,8 +66,6 @@ static std::string contents(const std::filesystem::path &path) {
     std::ifstream input(path); return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 static void regressions(const std::filesystem::path &root) {
-    // Independent physical geometry: PnP yaw = -rotation about camera Y.
-    // A 30-degree plate on a radius of .26 m has x = center_x + .13 m.
     ReplayPredictor physical = make_replay_predictor(PREDICTOR_POLAR, root / "polar_physical", "1");
     const double heading = polar_pi / 6;
     const auto observation = sample(.13, 3 - .26 * std::cos(heading), heading);
@@ -105,8 +102,6 @@ static void regressions(const std::filesystem::path &root) {
         replay_predictor_finish(one);
         check(csv(folder / "one" / result).size() == 1, "initialization exported state");
 
-        // Same observations and frame clock with different horizons must give the
-        // same current states on every subsequent frame (forecast cannot advance EKF).
         ReplayPredictor zero = make_replay_predictor(models[m], folder / "zero", "1", 0);
         ReplayPredictor future = make_replay_predictor(models[m], folder / "future", "1", 200);
         for (int i = 0; i < 15; ++i) {
@@ -147,7 +142,6 @@ static void regressions(const std::filesystem::path &root) {
     check(states[1][29] == "4", "four-plate joint update removed");
     check(csv(root / "joint/armor_future_prediction_1.csv").size() == 5, "four future poses missing");
 
-    // Opening a directory as a CSV is a write error, not a silent empty result.
     std::filesystem::create_directories(root / "blocked/prediction_result_1.csv");
     rejects([&] { ReplayPredictor blocked = make_replay_predictor(PREDICTOR_SINGLE_PLATE, root / "blocked", "1"); });
 }

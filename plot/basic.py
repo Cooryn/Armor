@@ -51,7 +51,7 @@ def plot_basic(prediction_csv, raw_csv, output_dir, suffix='2'):
     # 小车中心点二维位置：世界俯视图（x-z 平面）
     # 横轴 X（左右偏移），纵轴 Z（深度），越往上越远
     # ==========================================
-    obs_traj = np.array(obs_trajectory)  # (N, 2): [x, z]
+    obs_traj = np.array(obs_trajectory)
     fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
     fig.suptitle('Top-down Trajectory (X-Z plane)', fontsize=14, fontweight='bold')
 

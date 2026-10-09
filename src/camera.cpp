@@ -4,7 +4,7 @@
 
 bool Camera::live() const
 {
-    return source_ == CAMERA_OPENCV;
+    return source_ == CAMERA;
 }
 
 void Camera::open(const CameraConfig &config)
@@ -14,7 +14,7 @@ void Camera::open(const CameraConfig &config)
     path_ = config.video;
     frame_id_ = -1;
     frame_count_ = 0;
-    if (source_ == CAMERA_VIDEO)
+    if (source_ == VIDEO)
     {
         stream_.open(path_.string());
         stem_ = path_.stem().string();

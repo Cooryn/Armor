@@ -16,7 +16,7 @@ ControlTarget Gimbal::solve(const VideoPrediction &prediction, const PoseBase &p
         return result;
     }
     if (!prediction.initialized || (prediction.status != "updated" && prediction.status != "initialized"))
-        return result; // A missed or rejected observation sends valid=false immediately.
+        return result;
     if (prediction.position_variance > config_.max_position_variance)
     {
         result.status = "uncertain";
@@ -39,8 +39,6 @@ ControlTarget Gimbal::solve(const VideoPrediction &prediction, const PoseBase &p
     if (!selected)
         return result;
     Eigen::Vector3d angles(state.yaw_rad, state.pitch_rad, state.roll_rad);
-    // Solve optical alignment with the same offsets, mount, zero and signs as PoseBase.
-    // Roll is measured but has no control channel. A 2x2 Newton solve finds yaw/pitch.
     const auto residual = [&](const Eigen::Vector3d &candidate)
     {
         const Eigen::Vector3d p = pose_base.at_angles(candidate).inverse() * selected->head<3>();

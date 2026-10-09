@@ -41,7 +41,6 @@ def main():
     summary.to_csv(OUTPUT/'summary.csv', index=False)
     print(summary.to_string(index=False))
 
-    # Actual rendered detector outputs at the same source frame, not synthetic boxes.
     crops = []
     for version, path in [('Before', ROOT/'tests/outputs/detector_baseline/video_1.mp4'),
                           ('After', ROOT/'results/video_1.mp4')]:
@@ -72,7 +71,6 @@ def main():
     fig.savefig(OUTPUT/'consistency_comparison.png', dpi=160)
     plt.close(fig)
 
-    # Only compare EKF outputs produced using the same predictor and parameters.
     ekf_rows = []
     for video, lo, hi in [(1, 2, 25), (2, 2, 10)]:
         for version, folder in [('before', ROOT/'tests/outputs/detector_baseline'),

@@ -43,5 +43,4 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &lightBars,
 void drawArmors(cv::Mat &src, const std::vector<Armor> &armors);
 void drawVideoInfo(cv::Mat &image, const std::vector<Armor> &armors, const std::string &status);
 
-// Complete detector stage with the video's calibrated detection thresholds.
 std::vector<Armor> detectArmors(const cv::Mat &image, EnemyColor color);

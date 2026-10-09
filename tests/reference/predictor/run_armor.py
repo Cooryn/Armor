@@ -40,8 +40,6 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
                 raise ValueError('Missing or mixed base origin metadata')
             origin = dict(zip(names, values[0]))
 
-    # CSV has no rows for missed detections. Interpolate only the video clock,
-    # never observations, and expose every internal missing frame as prediction-only.
     if (not np.isfinite(data[['frame_id', 'timestamp']].to_numpy()).all()
             or (data.frame_id < 0).any() or (data.frame_id % 1 != 0).any()
             or (data.frame_id >= float(np.iinfo(np.int64).max)).any() or (data.timestamp < 0).any()):
@@ -68,7 +66,6 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
                    for _, row in group.iterrows()]
         valid = [o for o in all_obs if ekf.valid_observation(o['Z_obs'])]
         if not ekf.is_initialized:
-            # One seed only; do not re-use it in a Kalman update.
             seed = min(valid, key=lambda o: o['Z_obs'][2, 0]) if valid else None
             if seed is not None:
                 ekf.initialize(seed['Z_obs'])

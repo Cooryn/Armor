@@ -79,7 +79,7 @@ def synthetic(kind, noise_factor=1):
                 measured = geometry(state, a) + rng.normal(size=4) * np.array([.003, .0005, .04, .10]) * noise_factor
                 measured[[0, 1, 3]] = wrap(measured[[0, 1, 3]])
                 if frame and frame % 83 == 0:
-                    measured[2] += 1.2  # Gross range outlier, also scored by truth metrics.
+                    measured[2] += 1.2
                 z.append(measured)
         frames.append((t, state, z))
     return f'synthetic_{kind}_{noise_factor}', True, frames
@@ -134,7 +134,6 @@ def main():
             jitter = (data.loc[real, ['center_step_rms', 'w_step_rms']]
                       / base.loc[real, ['center_step_rms', 'w_step_rms']]).to_numpy().mean()
             acceptance = data.loc[real, 'accepted'].sum() / base.loc[real, 'accepted'].sum()
-            # Fixed weights declared before the sweep. Acceptance loss is penalized.
             row[f'{split}_score'] = .45*forecast + .35*truth + .20*jitter + max(0, .98-acceptance)*5
             row[f'{split}_acceptance_ratio'] = acceptance
             row[f'{split}_forecast_ratio'] = forecast
@@ -147,7 +146,6 @@ def main():
         results.append(row)
     ranking = pd.DataFrame(results).sort_values('training_score')
     ranking.to_csv(out/'ranking.csv', index=False)
-    # Reject candidates that improve the first segment at the expense of later motion/stop behavior.
     safe = ranking[(ranking.validation_score <= 1.02) & (ranking.validation_forecast_ratio <= 1.05)
                    & (ranking.validation_worst_forecast_ratio <= 1.20)
                    & (ranking.validation_worst_truth_ratio <= 1.10)

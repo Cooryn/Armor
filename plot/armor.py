@@ -15,7 +15,7 @@ def plot_armor(prediction_csv, raw_csv, output_dir, suffix='1'):
     closest = raw.sort_values('distance').groupby('frame_id', sort=True).head(1).sort_values('frame_id')
     obs_trajectory = list(closest[['x', 'z']].itertuples(index=False, name=None))
     os.makedirs(output_dir, exist_ok=True)
-    obs_traj = np.asarray(obs_trajectory).reshape(-1, 2)  # (N, 2): [x, z]
+    obs_traj = np.asarray(obs_trajectory).reshape(-1, 2)
     fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
     fig.suptitle('Top-down Trajectory (X-Z plane)', fontsize=14, fontweight='bold')
 

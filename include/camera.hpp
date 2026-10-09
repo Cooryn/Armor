@@ -4,13 +4,13 @@
 #include <cstdint>
 #include <string>
 
-enum CameraSource { CAMERA_VIDEO, CAMERA_OPENCV };
+enum CameraSource { VIDEO, CAMERA };
 struct CameraConfig
 {
-    CameraSource source = CAMERA_VIDEO;
+    CameraSource source = VIDEO;
     std::filesystem::path video;
     int device = 0;
-    double recording_fps = 30; // Explicit recording rate for the live camera.
+    double recording_fps = 30;
 };
 class Camera
 {
@@ -25,7 +25,7 @@ public:
     double fps_ = 0, timestamp_ms = 0;
     std::int64_t frame_id_ = -1;
 private:
-    CameraSource source_ = CAMERA_VIDEO;
+    CameraSource source_ = VIDEO;
     cv::VideoCapture stream_;
     double frame_count_ = 0;
 };

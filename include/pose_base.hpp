@@ -5,16 +5,11 @@
 #include "solver.hpp"
 
 
-// Fixed base: origin is the camera optical center at the reference time.
-// Axes remain X right, Y down, Z forward at zero encoder angles.
-// Camera: OpenCV optical axes, X right, Y down, Z forward.
-// T_BC maps camera coordinates into the fixed base frame.
 struct CameraCalibration
 {
     Eigen::Vector3d yaw_to_pitch = Eigen::Vector3d::Zero();
     Eigen::Vector3d camera_in_pitch = Eigen::Vector3d::Zero();
     Eigen::Quaterniond camera_to_pitch = Eigen::Quaterniond::Identity();
-    // Raw serial angles -> calibrated yaw/pitch/roll: direction * (raw - zero).
     Eigen::Vector3d angle_zero_rad = Eigen::Vector3d::Zero();
     Eigen::Vector3d angle_direction = Eigen::Vector3d::Ones();
 };
@@ -25,8 +20,8 @@ struct CameraSample
 struct BaseArmorPose
 {
     Eigen::Vector3d position = Eigen::Vector3d::Zero();
-    Eigen::Vector3d rvec = Eigen::Vector3d::Zero(); // Full armor-to-base rotation vector (rad).
-    Eigen::Vector4d measurement = Eigen::Vector4d::Zero(); // yaw, pitch, distance, armor yaw.
+    Eigen::Vector3d rvec = Eigen::Vector3d::Zero();
+    Eigen::Vector4d measurement = Eigen::Vector4d::Zero();
 };
 class PoseBase
 {
@@ -43,7 +38,7 @@ public:
     bool covered(double timestamp_ms) const;
     SolvedFrame convert(const SolvedFrame &camera_poses, double timestamp_ms) const;
     Eigen::Isometry3d at_angles(const Eigen::Vector3d &raw_angles) const;
-    void push(const GimbalState &state); // Serial rad angles, PC receive time; bounded live cache.
+    void push(const GimbalState &state);
     Eigen::Isometry3d at(double timestamp_ms) const;
     BaseArmorPose to_base(const Eigen::Vector3d &camera_position, const Eigen::Vector3d &camera_rvec,
                           double image_timestamp_ms) const;

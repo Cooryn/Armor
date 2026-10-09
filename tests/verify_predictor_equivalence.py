@@ -81,8 +81,6 @@ for suffix in ('1', '2'):
     for model in ('basic', 'polar', 'armor'):
         compare(f'real_{suffix}_{model}', frames, model)
 
-# Variable source clock, leading/trailing and consecutive missed detections,
-# all four plates, duplicates/outliers, geometric exclusions and angle crossings.
 synthetic = []
 time = 0.
 for i in range(100):
@@ -94,8 +92,6 @@ for i in range(100):
             o = observation(.1 + i * .002 + .26 * np.sin(theta), .2 + .015 * (aid % 2),
                             3 - .26 * np.cos(theta), (theta + np.pi) % (2 * np.pi) - np.pi)
             if i == 12: o[1][2] += 3
-            # A competing duplicate has a distinct range score. Identical scores
-            # can choose different equivalent assignments due to sum roundoff.
             if len(obs) == 4:
                 o[0][:] *= 1.04
                 o[1][2] *= 1.04
@@ -125,7 +121,6 @@ for model in ('basic', 'polar', 'armor'):
     for name, frames in [('empty', []), ('no_observations', [(i, i * 40., []) for i in range(6)]),
                          ('single_frame', [(0, 0., [observation(0, .2, 3)])])]:
         compare(f'{name}_{model}', frames, model)
-# Target yaw crosses -pi/pi; Armor retains its camera-forward validity rule.
 wrap = [(i, i * 30., [observation(.01 - .002 * i, .2, -3)]) for i in range(20)]
 for model in ('basic', 'polar', 'armor'):
     compare(f'target_wrap_{model}', wrap, model)

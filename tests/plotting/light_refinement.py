@@ -65,7 +65,6 @@ def main():
     fig.savefig(OUTPUT/'comparison.png', dpi=150)
     plt.close(fig)
 
-    # Matched-frame inspection of actual detector outputs; no synthetic boxes.
     for suffix, frame_id, crop in [(1, 753, (430, 570, 850, 840)),
                                     (2, 41, (300, 500, 1000, 950))]:
         images = []

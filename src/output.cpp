@@ -84,7 +84,6 @@ static void draw_prediction(cv::Mat &image, const PredictionGeometry &geometry, 
         const std::array<Eigen::Vector3d, 4> corners = {center - half_width - half_height, center + half_width - half_height,
                                                       center + half_width + half_height, center - half_width + half_height};
         std::array<std::optional<cv::Point>, 4> pixels;
-        // Transform every corner: yaw-only conversion would lose the camera's pitch/roll.
         for (int j = 0; j < 4; ++j)
             pixels[j] = project(corners[j]);
         for (int j = 0; j < 4; ++j)
@@ -185,7 +184,6 @@ bool Output::write(const Camera &input, const Solver &solver, const SolvedFrame 
         }
         catch (const cv::Exception &error)
         {
-            // OpenCV reports a normally closed Win32 window as StsNullPtr.
             if (error.code == cv::Error::StsNullPtr)
                 return false;
             throw;
@@ -213,7 +211,6 @@ void Output::finish()
 
 constexpr double missing = std::numeric_limits<double>::quiet_NaN();
 
-// Prediction CSV and RMSE output.
 
 void PredictionOutput::write(std::int64_t frame, double timestamp, const std::vector<VideoObservation> &obs,
                              const VideoPrediction &prediction)

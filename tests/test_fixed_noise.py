@@ -44,7 +44,7 @@ class FixedNoiseTests(unittest.TestCase):
 
     def test_stacked_update_matches_independent_equations(self):
         a, b = self.tracker(), self.tracker()
-        a.R[0, 3] = a.R[3, 0] = .0002  # Correlated fixed covariance, shared by both plates.
+        a.R[0, 3] = a.R[3, 0] = .0002
         b.R = a.R.copy()
         obs = [dict(Z_obs=measurement(.02), armor_id=0), dict(Z_obs=measurement(.02, 1), armor_id=1)]
         matches, _ = a.associate(obs)

@@ -16,7 +16,6 @@ static void check(bool ok, const char *message)
 #define NOMINMAX
 #include <windows.h>
 
-// Replace only OS I/O: exercise the actual worker, encoder, parser and shutdown.
 static std::mutex transport_mutex;
 static std::deque<std::vector<std::uint8_t>> incoming;
 static std::vector<std::vector<std::uint8_t>> outgoing;
@@ -168,7 +167,7 @@ int main()
                   "latest coalesced STATE and embedded A5");
             link.send_target(1, -.5f, true);
             link.send_mode(HOST_AUTO_AIM);
-            link.close(); // Must send both queued packets before closing the handle.
+            link.close();
         }
         check(closed == 1, "port closed once");
         check(std::find(outgoing.begin(), outgoing.end(), std::vector<std::uint8_t>{
@@ -202,7 +201,7 @@ int main()
             try { link.close(); } catch (const std::runtime_error &) { failed = true; }
             check(failed && closed == 1, "close reports failure after releasing resources");
             link.close();
-            link.open("TEST"); // Explicit reopen after cleanup works.
+            link.open("TEST");
             link.close();
         }
         reset_transport();
@@ -210,7 +209,6 @@ int main()
             Serial link;
             link.open("TEST");
             link.send_target(1, -.5f, true);
-            // Destructor drains and joins, without requiring explicit close.
         }
         check(closed == 1 && std::any_of(outgoing.begin(), outgoing.end(), [](const auto &p) { return p[1] == HOST_TARGET; }),
               "destructor drains queued target");

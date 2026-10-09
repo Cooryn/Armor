@@ -7,7 +7,6 @@ def wrap_to_pi(angle):
 
 class PolarEKF:
     def __init__(self):
-        # [xc, vxc, yc, vyc, zc, vzc, body_yaw, w, r]^T
         self.X = np.zeros((9, 1))
         
         self.F = np.eye(9)
@@ -16,22 +15,21 @@ class PolarEKF:
         
         # 过程噪声 Q
         self.Q = np.eye(9) * 0.01
-        self.Q[1, 1] = 0.1  # vxc
-        self.Q[3, 3] = 0.1  # vyc
-        self.Q[5, 5] = 0.1  # vzc
-        self.Q[7, 7] = 0.5  # w
-        self.Q[8, 8] = 0.0001 # r
+        self.Q[1, 1] = 0.1
+        self.Q[3, 3] = 0.1
+        self.Q[5, 5] = 0.1
+        self.Q[7, 7] = 0.5
+        self.Q[8, 8] = 0.0001
         
-        # [target_yaw, target_pitch, distance, armor_orientation_yaw]
         self.R = np.diag([0.005, 0.005, 0.05, 0.05])
         
         self.is_initialized = False
 
     def predict(self, dt):
-        self.F[0, 1] = dt  # xc += vxc * dt
-        self.F[2, 3] = dt  # yc += vyc * dt
-        self.F[4, 5] = dt  # zc += vzc * dt
-        self.F[6, 7] = dt  # body_yaw += w * dt
+        self.F[0, 1] = dt
+        self.F[2, 3] = dt
+        self.F[4, 5] = dt
+        self.F[6, 7] = dt
         
         self.X = np.dot(self.F, self.X)
         self.X[6, 0] = wrap_to_pi(self.X[6, 0])
@@ -162,7 +160,6 @@ def run_predict_polar(csv_input_path, output_dir, suffix="1"):
         ekf.predict(dt)
         
         # 3. 更新步骤 (不需要再在外面写判断跳变的逻辑了)
-        # Evaluate the prior before incorporating this observation.
         
         # 4. 记录误差用于绘图
         # 为了计算残差，我们需要再次推断当前的 plate_idx

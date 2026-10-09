@@ -12,8 +12,6 @@ void require(bool condition, const char *message) {
 
 int main(int argc, char **argv) {
     try {
-        // Frame 753 geometry: the true digit-6 pair has 15 degrees of axis skew;
-        // the nearly parallel cross-plate pair is much too wide for this model.
         std::vector<cv::RotatedRect> bars{
             {{513.8f,725.8f},{37.1f,6.3f},104.f},
             {{637.f,716.f},{32.f,10.f},90.f},
@@ -30,7 +28,6 @@ int main(int argc, char **argv) {
         selected = matchArmors(bars, std::vector<float>(bars.size(), 1.f), 20, 2, .8f, .8f);
         require(cv::norm(selected[0].center - expected) < 1e-5, "Input-order dependence");
 
-        // Four lights: select two valid plates without sharing any light.
         bars.clear();
         for (float x : {0.f, 72.f, 150.f, 222.f})
             bars.emplace_back(cv::Point2f(x,100), cv::Size2f(30,4), 90.f);
@@ -38,7 +35,6 @@ int main(int argc, char **argv) {
         require(selected.size() == 2, "Expected two non-conflicting plates");
         require(selected[0].right_light.center.x == 72.f &&
                 selected[1].left_light.center.x == 150.f, "Incorrect global assignment");
-        // A greedy highest-score pair consumes both middle lights and loses a plate.
         std::vector<cv::RotatedRect> competing;
         for (float x : {0.f, 60.f, 120.f, 180.f})
             competing.emplace_back(cv::Point2f(x,100), cv::Size2f(30,4), 90.f);
@@ -51,14 +47,11 @@ int main(int argc, char **argv) {
                 reversed[0].right_light.center.x == 120.f, "Greedy input-order dependence");
         require(matchArmors({}, {}).empty(), "Empty input");
 
-        // First-fit would consume lights 0/1; quality matching must prefer 1/2.
         bars = {{{0,120},{30,4},90}, {{72,100},{30,4},90}, {{144,100},{30,4},90}};
         selected = matchArmors(bars, std::vector<float>(bars.size(), 1.f));
         require(selected.size() == 1 && selected[0].left_light.center.x == 72,
                 "First-fit won over the higher quality pair");
 
-        // A short reflection spur must preserve measured length and reduce quality.
-        // Transverse center correction is disabled, so lateral bias is not bounded here.
         std::vector<std::vector<cv::Point>> outlines{{{97,80},{103,80},
             {103,98},{108,100},{103,102},{103,120},{97,120}}};
         cv::Mat spur_mask = cv::Mat::zeros(200, 200, CV_8UC1);
@@ -73,7 +66,6 @@ int main(int argc, char **argv) {
         fitted = getValidLightRects({{}, {{1,1}}}, quality, 55);
         require(fitted.empty() && quality.empty(), "Degenerate contours not skipped");
 
-        // Measured quality must follow each light even if input order changes.
         bars = {{{0,100},{30,4},90}, {{72,100},{30,4},90}, {{144,100},{30,4},90}};
         selected = matchArmors(bars,{.3f,1.f,1.f},20,1.5f,1.2f,.8f,3.1f,.35f);
         require(selected.size() == 1 && selected[0].left_light.center.x == 72,
@@ -83,7 +75,6 @@ int main(int argc, char **argv) {
         require(selected.size() == 1 && selected[0].left_light.center.x == 72,
                 "Light quality detached from sorted geometry");
 
-        // A physically exact projected rectangle must survive the PnP gate.
         cv::Mat K = (cv::Mat_<double>(3,3) << 1000,0,640,0,1000,480,0,0,1);
         cv::Mat distortion = cv::Mat::zeros(1,5,CV_64F);
         std::vector<cv::Point3f> object{{-.0675f,-.028f,0}, {-.0675f,.028f,0},
@@ -97,7 +88,6 @@ int main(int argc, char **argv) {
         require(armor.reprojection_error < .01, "Unexpected reprojection error");
         require(std::abs(armor.yaw+ .4*180/CV_PI) < .01, "PnP yaw sign changed");
         require(armor.pnp_candidate_count >= 1, "No validated PnP candidates recorded");
-        // Distorted, tilted plates on both sides of zero must keep their pose.
         cv::Mat lens = (cv::Mat_<double>(1,5) << -.15,.03,.001,-.002,0);
         Solver distorted_solver{K, lens};
         for (double yaw : {-.9, -.3, .001, .3, .9}) {
@@ -114,7 +104,6 @@ int main(int argc, char **argv) {
             require(cv::norm(sample.tvec-cv::Mat(position)) < .001, "PnP translation changed");
         }
 
-        // Temporal hints use nearest geometric matches, not per-frame x ordering.
         Armor first = armor, second = armor;
         first.center = {100,100}; second.center = {300,100};
         first.yaw = -20; second.yaw = 30;
@@ -165,7 +154,6 @@ int main(int argc, char **argv) {
             selected = matchArmors(fitted, quality, 20, 2, .8f, .8f);
             require(selected.size() == 2, "Thin side plate lost by shape filtering");
 
-            // The refined endpoints must retain the known frame-220 detection.
             cap.set(cv::CAP_PROP_POS_FRAMES, 220);
             require(cap.read(frame), "Cannot read refinement regression frame");
             mask = extractColor(frame, ENEMY_RED, 70, 170);

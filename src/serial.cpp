@@ -32,7 +32,6 @@ static std::uint8_t serial_crc8(const std::uint8_t *bytes, std::size_t size)
 
 Serial::~Serial()
 {
-    // Explicit close() reports errors; destruction must still release the port.
     try { close(); } catch (...) {}
 }
 
@@ -50,7 +49,7 @@ void Serial::open(const std::string &device)
     settings.ByteSize = 8;
     settings.StopBits = ONESTOPBIT;
     settings.Parity = NOPARITY;
-    settings.fBinary = TRUE; // Flow control/DTR/RTS disabled.
+    settings.fBinary = TRUE;
     settings.XonChar = 0x11;
     settings.XoffChar = 0x13;
     COMMTIMEOUTS timeouts{};
@@ -78,7 +77,7 @@ void Serial::close()
 {
     running = false;
     if (worker.joinable())
-        worker.join(); // run() sends the remaining MODE/TARGET before returning.
+        worker.join();
 #ifdef _WIN32
     if (handle)
         CloseHandle(handle);
@@ -192,7 +191,6 @@ void Serial::run()
                     has_state = true;
                 }
             }
-            // One writer; take the newest target after writing any pending MODE.
             for (bool target : {false, true})
             {
                 std::vector<std::uint8_t> packet;

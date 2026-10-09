@@ -1,4 +1,3 @@
-// Replay prepared sequences across fixed covariance candidates. Used by tune_fixed_noise.py.
 #include "predictor_armor.hpp"
 #include <array>
 #include <cmath>
@@ -90,14 +89,12 @@ int main(int argc, char **argv) {
                                     auto r = armor_angular_residual(o.Z_obs, armor_h(forecast.state, id));
                                     if (std::abs(r(3)) < smallest) { smallest = std::abs(r(3)); residual = r; }
                                 }
-                                // Every valid future observation is scored, including rejected detections.
                                 for (int k = 0; k < 4; ++k) m.error[k] += residual(k) * residual(k);
                                 m.horizon += (target.time - f.time) * 1000;
                                 ++m.forecasts;
                             }
                             if (s.synthetic) {
                                 ++m.truth_frames;
-                                // Ground truth is scored at exactly 50 ms; recordings use the next available image.
                                 const auto &left = s.frames[future - 1];
                                 double fraction = (f.time + .05 - left.time) / (target.time - left.time);
                                 const Eigen::Matrix<double, 11, 1> truth = left.truth + fraction * (target.truth - left.truth);
@@ -113,7 +110,6 @@ int main(int argc, char **argv) {
                                         auto r = armor_angular_residual(z, predicted);
                                         if (std::abs(r(3)) < smallest) {
                                             smallest = std::abs(r(3));
-                                            // Compare actual Cartesian plate positions, not spherical measurements.
                                             const double r_true = truth(8) + (id % 2 ? truth(9) : 0);
                                             const double yaw = truth(6) + id * armor_pi / 2;
                                             Eigen::Vector3d p(truth(0) + r_true * std::sin(yaw),

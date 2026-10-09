@@ -65,7 +65,6 @@ static void single_plate_regressions() {
         near(filter.state_, state, 1e-12);
     }
 
-    // On the optical axis the range update reduces to a scalar Kalman result.
     filter.initialize({0, 0, 3});
     check(filter.update({0, 0, 3.1}), "single-plate range update");
     check(std::abs(filter.state_(4) - (3 + .1 * 10 / 10.16)) < 1e-12, "single-plate range gain");
@@ -97,7 +96,6 @@ static void single_plate_regressions() {
     check(filter.update({-single_plate_pi + .001, .01, 3}), "single-plate yaw wrap update");
     check(std::abs(filter.state_(0)) < .01, "single-plate yaw wrap uses short residual");
 
-    // Predict a target onto the vertical axis: the undefined yaw must not corrupt state.
     filter.initialize({single_plate_pi / 2, 0, 1});
     filter.predict(.1);
     check(filter.update({single_plate_pi / 2, 0, .9}), "single-plate approach to origin");
@@ -109,7 +107,6 @@ static void single_plate_regressions() {
     near(filter.covariance_, singular_covariance, 0);
 }
 static void eigen_filter_regressions() {
-    // Compare the bounded Eigen joint matrices with an independent dynamic LU solve.
     for (int count = 1; count <= 4; ++count) {
         auto filter = tracker();
         filter.predict(.037);
@@ -286,7 +283,7 @@ int main() {
                 check(associated.size() == 1 && associated[0].armor_id == aid, "rotation id");
             } else
                 b.update_multi({});
-            near(b.P, b.P.transpose(), 1e-12); // Cholesky verifies positive definite covariance.
+            near(b.P, b.P.transpose(), 1e-12);
             Eigen::LLT<Eigen::Matrix<double, 11, 11>> cholesky(b.P);
             check(cholesky.info() == Eigen::Success, "covariance positive definite");
         }
@@ -303,7 +300,7 @@ int main() {
               "polar constant velocity and yaw wrap");
         const Eigen::Matrix<double, 9, 1> polar_state = polar.X;
         polar.update(polar_h(polar.X, 1));
-        near(polar.X, polar_state); // Exact predicted observation has zero innovation.
+        near(polar.X, polar_state);
         std::cout << "All C++ API regression checks passed\n";
         return 0;
     } catch (const std::exception &e) {

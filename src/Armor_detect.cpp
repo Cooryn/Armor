@@ -8,16 +8,14 @@
 #include <iostream>
 #include <utility>
 
-// Edit this configuration and rebuild. Video paths are relative to the project root.
-constexpr CameraSource camera_source = CAMERA_VIDEO;
-constexpr int camera_device = 0;
-constexpr double camera_recording_fps = 30;
-constexpr int video_camera_profile = 2;
-constexpr const char *video_file = "assets/video/video_2.avi";
-constexpr EnemyColor target_color = ENEMY_RED;
-constexpr bool preview = true;
+CameraSource camera_source = VIDEO;
+const int camera_device = 0;
+const double camera_recording_fps = 30;
+const int video_camera_profile = 2;
+const char *const video_file = "assets/video/video_2.avi";
+const EnemyColor target_color = ENEMY_RED;
+bool preview = true;
 
-// Fill the actual intrinsics before selecting CAMERA_OPENCV.
 const cv::Mat live_camera_matrix;
 const cv::Mat live_distortion;
 
@@ -26,14 +24,13 @@ int main()
     try
     {
         const std::filesystem::path root = ARMOR_PROJECT_ROOT;
-        constexpr bool live = camera_source == CAMERA_OPENCV;
-        constexpr const char *window = "Armor detection - Esc to stop";
+        const char *const window = "Armor detection - Esc to stop";
         Camera camera;
         camera.open({camera_source, root / std::filesystem::u8path(video_file), camera_device, camera_recording_fps});
-        Solver pnp(live ? live_camera_matrix : cv::Mat(), live ? live_distortion : cv::Mat());
-        if constexpr (!live)
+        Solver pnp(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
+        if (camera_source == VIDEO)
             pnp.use_video_profile(video_camera_profile);
-        if constexpr (preview)
+        if (preview)
         {
             cv::namedWindow(window, cv::WINDOW_NORMAL);
             cv::resizeWindow(window, 960, 720);
@@ -48,12 +45,12 @@ int main()
             cv::Mat canvas = camera.image_.clone();
             drawArmors(canvas, poses.armors);
             drawVideoInfo(canvas, poses.armors, cv::format("%s Detect frame %lld",
-                live ? "LIVE" : "REPLAY", static_cast<long long>(camera.frame_id_)));
+                camera_source == CAMERA ? "LIVE" : "REPLAY", static_cast<long long>(camera.frame_id_)));
             ++processed;
-            if constexpr (preview)
+            if (preview)
             {
                 cv::imshow(window, canvas);
-                const auto deadline = frame_start + std::chrono::duration<double>(live ? 0 : 1 / camera.fps_);
+                const auto deadline = frame_start + std::chrono::duration<double>(camera_source == CAMERA ? 0 : 1 / camera.fps_);
                 do
                 {
                     const double remaining = std::chrono::duration<double, std::milli>(deadline - std::chrono::steady_clock::now()).count();
@@ -68,7 +65,6 @@ int main()
                     }
                     catch (const cv::Exception &error)
                     {
-                        // A normally closed Win32 window is reported as StsNullPtr.
                         if (error.code != cv::Error::StsNullPtr)
                             throw;
                         running = false;
@@ -76,7 +72,7 @@ int main()
                 } while (running && std::chrono::steady_clock::now() < deadline);
             }
         } while (running && camera.next());
-        if constexpr (preview)
+        if (preview)
             cv::destroyAllWindows();
         std::cout << "Processed " << processed << " frames.\n";
         return 0;

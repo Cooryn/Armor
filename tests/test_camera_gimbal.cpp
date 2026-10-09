@@ -72,7 +72,6 @@ int main() {
               (live.origin_in_mechanical_ - Eigen::Vector3d(.1, 0, .2)).norm() < 1e-12,
               "bounded live cache preserves the fixed origin when old samples are removed");
 
-        // The serial regression verifies decoding; PoseBase consumes this typed STATE.
         const GimbalState received{monotonic_time_ms(), 1, -.5f, 0, HOST_AUTO_AIM, 0};
         PoseBase received_frames{};
         received_frames.push(received);

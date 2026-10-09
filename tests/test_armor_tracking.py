@@ -27,7 +27,6 @@ class ArmorTrackingTests(unittest.TestCase):
         return ekf
 
     def test_pnp_yaw_sign_and_initialization(self):
-        # Solver yaw for a pure camera-Y rotation is the negative rotation angle.
         rotation, _ = cv2.Rodrigues(np.array([0., -.4, 0.]))
         yaw = np.arctan2(rotation[2, 0], rotation[2, 2])
         position = np.array([.1, .2, 3.]) - .26 * rotation[:, 2]
@@ -66,7 +65,7 @@ class ArmorTrackingTests(unittest.TestCase):
         self.assertEqual({m['armor_id'] for m in matches}, {0, 1})
         self.assertEqual(sum(d['accepted'] for d in diagnostics), 2)
         ekf = self.tracker()
-        ekf.P *= 100  # Individually permissive gates must not bypass pair geometry.
+        ekf.P *= 100
         bad = measurement(0, 1)
         bad[3, 0] = 0
         matches, _ = ekf.associate([{'Z_obs': measurement(0), 'armor_id': 0},
@@ -88,7 +87,6 @@ class ArmorTrackingTests(unittest.TestCase):
             ekf.predict(.02)
             theta = 2 * frame * .02
             if not 60 <= frame < 80:
-                # Select a physically front-facing plate; this naturally switches IDs.
                 aid = min(range(4), key=lambda i: abs(wrap_to_pi(theta + i*np.pi/2)))
                 self.assertEqual(ekf.update(measurement(theta, aid)), aid)
             else:

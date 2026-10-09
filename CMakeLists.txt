@@ -57,7 +57,6 @@ if(BUILD_TESTING)
     enable_testing()
     add_executable(serial_tests tests/test_serial.cpp)
     configure_target(serial_tests)
-    # test_serial includes the production implementation with OS I/O replaced.
     target_link_libraries(serial_tests PRIVATE Threads::Threads)
     add_test(NAME serial_regressions COMMAND serial_tests)
     set_tests_properties(serial_regressions PROPERTIES TIMEOUT 15)

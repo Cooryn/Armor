@@ -1,4 +1,3 @@
-// Test-only bridge from typed base-frame observations to the production EKF API.
 #include "predictor_armor.hpp"
 #include <filesystem>
 #include <fstream>

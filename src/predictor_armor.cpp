@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 
-// Fixed observation standard deviations: [0.04 rad, 0.04 rad, 0.40 m, 0.24 rad].
 
 double armor_wrap_to_pi(double a)
 {

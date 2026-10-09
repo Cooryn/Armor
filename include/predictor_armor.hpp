@@ -8,7 +8,7 @@
 struct Observation
 {
     Eigen::Vector4d Z_obs = Eigen::Vector4d::Zero();
-    int armor_id = -1; // -1: automatic association; 0..3: specified plate.
+    int armor_id = -1;
 };
 struct Match
 {
@@ -39,7 +39,6 @@ public:
     std::pair<std::vector<Match>, std::vector<Diagnostic>> associate(const std::vector<Observation> &observations) const;
     std::pair<std::vector<Match>, std::vector<Diagnostic>> update_multi(const std::vector<Observation> &observations);
 
-    // Public matrices and parameters support calibration and offline evaluation.
     Eigen::Matrix<double, 11, 1> X = Eigen::Matrix<double, 11, 1>::Zero();
     Eigen::Matrix<double, 11, 11> F = Eigen::Matrix<double, 11, 11>::Identity();
     Eigen::Matrix<double, 11, 11> P = (Eigen::Matrix<double, 11, 1>() << 10, 10, 10, 10, 10, 10, 10, 10, .01, .05, .05).finished().asDiagonal();

@@ -18,7 +18,6 @@ enum PredictorType
     PREDICTOR_ARMOR
 };
 
-// XYZ in the selected reference frame, then yaw/pitch/distance/plate yaw (rad/rad/m/rad).
 struct VideoObservation
 {
     Eigen::Vector3d position;
@@ -27,7 +26,7 @@ struct VideoObservation
 struct PredictionGeometry
 {
     std::optional<Eigen::Vector3d> center;
-    std::vector<Eigen::Vector4d> plates; // x, y, z, plate yaw
+    std::vector<Eigen::Vector4d> plates;
 };
 struct Diagnostic
 {
@@ -46,8 +45,6 @@ struct VideoPrediction
     std::string status = "waiting";
     double horizon_ms = 50;
     double position_variance = std::numeric_limits<double>::quiet_NaN();
-    // Fixed numeric columns: SinglePlate=13, Polar=15, Armor=31 + status.
-    // Initialization has no state row. Diagnostics may still be present.
     std::array<double, 31> values{};
     std::size_t value_count = 0;
     Eigen::Vector4d errors = Eigen::Vector4d::Constant(std::numeric_limits<double>::quiet_NaN());
@@ -57,7 +54,6 @@ struct VideoPrediction
 class SinglePlateEKF
 {
 public:
-    // Observation: [yaw rad, pitch rad, distance m].
     void initialize(const Eigen::Vector3d &z);
     void predict(double dt);
     bool update(const Eigen::Vector3d &z);
@@ -65,7 +61,6 @@ public:
     VideoPrediction update_frame(std::int64_t frame, double timestamp_ms,
                                  const std::vector<VideoObservation> &observations, double horizon_ms = 50);
 
-    // State: [x, vx, y, vy, z, vz].
     Eigen::Matrix<double, 6, 1> state_ = Eigen::Matrix<double, 6, 1>::Zero();
     Eigen::Matrix<double, 6, 6> covariance_ = Eigen::Matrix<double, 6, 6>::Identity() * 10;
     bool initialized_ = false;

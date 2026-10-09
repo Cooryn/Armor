@@ -66,7 +66,7 @@ int main(int argc, char **argv)
         for (auto type : {PREDICTOR_SINGLE_PLATE, PREDICTOR_POLAR, PREDICTOR_ARMOR})
         {
             Camera camera;
-            camera.open({CAMERA_VIDEO, fixture});
+            camera.open({VIDEO, fixture});
             check(camera.frame_id_ == 0 && camera.timestamp_ms == 0, "first frame clock");
             PoseBase poses;
             Solver solver(intrinsics, distortion);

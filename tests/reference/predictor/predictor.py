@@ -46,7 +46,6 @@ class SinglePlateEKF:
         x, y, z = state[::2]
         horizontal = np.hypot(x, z)
         distance = np.hypot(horizontal, y)
-        # First differentiate in xyz, then place the columns into the six-state Jacobian.
         position_jacobian = np.array([
             [z / horizontal**2, 0.0, -x / horizontal**2],
             [-x * y / (horizontal * distance**2), horizontal / distance**2,

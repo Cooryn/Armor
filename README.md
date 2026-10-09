@@ -47,16 +47,16 @@ cmake --build build --config Release --target Armor --parallel
 程序不接受命令行参数，修改 `src/Armor.cpp` 顶部配置并重新编译：
 
 ```cpp
-constexpr CameraSource camera_source = CAMERA_VIDEO; // 或 CAMERA_OPENCV
-constexpr int camera_device = 0;
-constexpr double camera_recording_fps = 30;
-constexpr int video_camera_profile = 2; // 显式选择视频 1 或视频 2 的标定
-constexpr const char *video_file = "assets/video/video_2.avi";
-constexpr EnemyColor target_color = ENEMY_RED; // 或 ENEMY_BLUE
-constexpr PredictorType predictor_type = PREDICTOR_ARMOR;
-constexpr bool preview = true;
-constexpr double prediction_horizon_ms = 50;
-constexpr const char *serial_port = "COM3";
+CameraSource camera_source = VIDEO; // 或 CAMERA
+const int camera_device = 0;
+const double camera_recording_fps = 30;
+const int video_camera_profile = 2; // 显式选择视频 1 或视频 2 的标定
+const char *const video_file = "assets/video/video_2.avi";
+const EnemyColor target_color = ENEMY_RED; // 或 ENEMY_BLUE
+PredictorType predictor_type = PREDICTOR_ARMOR;
+bool preview = true;
+const double prediction_horizon_ms = 50;
+const char *const serial_port = "COM3";
 ```
 
 视频路径相对编译时的项目根目录解析。预览模式按源 FPS 播放视频；关闭预览时不限速。摄像头按实际取帧时刻处理，录制帧率显式使用 `camera_recording_fps`，不参与实时滤波时钟。
@@ -171,7 +171,7 @@ PnP 与绘制板尺寸为 135×56 mm。尺寸在 `solver.cpp` 顶部配置，绘
 
 观测的 `armor_id` 使用普通整数：`-1` 表示自动关联，`0～3` 表示指定板号。时间戳使用普通 `double`，调用方提供同一时钟上的递增时间。PoseBase 只接收类型化反馈，不再解析离线标定/遥测 CSV；安装参数由构造函数传入。投影和预测中心通过 `optional` 表达不可见目标与未初始化状态。
 
-滤波参数保存在各 EKF 类中。Armor.cpp 使用顶部的 `predictor_type`，通过 `if constexpr` 直接调用 `SinglePlateEKF::update_frame`、`PolarEKF::update_frame` 或 `ArmorEKF::update_frame`。每个逐帧接口实现在对应 cpp 中，不经过通用模型选择器。`predictor.cpp` 只实现基础单板 EKF；固定列导出与 RMSE 位于 `output.cpp` 的 `PredictionOutput`。PnP 标定在进入循环前显式设置。
+滤波参数保存在各 EKF 类中。Armor.cpp 使用顶部的 `predictor_type`，通过 `if` 直接调用 `SinglePlateEKF::update_frame`、`PolarEKF::update_frame` 或 `ArmorEKF::update_frame`。每个逐帧接口实现在对应 cpp 中，不经过通用模型选择器。`predictor.cpp` 只实现基础单板 EKF；固定列导出与 RMSE 位于 `output.cpp` 的 `PredictionOutput`。PnP 标定在进入循环前显式设置。
 
 三个预测器保持声明与实现分离，算法和各自的逐帧接口放在对应 `.cpp`。所有模块均无自定义 namespace 和 using 类型别名。`predictor.hpp` 保留基础单板声明和公共观测/结果数据结构，不持有其他滤波器或选择模型。固定系 Armor 调用需设置 `armor.base_frame = true`。
 

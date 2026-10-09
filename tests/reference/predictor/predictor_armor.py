@@ -13,9 +13,9 @@ class ArmorEKF:
         self.F = np.eye(11)
         self.P = np.eye(11) * 10.0
         # 物理结构参数初始协方差
-        self.P[8, 8] = 0.01   # r
-        self.P[9, 9] = 0.05   # dl
-        self.P[10, 10] = 0.05 # dh
+        self.P[8, 8] = 0.01
+        self.P[9, 9] = 0.05
+        self.P[10, 10] = 0.05
 
         # 过程噪声谱密度（单位：方差/秒），按 dt 动态构建 Q
         self.q_pos = 3.0     # 位置-速度对 (xc/vxc, yc/vyc, zc/vzc)
@@ -161,7 +161,6 @@ class ArmorEKF:
         self.X[:, 0] = [x - radius * np.sin(plate_yaw), 0, y, 0,
                         zc + radius * np.cos(plate_yaw), 0,
                         plate_yaw, 0, radius, 0, 0]
-        # Do not estimate angular speed from two potentially different plates.
         self.P = np.diag([.1, 1., .1, 1., .1, 1., .05, 100., .01, .01, .01])
         self.is_initialized = True
 
@@ -240,8 +239,7 @@ class ArmorEKF:
     def update_multi(self, observations):
         matches, diagnostics = self.associate(observations)
         if not matches:
-            return matches, diagnostics  # Keep the predicted state AND covariance.
-        # One stacked update: all associations, Jacobians and gates use the same prior.
+            return matches, diagnostics
         H = np.vstack([m['H'] for m in matches])
         residual = np.vstack([m['residual'] for m in matches])
         R = np.zeros((4*len(matches), 4*len(matches)))
@@ -252,7 +250,6 @@ class ArmorEKF:
         self.X += K @ residual
         self.X[6, 0] = wrap_to_pi(self.X[6, 0])
         self.X[8, 0] = np.clip(self.X[8, 0], .20, .30)
-        # Both alternating radii must remain physically positive.
         side_radius = np.clip(self.X[8, 0] + self.X[9, 0], .20, .30)
         self.X[9, 0] = side_radius - self.X[8, 0]
         I_KH = np.eye(11) - K @ H

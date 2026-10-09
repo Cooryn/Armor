@@ -52,7 +52,7 @@ def main():
                   'video_camera_profile': '2' if 'video_2' in video.stem else '1',
                   'predictor_type': models[model], 'preview': 'true' if preview else 'false'}
         for key, value in values.items():
-            text, count = re.subn(rf'(?m)^(constexpr [^\n]*\b{key}\s*=\s*)[^;]+;', lambda m: m[1] + value + ';', text)
+            text, count = re.subn(rf'(?m)^((?:const |CameraSource |PredictorType |bool )[^\n]*\b{key}\s*=\s*)[^;]+;', lambda m: m[1] + value + ';', text)
             assert count == 1, key
         source.write_bytes(text.encode('utf-8'))
 
@@ -60,8 +60,6 @@ def main():
         tag = model.lower() + color + suffix + ('preview' if preview else '') + ('fixture' if blue_fixture else '')
         case = work / tag
         case.mkdir(parents=True, exist_ok=True)
-        # Select the explicit profile from the fixture name; the final token
-        # is a unique output suffix to avoid overwriting formal results.
         input_video = case / f'video_{suffix}_{tag}.avi'
         if preview or blue_fixture or args.max_source_frames:
             cap = cv2.VideoCapture(str(video))
@@ -71,8 +69,6 @@ def main():
             for _ in range(6 if preview else args.max_source_frames or 120):
                 ok, frame = cap.read()
                 assert ok
-                # Both supplied videos contain red plates. Swap B/R channels
-                # to exercise blue tracking on a known moving target as well.
                 writer.write(frame[:, :, ::-1] if blue_fixture else frame)
             writer.release()
             cap.release()
@@ -153,16 +149,13 @@ def main():
             run_case('Armor', 'red', '2', ROOT / 'assets/video/video_2.avi')
         if args.preview:
             run_case('Armor', 'red', '1', ROOT / 'assets/video/video_1.avi', True)
-        # Build the live branch without opening hardware or sending commands.
         configure('red', work / 'unused.avi', 'Armor')
-        source.write_text(source.read_text(encoding='utf-8').replace('camera_source = CAMERA_VIDEO;', 'camera_source = CAMERA_OPENCV;'), encoding='utf-8')
+        source.write_text(source.read_text(encoding='utf-8').replace('camera_source = VIDEO;', 'camera_source = CAMERA;'), encoding='utf-8')
         build('live-compile-only')
         configure('red', work / 'missing.avi', 'Armor')
         build('missing')
         rejection = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
         assert rejection.returncode != 0 and 'Cannot open image source' in rejection.stderr
-        # A valid video located in results would otherwise be overwritten by its
-        # own output. Use a newly allocated file and verify it stays byte-identical.
         with tempfile.NamedTemporaryFile(dir=ROOT / 'results', prefix='armor_guard_', suffix='.avi', delete=False) as file:
             collision = Path(file.name)
         try:
