@@ -95,10 +95,12 @@ class ArmorTrackingTests(unittest.TestCase):
         np.testing.assert_allclose(ekf.X[[0, 2, 4], 0], [.1, .2, 3.], atol=1e-5)
         self.assertAlmostEqual(ekf.X[7, 0], 2., places=5)
 
-    def test_invalid_observations(self):
+    def test_rear_observation(self):
         ekf = self.tracker()
-        for z in (np.full((4, 1), np.nan), np.zeros((4, 1)), np.zeros((3, 1))):
-            self.assertIsNone(ekf.update(z))
+        z = np.array([[2.2], [.1], [3.], [.3]])
+        ekf.initialize(z)
+        np.testing.assert_allclose(ekf.h(ekf.X, 0), z, atol=1e-12)
+        self.assertEqual(ekf.update(z), 0)
 
     def test_csv_gap_and_rejection_export(self):
         rows = []

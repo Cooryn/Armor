@@ -5,17 +5,10 @@
 #include <string>
 
 enum CameraSource { VIDEO, CAMERA };
-struct CameraConfig
-{
-    CameraSource source = VIDEO;
-    std::filesystem::path video;
-    int device = 0;
-    double recording_fps = 30;
-};
 class Camera
 {
 public:
-    void open(const CameraConfig &config);
+    void open(CameraSource source, const std::filesystem::path &video, int device = 0, double recording_fps = 30);
     bool next();
     bool live() const;
 

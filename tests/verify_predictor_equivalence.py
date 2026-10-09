@@ -101,7 +101,8 @@ for i in range(100):
 
 for model in ('basic', 'polar', 'armor'):
     for horizon in (0, 50, 200):
-        output = compare(f'synthetic_{model}_{horizon}', synthetic, model, horizon)
+        frames = [(i, t, [] if i == 0 else obs) for i, t, obs in synthetic] if model == 'armor' else synthetic
+        output = compare(f'synthetic_{model}_{horizon}', frames, model, horizon)
         prefix = {'basic': '', 'polar': 'polar_', 'armor': 'armor_'}[model]
         state = pd.read_csv(output / f'{prefix}prediction_result_1.csv')
         assert state.frame_id.tolist() == list(range(3, 100))
@@ -117,7 +118,8 @@ selection = [(0, 0., [observation(0, 0, 4), observation(1, 0, 3), observation(-1
              (1, 40., [observation(1, 0, 3), observation(-1, 0, 3)]), (2, 80., []),
              (3, 120., [observation(0, 0, 0)]), (4, 160., [])]
 for model in ('basic', 'polar', 'armor'):
-    compare(f'selection_{model}', selection, model)
+    frames = [(i, t, [] if i == 3 else obs) for i, t, obs in selection] if model == 'armor' else selection
+    compare(f'selection_{model}', frames, model)
     for name, frames in [('empty', []), ('no_observations', [(i, i * 40., []) for i in range(6)]),
                          ('single_frame', [(0, 0., [observation(0, .2, 3)])])]:
         compare(f'{name}_{model}', frames, model)

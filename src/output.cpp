@@ -145,7 +145,7 @@ bool Output::write(const Camera &input, const Solver &solver, const SolvedFrame 
             }
         }
     }
-    predictions_.write(input.frame_id_, input.timestamp_ms, base_poses.observations, prediction);
+    predictions_.write(input.frame_id_, input.timestamp_ms, prediction);
     const auto base_from_camera = pose_base.at(input.timestamp_ms);
     const Eigen::Quaterniond q(base_from_camera.linear());
     const auto &p = base_from_camera.translation();
@@ -212,54 +212,40 @@ void Output::finish()
 constexpr double missing = std::numeric_limits<double>::quiet_NaN();
 
 
-void PredictionOutput::write(std::int64_t frame, double timestamp, const std::vector<VideoObservation> &obs,
+void PredictionOutput::write(std::int64_t frame, double timestamp,
                              const VideoPrediction &prediction)
 {
-    auto numbers = [](CsvOutput &csv, std::initializer_list<double> values)
+    auto numbers = [](std::ofstream &csv, std::initializer_list<double> values, bool first = false)
     {
         for (double value : values)
         {
-            csv.stream_ << (csv.first_ ? "" : ",");
+            csv << (first ? "" : ",");
             if (std::isfinite(value))
-                csv.stream_ << value;
-            csv.first_ = false;
+                csv << value;
+            first = false;
         }
     };
-    if (type == PREDICTOR_ARMOR)
-    {
-        for (const auto &d : prediction.diagnostics)
-        {
-            const auto &z = obs.at(d.observation_index).measurement;
-            numbers(logs, {double(frame), double(d.observation_index)});
-            logs.stream_ << "," << (d.accepted ? "True" : "False");
-            numbers(logs, {double(d.armor_id), d.nis});
-            logs.stream_ << "," << d.reason;
-            numbers(logs, {timestamp, z(2), z(3), double(d.best_candidate_id), d.distance_residual});
-            logs.stream_ << (base_coordinates ? ",base\n" : "\n");
-            logs.first_ = true;
-        }
-    }
     if (!prediction.value_count)
         return;
     const std::size_t columns = type == PREDICTOR_SINGLE_PLATE ? 13 : type == PREDICTOR_POLAR ? 15
                                                                                               : 31;
     for (std::size_t i = 0; i < columns; ++i)
-        numbers(results, {prediction.values[i]});
+        numbers(results, {prediction.values[i]}, i == 0);
     if (type == PREDICTOR_ARMOR)
     {
-        results.stream_ << "," << prediction.status;
+        results << "," << prediction.status;
         for (std::size_t i = 0; i < prediction.future.plates.size(); ++i)
         {
             const auto &p = prediction.future.plates[i];
             numbers(futures, {double(frame), timestamp, timestamp + prediction.horizon_ms, prediction.horizon_ms,
-                              double(i), p(0), p(1), p(2), p(3)});
-            futures.stream_ << "," << prediction.status;
-            futures.stream_ << (base_coordinates ? ",base\n" : "\n");
-            futures.first_ = true;
+                              double(i), p(0), p(1), p(2), p(3)}, true);
+            futures << "," << prediction.status;
+            futures << (base_coordinates ? ",base\n" : "\n");
+
         }
     }
-    results.stream_ << (base_coordinates ? ",base\n" : "\n");
-    results.first_ = true;
+    results << (base_coordinates ? ",base\n" : "\n");
+
     for (int i = 0; i < 4; ++i)
     {
         const double e = prediction.errors(i);
@@ -275,11 +261,11 @@ void PredictionOutput::finish()
 {
     if (finished)
         return;
-    for (auto *csv : {&results, &logs, &futures})
-        if (csv->stream_.is_open())
+    for (auto *csv : {&results, &futures})
+        if (csv->is_open())
         {
-            csv->stream_.flush();
-            csv->stream_.close();
+            csv->flush();
+            csv->close();
         }
     std::ofstream metrics(metrics_path);
     if (!metrics)

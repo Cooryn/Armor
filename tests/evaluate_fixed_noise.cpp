@@ -9,7 +9,7 @@
 struct Frame {
     double time;
     Eigen::Matrix<double, 11, 1> truth = Eigen::Matrix<double, 11, 1>::Zero();
-    std::vector<Observation> observations;
+    std::vector<Eigen::Vector4d> observations;
 };
 struct Sequence { std::string name; bool synthetic; std::vector<Frame> frames; };
 struct Stats {
@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
                 for (int k = 0; k < n; ++k) {
                     Eigen::Vector4d z = Eigen::Vector4d::Zero();
                     for (int j = 0; j < 4; ++j) input >> z(j);
-                    f.observations.push_back({z});
+                    f.observations.push_back(z);
                 }
             }
         }
@@ -57,7 +57,7 @@ int main(int argc, char **argv) {
                     const auto &f = s.frames[i];
                     if (!b.is_initialized) {
                         for (const auto &o : f.observations)
-                            if (b.valid_observation(o.Z_obs)) { b.initialize(o.Z_obs); break; }
+                            { b.initialize(o); break; }
                         last = f.time;
                         continue;
                     }
@@ -66,8 +66,8 @@ int main(int argc, char **argv) {
                     const auto result = b.update_multi(f.observations);
                     auto &m = stats[i < s.frames.size() * 7 / 10 ? 0 : 1];
                     m.observations += static_cast<int>(f.observations.size());
-                    m.accepted += static_cast<int>(result.first.size());
-                    m.rejected += static_cast<int>(f.observations.size() - result.first.size());
+                    m.accepted += static_cast<int>(result.size());
+                    m.rejected += static_cast<int>(f.observations.size() - result.size());
                     if (i > 30) {
                         if (previous) {
                             double distance = 0;
@@ -82,11 +82,10 @@ int main(int argc, char **argv) {
                             const auto &target = s.frames[future];
                             auto forecast = b.forecast(target.time - f.time);
                             for (const auto &o : target.observations) {
-                                if (!b.valid_observation(o.Z_obs)) continue;
                                 Eigen::Vector4d residual;
                                 double smallest = std::numeric_limits<double>::infinity();
                                 for (int id = 0; id < 4; ++id) {
-                                    auto r = armor_angular_residual(o.Z_obs, armor_h(forecast.state, id));
+                                    auto r = armor_angular_residual(o, armor_h(forecast.state, id));
                                     if (std::abs(r(3)) < smallest) { smallest = std::abs(r(3)); residual = r; }
                                 }
                                 for (int k = 0; k < 4; ++k) m.error[k] += residual(k) * residual(k);

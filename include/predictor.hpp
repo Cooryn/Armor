@@ -28,16 +28,6 @@ struct PredictionGeometry
     std::optional<Eigen::Vector3d> center;
     std::vector<Eigen::Vector4d> plates;
 };
-struct Diagnostic
-{
-    std::size_t observation_index;
-    bool accepted = false;
-    int armor_id = -1;
-    double nis = std::numeric_limits<double>::quiet_NaN();
-    std::string reason = "invalid";
-    int best_candidate_id = -1;
-    double distance_residual = std::numeric_limits<double>::quiet_NaN();
-};
 struct VideoPrediction
 {
     bool initialized = false;
@@ -48,7 +38,6 @@ struct VideoPrediction
     std::array<double, 31> values{};
     std::size_t value_count = 0;
     Eigen::Vector4d errors = Eigen::Vector4d::Constant(std::numeric_limits<double>::quiet_NaN());
-    std::vector<Diagnostic> diagnostics;
 };
 
 class SinglePlateEKF

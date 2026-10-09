@@ -26,7 +26,7 @@ int main()
         const std::filesystem::path root = ARMOR_PROJECT_ROOT;
         const char *const window = "Armor detection - Esc to stop";
         Camera camera;
-        camera.open({camera_source, root / std::filesystem::u8path(video_file), camera_device, camera_recording_fps});
+        camera.open(camera_source, root / std::filesystem::u8path(video_file), camera_device, camera_recording_fps);
         Solver pnp(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
         if (camera_source == VIDEO)
             pnp.use_video_profile(video_camera_profile);

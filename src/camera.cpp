@@ -7,11 +7,11 @@ bool Camera::live() const
     return source_ == CAMERA;
 }
 
-void Camera::open(const CameraConfig &config)
+void Camera::open(CameraSource source, const std::filesystem::path &video, int device, double recording_fps)
 {
     stream_.release();
-    source_ = config.source;
-    path_ = config.video;
+    source_ = source;
+    path_ = video;
     frame_id_ = -1;
     frame_count_ = 0;
     if (source_ == VIDEO)
@@ -23,9 +23,9 @@ void Camera::open(const CameraConfig &config)
     }
     else
     {
-        stream_.open(config.device);
+        stream_.open(device);
         stem_ = "camera_live";
-        fps_ = config.recording_fps;
+        fps_ = recording_fps;
     }
     if (!stream_.isOpened())
         throw std::runtime_error("Cannot open image source: " + stem_);

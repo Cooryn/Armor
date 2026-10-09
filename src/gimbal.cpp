@@ -3,21 +3,21 @@
 #include <cmath>
 #include <stdexcept>
 
-ControlTarget Gimbal::solve(const VideoPrediction &prediction, const PoseBase &pose_base,
-                                 double image_timestamp_ms, double now_ms) const
+ControlTarget solve_gimbal(const VideoPrediction &prediction, const PoseBase &pose_base,
+                                 double image_timestamp_ms, double now_ms, const GimbalConfig &config)
 {
     const auto &state = pose_base.latest_state_;
     ControlTarget result;
     result.yaw_rad = state.yaw_rad;
     result.pitch_rad = state.pitch_rad;
-    if (now_ms - state.receive_timestamp_ms > config_.max_age_ms || now_ms - image_timestamp_ms > config_.max_age_ms)
+    if (now_ms - state.receive_timestamp_ms > config.max_age_ms || now_ms - image_timestamp_ms > config.max_age_ms)
     {
         result.status = "stale_pose";
         return result;
     }
     if (!prediction.initialized || (prediction.status != "updated" && prediction.status != "initialized"))
         return result;
-    if (prediction.position_variance > config_.max_position_variance)
+    if (prediction.position_variance > config.max_position_variance)
     {
         result.status = "uncertain";
         return result;
@@ -71,8 +71,8 @@ ControlTarget Gimbal::solve(const VideoPrediction &prediction, const PoseBase &p
     if (!converged)
         throw std::runtime_error("Optical alignment did not converge");
     angles.x() = state.yaw_rad + std::remainder(angles.x() - state.yaw_rad, 2 * CV_PI);
-    if (angles.x() < config_.yaw_min_rad || angles.x() > config_.yaw_max_rad ||
-        angles.y() < config_.pitch_min_rad || angles.y() > config_.pitch_max_rad)
+    if (angles.x() < config.yaw_min_rad || angles.x() > config.yaw_max_rad ||
+        angles.y() < config.pitch_min_rad || angles.y() > config.pitch_max_rad)
     {
         result.status = "out_of_limits";
         return result;

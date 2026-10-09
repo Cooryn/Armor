@@ -29,11 +29,11 @@ class FixedNoiseTests(unittest.TestCase):
         prior, covariance = b.X.copy(), b.P.copy()
         matches, diagnostics = b.update_multi([dict(Z_obs=z, detection_score=0, reprojection_error=100)])
         self.assertFalse(matches)
-        self.assertEqual(diagnostics[0]['reason'], 'innovation_gate')
+        self.assertEqual(diagnostics[0]['reason'], 'geometry_gate')
         np.testing.assert_array_equal(prior, b.X)
         np.testing.assert_array_equal(covariance, b.P)
 
-    def test_conflict_uses_smallest_nis(self):
+    def test_conflict_uses_smallest_distance(self):
         b = self.tracker()
         z = measurement(0)
         noisy = z.copy()
@@ -49,7 +49,7 @@ class FixedNoiseTests(unittest.TestCase):
         obs = [dict(Z_obs=measurement(.02), armor_id=0), dict(Z_obs=measurement(.02, 1), armor_id=1)]
         matches, _ = a.associate(obs)
         self.assertEqual(len(matches), 2)
-        H = np.vstack([m['H'] for m in matches])
+        H = np.vstack([a.get_jacobian(a.X, m['armor_id']) for m in matches])
         residual = np.vstack([m['residual'] for m in matches])
         R = np.kron(np.eye(len(matches)), a.R)
         K = np.linalg.solve(H @ a.P @ H.T + R, H @ a.P).T

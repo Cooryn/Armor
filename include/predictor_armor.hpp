@@ -3,20 +3,13 @@
 #include <cstddef>
 #include <limits>
 #include <string>
-#include <utility>
 #include <vector>
-struct Observation
-{
-    Eigen::Vector4d Z_obs = Eigen::Vector4d::Zero();
-    int armor_id = -1;
-};
 struct Match
 {
     std::size_t index;
     int armor_id;
-    double nis;
+    double distance;
     Eigen::Vector4d residual;
-    Eigen::Matrix<double, 4, 11> H;
     Eigen::Vector4d Z_obs;
 };
 struct Forecast
@@ -35,21 +28,20 @@ public:
     void initialize(const Eigen::Vector4d &z);
     void predict(double dt);
     Forecast forecast(double horizon_s = .05) const;
-    bool valid_observation(const Eigen::Vector4d &z) const;
-    std::pair<std::vector<Match>, std::vector<Diagnostic>> associate(const std::vector<Observation> &observations) const;
-    std::pair<std::vector<Match>, std::vector<Diagnostic>> update_multi(const std::vector<Observation> &observations);
+    std::vector<Match> associate(const std::vector<Eigen::Vector4d> &observations) const;
+    std::vector<Match> update_multi(const std::vector<Eigen::Vector4d> &observations);
 
     Eigen::Matrix<double, 11, 1> X = Eigen::Matrix<double, 11, 1>::Zero();
     Eigen::Matrix<double, 11, 11> F = Eigen::Matrix<double, 11, 11>::Identity();
     Eigen::Matrix<double, 11, 11> P = (Eigen::Matrix<double, 11, 1>() << 10, 10, 10, 10, 10, 10, 10, 10, .01, .05, .05).finished().asDiagonal();
     Eigen::Matrix4d R = Eigen::Vector4d(.0016, .0016, .16, .0576).asDiagonal();
     double q_pos = 3, q_yaw = 15, q_r = 3e-4, q_dl = 3e-3, q_dh = 3e-3;
-    bool is_initialized = false, base_frame = false;
-    double nis_gate = 16, pair_yaw_tolerance = 25 * armor_pi / 180, max_distance_error = .5;
+    bool is_initialized = false;
+    double max_yaw_error = 45 * armor_pi / 180, pair_yaw_tolerance = 25 * armor_pi / 180, max_distance_error = .5;
 
 private:
     double last_timestamp_ms_ = -1;
-    std::pair<Eigen::Matrix<double, 11, 11>, Eigen::Matrix<double, 11, 11>> transition(double dt) const;
+    void transition(double dt, Eigen::Matrix<double, 11, 11> &f, Eigen::Matrix<double, 11, 11> &q) const;
 };
 
 double armor_wrap_to_pi(double a);

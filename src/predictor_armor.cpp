@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-
+// 角度归一化
 double armor_wrap_to_pi(double a)
 {
     double r = std::fmod(a + armor_pi, 2 * armor_pi);
@@ -12,6 +12,7 @@ double armor_wrap_to_pi(double a)
     return r - armor_pi;
 }
 
+// 计算两个观测向量的差
 Eigen::Vector4d armor_angular_residual(const Eigen::Vector4d &a, const Eigen::Vector4d &b)
 {
     Eigen::Vector4d d = a - b;
@@ -20,35 +21,54 @@ Eigen::Vector4d armor_angular_residual(const Eigen::Vector4d &a, const Eigen::Ve
     return d;
 }
 
-std::pair<Eigen::Matrix<double, 11, 11>, Eigen::Matrix<double, 11, 11>> ArmorEKF::transition(double dt) const
+// 计算状态转移矩阵和过程噪声协方差矩阵
+void ArmorEKF::transition(double dt, Eigen::Matrix<double, 11, 11> &f, Eigen::Matrix<double, 11, 11> &q) const
 {
-    Eigen::Matrix<double, 11, 11> f = Eigen::Matrix<double, 11, 11>::Identity(), q = Eigen::Matrix<double, 11, 11>::Zero();
-    for (int i : {0, 2, 4, 6})
-    {
-        f(i, i + 1) = dt;
-        double noise = i == 6 ? q_yaw : q_pos;
-        q(i, i) = dt * dt * dt / 3 * noise;
-        q(i, i + 1) = q(i + 1, i) = dt * dt / 2 * noise;
-        q(i + 1, i + 1) = dt * noise;
-    }
-    q(8, 8) = q_r * dt;
-    q(9, 9) = q_dl * dt;
-    q(10, 10) = q_dh * dt;
-    return {f, q};
+    f << 1, dt, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 1,  0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0,  1, dt,0, 0, 0, 0, 0, 0, 0,
+         0, 0,  0, 1, 0, 0, 0, 0, 0, 0, 0,
+         0, 0,  0, 0, 1, dt,0, 0, 0, 0, 0,
+         0, 0,  0, 0, 0, 1, 0, 0, 0, 0, 0,
+         0, 0,  0, 0, 0, 0, 1, dt,0, 0, 0,
+         0, 0,  0, 0, 0, 0, 0, 1, 0, 0, 0,
+         0, 0,  0, 0, 0, 0, 0, 0, 1, 0, 0,
+         0, 0,  0, 0, 0, 0, 0, 0, 0, 1, 0,
+         0, 0,  0, 0, 0, 0, 0, 0, 0, 0, 1;
+
+    const double p00 = dt * dt * dt / 3 * q_pos;
+    const double p01 = dt * dt / 2 * q_pos;
+    const double p11 = dt * q_pos;
+    const double y00 = dt * dt * dt / 3 * q_yaw;
+    const double y01 = dt * dt / 2 * q_yaw;
+    const double y11 = dt * q_yaw;
+    q << p00, p01, 0,   0,   0,   0,   0,   0,   0,        0,         0,
+         p01, p11, 0,   0,   0,   0,   0,   0,   0,        0,         0,
+         0,   0,   p00, p01, 0,   0,   0,   0,   0,        0,         0,
+         0,   0,   p01, p11, 0,   0,   0,   0,   0,        0,         0,
+         0,   0,   0,   0,   p00, p01, 0,   0,   0,        0,         0,
+         0,   0,   0,   0,   p01, p11, 0,   0,   0,        0,         0,
+         0,   0,   0,   0,   0,   0,   y00, y01, 0,        0,         0,
+         0,   0,   0,   0,   0,   0,   y01, y11, 0,        0,         0,
+         0,   0,   0,   0,   0,   0,   0,   0,   q_r * dt, 0,         0,
+         0,   0,   0,   0,   0,   0,   0,   0,   0,        q_dl * dt, 0,
+         0,   0,   0,   0,   0,   0,   0,   0,   0,        0,         q_dh * dt;
 }
 
 void ArmorEKF::predict(double dt)
 {
-    auto [f, q] = transition(dt);
-    F = f;
+    Eigen::Matrix<double, 11, 11> q;
+    transition(dt, F, q);
     X = F * X;
     X(6) = armor_wrap_to_pi(X(6));
-    P = F * P * F.transpose() + q;
+    P = F * P * F.transpose() + q; // 更新状态估计的协方差
 }
 
+// 预测未来状态
 Forecast ArmorEKF::forecast(double horizon_s) const
 {
-    auto [f, q] = transition(horizon_s);
+    Eigen::Matrix<double, 11, 11> f, q;
+    transition(horizon_s, f, q);
     Eigen::Matrix<double, 11, 1> s = f * X;
     s(6) = armor_wrap_to_pi(s(6));
     Eigen::Matrix4d poses;
@@ -57,14 +77,18 @@ Forecast ArmorEKF::forecast(double horizon_s) const
     return {s, f * P * f.transpose() + q, poses};
 }
 
+// 计算每块装甲板的位姿
 Eigen::Vector4d armor_plate_pose(const Eigen::Matrix<double, 11, 1> &s, int id)
 {
-    double yaw = s(6) + id * armor_pi / 2, r = s(8) + (id % 2 ? s(9) : 0),
-           x = s(0) + r * std::sin(yaw), y = s(2) + (id % 2 ? s(10) : 0),
-           z = s(4) - r * std::cos(yaw);
+    double yaw = s(6) + id * armor_pi / 2;
+    double r = s(8) + (id % 2 ? s(9) : 0);
+    double x = s(0) + r * std::sin(yaw);
+    double y = s(2) + (id % 2 ? s(10) : 0);
+    double z = s(4) - r * std::cos(yaw);
     return {x, y, z, armor_wrap_to_pi(yaw)};
 }
 
+// 计算观测值
 Eigen::Vector4d armor_h(const Eigen::Matrix<double, 11, 1> &s, int id)
 {
     const auto pose = armor_plate_pose(s, id);
@@ -74,6 +98,7 @@ Eigen::Vector4d armor_h(const Eigen::Matrix<double, 11, 1> &s, int id)
             std::sqrt(x * x + y * y + z * z), pose(3)};
 }
 
+// 计算雅可比矩阵
 Eigen::Matrix<double, 4, 11> armor_get_jacobian(const Eigen::Matrix<double, 11, 1> &s, int id)
 {
     Eigen::Matrix<double, 4, 11> H = Eigen::Matrix<double, 4, 11>::Zero();
@@ -88,12 +113,7 @@ Eigen::Matrix<double, 4, 11> armor_get_jacobian(const Eigen::Matrix<double, 11, 
     return H;
 }
 
-bool ArmorEKF::valid_observation(const Eigen::Vector4d &z) const
-{
-    return z(2) > 0 &&
-           std::abs(z(1)) < armor_pi / 2 && (base_frame || std::abs(z(0)) < armor_pi / 2);
-}
-
+// 首帧初始化
 void ArmorEKF::initialize(const Eigen::Vector4d &z)
 {
     double x = z(2) * std::cos(z(1)) * std::sin(z(0)), y = z(2) * std::sin(z(1)),
@@ -103,99 +123,58 @@ void ArmorEKF::initialize(const Eigen::Vector4d &z)
     is_initialized = true;
 }
 
-std::pair<std::vector<Match>, std::vector<Diagnostic>> ArmorEKF::associate(const std::vector<Observation> &observations) const
+
+std::vector<Match> ArmorEKF::associate(const std::vector<Eigen::Vector4d> &observations) const
 {
-    std::vector<std::vector<Match>> candidates;
-    std::vector<Diagnostic> diagnostics;
+    std::vector<Match> candidates, matches;
     for (size_t index = 0; index < observations.size(); ++index)
     {
-        const auto &o = observations[index];
-        Diagnostic d;
-        d.observation_index = index;
-        std::vector<Match> options;
-        if (valid_observation(o.Z_obs))
+        const auto &z = observations[index];
+        const Eigen::Vector3d position(z(2) * std::cos(z(1)) * std::sin(z(0)),
+                                       z(2) * std::sin(z(1)),
+                                       z(2) * std::cos(z(1)) * std::cos(z(0)));
+        for (int id = 0; id < 4; ++id)
         {
-            for (int id = 0; id < 4; ++id)
-            {
-                if (o.armor_id != -1 && o.armor_id != id)
-                    continue;
-                const Eigen::Vector4d pred = armor_h(X, id), res = armor_angular_residual(o.Z_obs, pred);
-                const Eigen::Matrix<double, 4, 11> H = armor_get_jacobian(X, id);
-                const Eigen::Matrix4d S = H * P * H.transpose() + R;
-                const Eigen::LDLT<Eigen::Matrix4d> solver(S);
-                const double nis = res.dot(solver.solve(res));
-                if (d.best_candidate_id < 0 || nis < d.nis)
-                {
-                    d.nis = nis;
-                    d.best_candidate_id = id;
-                    d.distance_residual = res(2);
-                }
-                if (nis <= nis_gate && std::abs(res(2)) <= max_distance_error)
-                    options.push_back({index, id, nis, res, H, o.Z_obs});
-            }
-            d.reason = options.empty() ? "innovation_gate" : "association_conflict";
+            const Eigen::Vector4d plate = armor_plate_pose(X, id);
+            const double distance = (position - plate.head<3>()).norm();
+            if (distance <= max_distance_error &&
+                std::abs(armor_wrap_to_pi(z(3) - plate(3))) <= max_yaw_error)
+                candidates.push_back({index, id, distance, armor_angular_residual(z, armor_h(X, id)), z});
         }
-        candidates.push_back(options);
-        diagnostics.push_back(d);
     }
-    std::vector<Match> best, selected;
-    double best_score = std::numeric_limits<double>::infinity();
-    auto search = [&](auto &&recurse, size_t index, unsigned used, double score) -> void
+    std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b)
     {
-        if (selected.size() + std::min(size_t(4) - selected.size(), candidates.size() - index) <
-            best.size())
-            return;
-        if (index == candidates.size())
-        {
-            if (selected.size() > best.size() ||
-                (selected.size() == best.size() && score < best_score))
-            {
-                best = selected;
-                best_score = score;
-            }
-            return;
-        }
-        for (const auto &c : candidates[index])
-        {
-            if (used & (1u << c.armor_id))
-                continue;
-            bool consistent = true;
-            for (const auto &o : selected)
-                if (std::abs(armor_wrap_to_pi(c.Z_obs(3) - o.Z_obs(3) -
-                                              (c.armor_id - o.armor_id) * armor_pi / 2)) >
-                    pair_yaw_tolerance)
-                {
-                    consistent = false;
-                    break;
-                }
-            if (consistent)
-            {
-                selected.push_back(c);
-                recurse(recurse, index + 1, used | (1u << c.armor_id), score + c.nis);
-                selected.pop_back();
-            }
-        }
-        recurse(recurse, index + 1, used, score);
-    };
-    search(search, 0, 0, 0);
-    for (const auto &m : best)
+        if (a.distance != b.distance)
+            return a.distance < b.distance;
+        if (a.index != b.index)
+            return a.index < b.index;
+        return a.armor_id < b.armor_id;
+    });
+    for (const auto &candidate : candidates)
     {
-        auto &d = diagnostics[m.index];
-        d.accepted = true;
-        d.armor_id = m.armor_id;
-        d.nis = m.nis;
-        d.reason = "accepted";
-        d.distance_residual = m.residual(2);
+        bool conflict = false;
+        for (const auto &match : matches)
+            if (candidate.index == match.index || candidate.armor_id == match.armor_id ||
+                std::abs(armor_wrap_to_pi(candidate.Z_obs(3) - match.Z_obs(3) -
+                    (candidate.armor_id - match.armor_id) * armor_pi / 2)) > pair_yaw_tolerance)
+            {
+                conflict = true;
+                break;
+            }
+        if (conflict)
+            continue;
+        matches.push_back(candidate);
+        if (matches.size() == 4)
+            break;
     }
-    return {best, diagnostics};
+    return matches;
 }
 
-std::pair<std::vector<Match>, std::vector<Diagnostic>> ArmorEKF::update_multi(const std::vector<Observation> &obs)
+std::vector<Match> ArmorEKF::update_multi(const std::vector<Eigen::Vector4d> &obs)
 {
-    auto result = associate(obs);
-    auto &matches = result.first;
+    auto matches = associate(obs);
     if (matches.empty())
-        return result;
+        return matches;
     int n = static_cast<int>(matches.size()) * 4;
     Eigen::Matrix<double, Eigen::Dynamic, 11, 0, 16, 11> H(n, 11);
     Eigen::Matrix<double, Eigen::Dynamic, 1, 0, 16, 1> res(n);
@@ -205,7 +184,7 @@ std::pair<std::vector<Match>, std::vector<Diagnostic>> ArmorEKF::update_multi(co
     {
         const auto offset = static_cast<Eigen::Index>(4 * k);
         res.segment<4>(offset) = matches[k].residual;
-        H.middleRows<4>(offset) = matches[k].H;
+        H.middleRows<4>(offset) = armor_get_jacobian(X, matches[k].armor_id);
         noise.block<4, 4>(offset, offset) = R;
     }
     const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, 0, 16, 16> S = H * P * H.transpose() + noise;
@@ -218,7 +197,7 @@ std::pair<std::vector<Match>, std::vector<Diagnostic>> ArmorEKF::update_multi(co
     const Eigen::Matrix<double, 11, 11> A = Eigen::Matrix<double, 11, 11>::Identity() - K * H;
     P = A * P * A.transpose() + K * noise * K.transpose();
     P = ((P + P.transpose()) * .5).eval();
-    return result;
+    return matches;
 }
 
 VideoPrediction ArmorEKF::update_frame(std::int64_t frame, double timestamp_ms,
@@ -230,12 +209,11 @@ VideoPrediction ArmorEKF::update_frame(std::int64_t frame, double timestamp_ms,
     VideoPrediction result;
     result.horizon_ms = horizon_ms;
     const VideoObservation *selected = nullptr;
-    std::vector<Observation> all;
+    std::vector<Eigen::Vector4d> all;
     for (const auto &observation : observations)
     {
-        all.push_back({observation.measurement});
-        if (valid_observation(observation.measurement) &&
-            (!selected || observation.measurement(2) < selected->measurement(2)))
+        all.push_back(observation.measurement);
+        if (!selected || observation.measurement(2) < selected->measurement(2))
             selected = &observation;
     }
     const bool initialized_before = is_initialized;
@@ -247,24 +225,13 @@ VideoPrediction ArmorEKF::update_frame(std::int64_t frame, double timestamp_ms,
     {
         if (selected)
             initialize(selected->measurement);
-        for (std::size_t i = 0; i < observations.size(); ++i)
-        {
-            Diagnostic diagnostic;
-            diagnostic.observation_index = i;
-            diagnostic.accepted = &observations[i] == selected;
-            diagnostic.armor_id = diagnostic.accepted ? 0 : -1;
-            diagnostic.reason = !valid_observation(observations[i].measurement) ? "invalid" :
-                                diagnostic.accepted ? "initialization" : "initialization_unused";
-            result.diagnostics.push_back(diagnostic);
-        }
         result.status = selected ? "initialized" : "waiting";
     }
     else
     {
         predict(dt);
         const Eigen::Matrix<double, 11, 1> prior = X;
-        const auto [matches, diagnostics] = update_multi(all);
-        result.diagnostics = diagnostics;
+        const auto matches = update_multi(all);
         accepted_count = matches.size();
         if (!matches.empty())
         {

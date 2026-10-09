@@ -7,11 +7,6 @@
 #include <iomanip>
 #include <stdexcept>
 
-struct CsvOutput
-{
-    std::ofstream stream_;
-    bool first_ = true;
-};
 class PredictionOutput
 {
 public:
@@ -41,38 +36,35 @@ public:
         const std::array<const char *, 3> prefixes = {"", "polar_", "armor_"},
                                          headers = {basic_header, polar_header, armor_header};
         const char *prefix = prefixes[type], *header = headers[type];
-        auto open = [](CsvOutput &csv, const std::filesystem::path &path, const char *header)
+        auto open = [](std::ofstream &csv, const std::filesystem::path &path, const char *header)
         {
-            csv.stream_.open(path);
-            if (!csv.stream_)
+            csv.open(path);
+            if (!csv)
                 throw std::runtime_error("Cannot write " + path.string());
-            csv.stream_.exceptions(std::ios::badbit | std::ios::failbit);
-            csv.stream_ << header;
+            csv.exceptions(std::ios::badbit | std::ios::failbit);
+            csv << header;
         };
         std::filesystem::create_directories(directory);
         open(results, directory / (std::string(prefix) + "prediction_result_" + suffix + ".csv"), header);
         metrics_path = directory / (std::string(prefix) + "rmse_result_" + suffix + ".txt");
         if (type == PREDICTOR_ARMOR)
         {
-            open(logs, directory / ("armor_observation_diagnostics_" + suffix + ".csv"),
-                 "frame_id,observation_index,accepted,armor_id,nis,reason,timestamp,observed_distance,"
-                 "observed_armor_yaw,best_candidate_id,distance_residual");
             open(futures, directory / ("armor_future_prediction_" + suffix + ".csv"),
                  "frame_id,timestamp,prediction_timestamp,prediction_horizon_ms,armor_id,x,y,z,"
                  "armor_orientation_yaw,source_status");
         }
-        for (auto *csv : {&results, &logs, &futures})
-            if (csv->stream_.is_open())
-                csv->stream_ << (base_coordinates ? ",coordinate_frame\n" : "\n") << std::setprecision(17);
+        for (auto *csv : {&results, &futures})
+            if (csv->is_open())
+                *csv << (base_coordinates ? ",coordinate_frame\n" : "\n") << std::setprecision(17);
     }
     void write(std::int64_t frame, double timestamp,
-               const std::vector<VideoObservation> &observations, const VideoPrediction &prediction);
+               const VideoPrediction &prediction);
     void finish();
 
 private:
     PredictorType type;
     std::filesystem::path metrics_path;
-    CsvOutput results, logs, futures;
+    std::ofstream results, futures;
     std::array<double, 4> squared_errors{};
     std::array<std::size_t, 4> error_counts{};
     bool finished = false;

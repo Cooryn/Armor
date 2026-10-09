@@ -31,7 +31,7 @@ static VideoPrediction replay_predictor_update(ReplayPredictor &self, std::int64
         result = self.polar.update_frame(frame, timestamp, obs, self.horizon);
     else
         result = self.armor.update_frame(frame, timestamp, obs, self.horizon);
-    self.output_.write(frame, timestamp, obs, result);
+    self.output_.write(frame, timestamp, result);
     return result;
 }
 static void replay_predictor_finish(ReplayPredictor &self) {

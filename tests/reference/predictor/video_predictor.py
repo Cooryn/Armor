@@ -14,8 +14,6 @@ ARMOR_COLUMNS = ('frame_id timestamp prediction_horizon_ms prediction_timestamp 
                  'future_body_yaw xc yc zc vxc vyc vzc w xa za armor_id body_yaw pred_armor_yaw obs_armor_yaw '
                  'err_target_yaw err_target_pitch err_distance err_armor_yaw r dl dh observation_count '
                  'accepted_count rejected_count status').split()
-DIAGNOSTIC_COLUMNS = ('frame_id observation_index accepted armor_id nis reason timestamp observed_distance '
-                      'observed_armor_yaw best_candidate_id distance_residual').split()
 FUTURE_COLUMNS = ('frame_id timestamp prediction_timestamp prediction_horizon_ms armor_id x y z '
                   'armor_orientation_yaw source_status').split()
 GEOMETRY_COLUMNS = ['frame_id', 'timestamp', 'initialized', 'status']
@@ -31,13 +29,13 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
     ekf = {'basic': SinglePlateEKF, 'polar': PolarEKF, 'armor': ArmorEKF}[model]()
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    results, diagnostics, futures, geometry, errors = [], [], [], [], []
+    results, futures, geometry, errors = [], [], [], []
     last_id, last_time = -1, -1
 
     def valid(o):
         p, z = o
         if model == 'armor':
-            return ekf.valid_observation(z.reshape(4, 1))
+            return True
         return (np.isfinite(p).all() and SinglePlateEKF.valid_observation(z[:3])
                 and (model == 'basic' or np.isfinite(z).all()))
 
@@ -76,13 +74,6 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
                 else:
                     ekf.initialize(z.reshape(4, 1))
                 status = 'initialized'
-            if model == 'armor':
-                for i, (_, z) in enumerate(obs):
-                    accepted = i == selected
-                    reason = ('invalid' if not valid(obs[i]) else
-                              'initialization' if accepted else 'initialization_unused')
-                    diagnostics.append([fid, i, accepted, 0 if accepted else -1, np.nan, reason,
-                                        timestamp, z[2], z[3], -1, np.nan])
         else:
             ekf.predict(dt)
             e, updated = np.full(4, np.nan), False
@@ -106,11 +97,7 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
                 results.append([fid, *ekf.X[:, 0], *e, z[3]])
             else:
                 prior = ekf.X.copy()
-                matches, ds = ekf.update_multi(all_obs)
-                for d in ds:
-                    z = obs[d['observation_index']][1]
-                    diagnostics.append([fid, d['observation_index'], d['accepted'], d['armor_id'], d['nis'], d['reason'],
-                                        timestamp, z[2], z[3], d['best_candidate_id'], d['distance_residual']])
+                matches, _ = ekf.update_multi(all_obs)
                 match = min(matches, key=lambda m: m['Z_obs'][2, 0], default=None)
                 aid, observed_yaw, plate = -1, np.nan, np.full(4, np.nan)
                 if match is not None:
@@ -149,7 +136,6 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
     pd.DataFrame(results, columns=columns).to_csv(directory / f'{prefix}prediction_result_1.csv', index=False)
     pd.DataFrame(geometry, columns=GEOMETRY_COLUMNS).to_csv(directory / 'geometry.csv', index=False)
     if model == 'armor':
-        pd.DataFrame(diagnostics, columns=DIAGNOSTIC_COLUMNS).to_csv(directory / 'armor_observation_diagnostics_1.csv', index=False)
         pd.DataFrame(futures, columns=FUTURE_COLUMNS).to_csv(directory / 'armor_future_prediction_1.csv', index=False)
     names = ['x', 'z', 'yaw', 'distance'] if model == 'basic' else ['target_yaw', 'target_pitch', 'distance', 'armor_yaw']
     units = ['m', 'm', 'rad', 'm'] if model == 'basic' else ['rad', 'rad', 'm', 'rad']

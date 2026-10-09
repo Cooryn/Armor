@@ -129,7 +129,6 @@ int main() {
         turned.push({0, 2, 0, 0, HOST_IDLE, 0});
         const auto back_pose = turned.to_base({0, 0, 3}, Eigen::Vector3d::Zero(), 0);
         ArmorEKF fixed;
-        fixed.base_frame = true;
         check(fixed.update_frame(0, 0, {{back_pose.position, back_pose.measurement}}).initialized,
               "fixed-frame Armor accepts a target behind the base Z axis");
         std::cout << "PoseBase checks passed\n";

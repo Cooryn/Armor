@@ -110,30 +110,28 @@ static void eigen_filter_regressions() {
     for (int count = 1; count <= 4; ++count) {
         auto filter = tracker();
         filter.predict(.037);
-        std::vector<Observation> observations;
+        std::vector<Eigen::Vector4d> observations;
         for (int id = 0; id < count; ++id) {
             auto z = measurement(.02, id);
             z(2) += .01 * (id + 1);
-            observations.push_back({z, id});
+            observations.push_back(z);
         }
-        const auto matches = filter.associate(observations).first;
+        const auto matches = filter.associate(observations);
         check(matches.size() == static_cast<size_t>(count), "one to four joint plates");
         const int n = count * 4;
         Eigen::MatrixXd H(n, 11), residual(n, 1), R = Eigen::MatrixXd::Zero(n, n);
         for (int k = 0; k < count; ++k) {
-            H.middleRows(4 * k, 4) = matches[k].H;
+            H.middleRows(4 * k, 4) = armor_get_jacobian(filter.X, matches[k].armor_id);
             residual.middleRows(4 * k, 4) = matches[k].residual;
             R.block(4 * k, 4 * k, 4, 4) = filter.R;
-            const Eigen::Matrix4d S = matches[k].H * filter.P * matches[k].H.transpose() + filter.R;
-            check(std::abs(matches[k].nis - matches[k].residual.dot(S.partialPivLu().solve(matches[k].residual))) < 1e-10,
-                  "LDLT innovation agrees with LU");
+
         }
         const Eigen::MatrixXd S = H * filter.P * H.transpose() + R;
         const Eigen::MatrixXd K = S.partialPivLu().solve(H * filter.P).transpose();
         const Eigen::Matrix<double, 11, 1> expected_state = filter.X + K * residual;
         const Eigen::Matrix<double, 11, 11> A = Eigen::Matrix<double, 11, 11>::Identity() - K * H;
         const Eigen::Matrix<double, 11, 11> expected_covariance = A * filter.P * A.transpose() + K * R * K.transpose();
-        check(filter.update_multi(observations).first.size() == static_cast<size_t>(count), "joint update count");
+        check(filter.update_multi(observations).size() == static_cast<size_t>(count), "joint update count");
         near(filter.X, expected_state);
         near(filter.P, expected_covariance);
         near(filter.P, filter.P.transpose(), 1e-12);
@@ -170,7 +168,6 @@ int main() {
               "Python rounding");
         auto b = tracker();
         ArmorEKF base_tracker{};
-        base_tracker.base_frame = true;
         const Eigen::Vector4d rear_observation(2.2, .1, 3., .3);
         base_tracker.initialize(rear_observation);
         near(armor_h(base_tracker.X, 0), rear_observation);
@@ -180,26 +177,19 @@ int main() {
         auto p = b.P;
         auto outlier = measurement(0);
         outlier(2) += 2;
-        check(b.update_multi({Observation{outlier}}).first.empty(), "range gate");
+        check(b.update_multi({outlier}).empty(), "range gate");
         near(b.X, x, 0);
         near(b.P, p, 0);
-        check(b.update_multi({Observation{Eigen::Vector4d::Zero()}}).first.empty(), "invalid distance");
-        check(b.update_multi({Observation{measurement(0), 9}}).first.empty(), "invalid id");
-        check(b.associate({Observation{measurement(0), -2}}).first.empty(),
-              "only -1 is an automatic plate id");
-        const auto id_reference = tracker();
-        const auto automatic = id_reference.associate({Observation{measurement(0, 1), -1}}).first;
-        check(automatic.size() == 1 && automatic[0].armor_id == 1, "automatic plate id sentinel");
-        check(id_reference.associate({Observation{measurement(0, 1), 0}}).first.empty(),
-              "specified plate zero must not become automatic");
+        const auto automatic = b.associate({measurement(0, 1)});
+        check(automatic.size() == 1 && automatic[0].armor_id == 1, "automatic plate id");
         auto a = tracker();
         b = tracker();
-        std::vector<Observation> observations = {{measurement(.02), 0}, {measurement(.02, 1), 1}};
-        auto matches = a.associate(observations).first;
+        std::vector<Eigen::Vector4d> observations = {measurement(.02), measurement(.02, 1)};
+        auto matches = a.associate(observations);
         check(matches.size() == 2, "stacked reference association");
         Eigen::MatrixXd stacked_h(8, 11), stacked_residual(8, 1), stacked_r = Eigen::MatrixXd::Zero(8, 8);
         for (int k = 0; k < 2; ++k) {
-            stacked_h.middleRows(4*k, 4) = matches[k].H;
+            stacked_h.middleRows(4*k, 4) = armor_get_jacobian(a.X, matches[k].armor_id);
             stacked_residual.middleRows(4*k, 4) = matches[k].residual;
             stacked_r.block(4*k, 4*k, 4, 4) = a.R;
         }
@@ -207,7 +197,7 @@ int main() {
         Eigen::MatrixXd expected_state = a.X + gain*stacked_residual;
         Eigen::MatrixXd identity_minus_kh = Eigen::MatrixXd::Identity(11, 11) - gain*stacked_h;
         Eigen::MatrixXd expected_covariance = identity_minus_kh*a.P*identity_minus_kh.transpose() + gain*stacked_r*gain.transpose();
-        check(a.update_multi(observations).first.size() == 2, "two plate update");
+        check(a.update_multi(observations).size() == 2, "two plate update");
         near(a.X, expected_state);
         near(a.P, expected_covariance);
         std::reverse(observations.begin(), observations.end());
@@ -215,21 +205,36 @@ int main() {
         near(a.X, b.X);
         near(a.P, b.P);
         b = tracker();
-        auto result = b.update_multi({Observation{measurement(0)}, Observation{measurement(0)},
-                                      Observation{measurement(0, 1)}});
-        check(result.first.size() == 2, "unique ids");
+        auto result = b.update_multi({measurement(0), measurement(0),
+                                      measurement(0, 1)});
+        check(result.size() == 2, "unique ids");
         b = tracker();
         b.P = b.P * 100;
         auto bad = measurement(0, 1);
         bad(3) = 0;
-        check(b.associate({Observation{measurement(0), 0}, Observation{bad, 1}}).first.size() == 1,
+        check(b.associate({measurement(0), bad}).size() == 1,
               "pair geometry");
         b = tracker();
         b.predict(.03);
         bad = measurement(0);
         bad(2) += .1;
-        result = b.associate({Observation{bad, 0}, Observation{measurement(0), 0}});
-        check(result.first.size() == 1 && result.first[0].index == 1, "lowest NIS conflict selection");
+        result = b.associate({bad, measurement(0)});
+        check(result.size() == 1 && result[0].index == 1, "nearest conflict selection");
+        b = tracker();
+        auto lateral = measurement(0);
+        lateral(0) += .3;
+        check(b.associate({lateral}).empty(), "lateral distance gate");
+        b.max_yaw_error = .2;
+        auto rotated = measurement(0);
+        rotated(3) += b.max_yaw_error + .01;
+        check(b.associate({rotated}).empty(), "absolute yaw gate");
+        const auto tied = b.associate({measurement(0), measurement(0)});
+        check(tied.size() == 1 && tied[0].index == 0, "equal distance keeps first observation");
+        auto uncertain = b;
+        uncertain.P *= 1000;
+        const auto covariance_independent = uncertain.associate({bad, measurement(0)});
+        check(covariance_independent.size() == 1 && covariance_independent[0].index == 1,
+              "association does not depend on covariance");
         b = tracker();
         b.X(1) = 1;
         b.X(3) = -.2;
@@ -279,7 +284,7 @@ int main() {
                     if (std::abs(armor_wrap_to_pi(theta + i * armor_pi / 2)) <
                         std::abs(armor_wrap_to_pi(theta + aid * armor_pi / 2)))
                         aid = i;
-                const auto associated = b.update_multi({Observation{measurement(theta, aid)}}).first;
+                const auto associated = b.update_multi({measurement(theta, aid)});
                 check(associated.size() == 1 && associated[0].armor_id == aid, "rotation id");
             } else
                 b.update_multi({});

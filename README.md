@@ -24,7 +24,7 @@ Camera → lightbar_detector → Solver/PnP → PoseBase → EKF → Gimbal → 
 | `solver.hpp/.cpp` | `Solver::solve_frame`：PnP、候选筛选、短时姿态关联，输出相机系 tvec/rvec 与观测 |
 | `pose_base.hpp/.cpp` | `PoseBase::receive/synchronize/convert`：缓存 STATE、同步姿态、转换完整装甲板位姿 |
 | `predictor*.hpp/.cpp` | 三种 EKF 各自提供 `update_frame`：选板、逐帧滤波、误差和未来几何；Armor.cpp 直接选择调用 |
-| `gimbal.hpp/.cpp` | `Gimbal::solve`：选未来目标板，计算绝对关节角并判断有效性 |
+| `gimbal.hpp/.cpp` | `solve_gimbal`：选未来目标板，计算绝对关节角并判断有效性 |
 | `serial.hpp/.cpp` | `Serial::receive/send_target/send_mode`：MC02 基础通信和独立心跳 |
 | `output.hpp/.cpp` | `Output::open/write/finish` 与 `PredictionOutput`：观测、预测、控制文件和 RMSE，逆变换绘制、视频和窗口 |
 | `Armor.cpp` | 顶部配置及上述接口调用，不包含检测、PnP、EKF或坐标变换算法 |
@@ -143,10 +143,10 @@ PnP 与绘制板尺寸为 135×56 mm。尺寸在 `solver.cpp` 顶部配置，绘
 
 每帧所有观测一起处理，先预测一次，再联合关联和更新：
 
-1. 检查每条观测的有效性，并尝试关联 A0–A3。
-2. 使用 NIS 和距离残差门限筛除不一致候选。
-3. 要求同帧板号唯一，板间朝向差与板号关系一致。
-4. 优先选择数量最多的一致观测集合，再比较总 NIS。
+1. 将观测转换为三维位置，并尝试关联 A0–A3。
+2. 使用三维位置距离和装甲板朝向差门限筛选候选。
+3. 按距离从小到大贪心匹配；距离相同时按输入顺序、板号排序。
+4. 每条观测和板号只能使用一次，板间朝向关系须一致；不再搜索全局最优组合。
 5. 将选中观测联合更新到同一个车体状态，每条观测使用相同的固定协方差。
 
 初始化帧只使用最近的一条有效观测，将其定义为 A0；该帧其他观测不参与更新。当前流程没有多车分组，同帧输入默认属于同一辆小车。
@@ -159,8 +159,8 @@ PnP 与绘制板尺寸为 135×56 mm。尺寸在 `solver.cpp` 顶部配置，绘
 
 | 构造参数 | 默认值 | 含义 |
 | --- | --- | --- |
-| `nis_gate` | `16.0` | 归一化创新平方门限 |
-| `max_distance_error` | `0.5` m | 距离残差绝对上限 |
+| `max_yaw_error` | 45°，单位为弧度 | 观测与预测装甲板的朝向差上限 |
+| `max_distance_error` | `0.5` m | 观测与预测装甲板的三维位置距离上限 |
 | `pair_yaw_tolerance` | 25°，传参单位为弧度 | 板间朝向关系容差 |
 
 过程噪声、固定观测协方差和初始化设置位于 `src/predictor_armor.cpp`，构造参数的默认值在 `include/predictor_armor.hpp` 的接口声明中。调参时应同时检查残差、中心漂移、接受率和运动变化时的响应。
@@ -169,13 +169,13 @@ PnP 与绘制板尺寸为 135×56 mm。尺寸在 `solver.cpp` 顶部配置，绘
 
 ### 5.4 C++ 调用
 
-观测的 `armor_id` 使用普通整数：`-1` 表示自动关联，`0～3` 表示指定板号。时间戳使用普通 `double`，调用方提供同一时钟上的递增时间。PoseBase 只接收类型化反馈，不再解析离线标定/遥测 CSV；安装参数由构造函数传入。投影和预测中心通过 `optional` 表达不可见目标与未初始化状态。
+四板模型直接接收 `std::vector<Eigen::Vector4d>` 观测，板号由关联算法自动确定。时间戳使用普通 `double`，调用方提供同一时钟上的递增时间。PoseBase 只接收类型化反馈，不再解析离线标定/遥测 CSV；安装参数由构造函数传入。投影和预测中心通过 `optional` 表达不可见目标与未初始化状态。
 
 滤波参数保存在各 EKF 类中。Armor.cpp 使用顶部的 `predictor_type`，通过 `if` 直接调用 `SinglePlateEKF::update_frame`、`PolarEKF::update_frame` 或 `ArmorEKF::update_frame`。每个逐帧接口实现在对应 cpp 中，不经过通用模型选择器。`predictor.cpp` 只实现基础单板 EKF；固定列导出与 RMSE 位于 `output.cpp` 的 `PredictionOutput`。PnP 标定在进入循环前显式设置。
 
 三个预测器保持声明与实现分离，算法和各自的逐帧接口放在对应 `.cpp`。所有模块均无自定义 namespace 和 using 类型别名。`predictor.hpp` 保留基础单板声明和公共观测/结果数据结构，不持有其他滤波器或选择模型。固定系 Armor 调用需设置 `armor.base_frame = true`。
 
-三个模型的状态、协方差、观测和雅可比均使用固定尺寸 Eigen 类型：基础单板为 6 维状态 / 3 维观测，极坐标为 9 维状态 / 4 维观测，装甲板为 11 维状态 / 4 维单板观测。四板联合更新按实际关联数量组合 4–16 维观测，矩阵存储上限固定为 16；卡尔曼增益和 NIS 直接通过 Eigen LDLT 求解，不构造逆矩阵，也不切换备用求解器。向量初始化使用 Eigen 构造函数或 `<<`，对角矩阵使用 `asDiagonal()`。
+三个模型的状态、协方差、观测和雅可比均使用固定尺寸 Eigen 类型：基础单板为 6 维状态 / 3 维观测，极坐标为 9 维状态 / 4 维观测，装甲板为 11 维状态 / 4 维单板观测。四板联合更新按实际关联数量组合 4–16 维观测，矩阵存储上限固定为 16；卡尔曼增益 直接通过 Eigen LDLT 求解，不构造逆矩阵，也不切换备用求解器。向量初始化使用 Eigen 构造函数或 `<<`，对角矩阵使用 `asDiagonal()`。
 
 ```cpp
 #include "predictor_armor.hpp"
@@ -185,7 +185,7 @@ ekf.base_frame = true; // 本应用使用固定系观测
 Eigen::Vector4d z(0, 0, 3, 0); // yaw, pitch, distance, plate yaw
 ekf.initialize(z);
 ekf.predict(.03);
-ekf.update_multi({{z}});
+ekf.update_multi({z});
 const auto future = ekf.forecast(.05); // 不推进当前状态
 // 在线预测：predictor.update(frame_id, timestamp_ms, observations)。
 // 导出：output.write(...)、output.finish()。
@@ -222,7 +222,6 @@ Armor 的 EKF 观测、状态和未来预测统一使用固定基座坐标系，
 | `results/prediction_result_1.csv` | SinglePlate 原 13 列加 coordinate_frame |
 | `results/polar_prediction_result_1.csv` | Polar 原 15 列加 coordinate_frame |
 | `results/armor_prediction_result_1.csv` | Armor 原 32 列加 coordinate_frame |
-| `results/armor_observation_diagnostics_1.csv` | 关联诊断，原 11 列加 coordinate_frame |
 | `results/armor_future_prediction_1.csv` | 未来四板，原 10 列加 coordinate_frame |
 | `results/*rmse_result_1.txt` | 原六位小数 RMSE 格式；没有有效残差为 nan |
 
@@ -266,6 +265,7 @@ distance = sqrt(x² + y² + z²)
 
 Polar 的板位置统一采用 `x = xc + r*sin(yaw)`、`z = zc - r*cos(yaw)`，与 PnP 朝向及 Armor 模型一致；初始化中心使用相反位移。
 
+
 Polar 保留原 9 维模型、数值雅可比与固定噪声 `R=diag(0.005,0.005,0.05,0.05)`；
 Armor 的固定参数见第 5 节。两种模型的既有几何定义也保留，不重新解释 yaw 或半径。
 
@@ -281,7 +281,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1
 .\.venv\Scripts\python -B tests/verify_armor_video.py --max-source-frames 90
 ```
 
-原生测试覆盖协议拆包/CRC、检测/PnP、三种 EKF、完整姿态变换、跨界插值、固定原点、移动相机下固定目标、绝对光轴对准、漏检/限位/失效控制，以及帧号、CSV、视频输出。NumPy 对照验证全部结果列、关联诊断、未来几何和 RMSE。视频集成脚本临时修改配置并验证红/蓝及三种模型，最后恢复源码和默认程序。
+原生测试覆盖协议拆包/CRC、检测/PnP、三种 EKF、完整姿态变换、跨界插值、固定原点、移动相机下固定目标、绝对光轴对准、漏检/限位/失效控制，以及帧号、CSV、视频输出。NumPy 对照验证全部结果列、未来几何和 RMSE。视频集成脚本临时修改配置并验证红/蓝及三种模型，最后恢复源码和默认程序。
 
 此次软件验证日志集中于 `tests/outputs/armor-unified/`。尚未接入实际摄像头、USB-TTL 或 MC02 电机；软件几何验证不能代替实物标定、延迟测量和收发联调。测试接口与产物说明见 [tests/README.md](tests/README.md)。
 

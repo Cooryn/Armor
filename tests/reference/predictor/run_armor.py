@@ -55,7 +55,6 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
     if any(g.timestamp.nunique() != 1 for g in groups.values()):
         raise ValueError("All observations of a frame must share its timestamp")
     ekf = ArmorEKF()
-    ekf.base_frame = base
     results, observation_log, future_results = [], [], []
     last_timestamp = None
     for frame_id in range(frame_ids[0], frame_ids[-1] + 1):
@@ -64,7 +63,7 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
         all_obs = [dict(Z_obs=row[['target_yaw', 'target_pitch', 'distance',
                                    'armor_orientation_yaw']].to_numpy(dtype=float).reshape(4, 1))
                    for _, row in group.iterrows()]
-        valid = [o for o in all_obs if ekf.valid_observation(o['Z_obs'])]
+        valid = all_obs
         if not ekf.is_initialized:
             seed = min(valid, key=lambda o: o['Z_obs'][2, 0]) if valid else None
             if seed is not None:

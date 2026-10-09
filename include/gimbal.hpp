@@ -15,15 +15,5 @@ struct ControlTarget
     int armor_id = -1;
     std::string status = "no_target";
 };
-class Gimbal
-{
-public:
-    explicit Gimbal(const GimbalConfig &config = GimbalConfig{})
-    {
-        config_ = config;
-    }
-    ControlTarget solve(const VideoPrediction &prediction, const PoseBase &pose_base,
-                        double image_timestamp_ms, double now_ms) const;
-private:
-    GimbalConfig config_;
-};
+ControlTarget solve_gimbal(const VideoPrediction &prediction, const PoseBase &pose_base,
+                           double image_timestamp_ms, double now_ms, const GimbalConfig &config = GimbalConfig{});

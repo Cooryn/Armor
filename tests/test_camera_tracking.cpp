@@ -35,7 +35,6 @@ int main(int argc, char **argv)
         GimbalConfig limits;
         limits.yaw_min_rad = limits.pitch_min_rad = -2;
         limits.yaw_max_rad = limits.pitch_max_rad = 2;
-        Gimbal gimbal(limits);
         const Eigen::Vector3d desired(-.35, .22, base.latest_state_.roll_rad);
         const Eigen::Vector3d target = base.at_angles(desired) * Eigen::Vector3d(0, 0, 3);
         VideoPrediction prediction;
@@ -43,21 +42,21 @@ int main(int argc, char **argv)
         prediction.status = "updated";
         prediction.position_variance = .01;
         prediction.future.plates.emplace_back(target.x(), target.y(), target.z(), 0);
-        const auto command = gimbal.solve(prediction, base, 100, 100);
+        const auto command = solve_gimbal(prediction, base, 100, 100, limits);
         check(command.valid && std::abs(command.yaw_rad - desired.x()) < 1e-6 &&
               std::abs(command.pitch_rad - desired.y()) < 1e-6, "absolute joints must include mount/offset/zero/direction");
         const Eigen::Vector3d aligned = base.at_angles({command.yaw_rad, command.pitch_rad, desired.z()}).inverse() * target;
         check(aligned.head<2>().norm() < 1e-6 && aligned.z() > 0, "command does not optically align the camera");
-        check(!gimbal.solve(prediction, base, 100, 201).valid, "stale state or image must invalidate control");
+        check(!solve_gimbal(prediction, base, 100, 201, limits).valid, "stale state or image must invalidate control");
         prediction.status = "prediction_only";
-        check(!gimbal.solve(prediction, base, 100, 100).valid, "dropout must not send a valid blind forecast");
+        check(!solve_gimbal(prediction, base, 100, 100, limits).valid, "dropout must not send a valid blind forecast");
         prediction.status = "updated";
         prediction.position_variance = 2;
-        check(!gimbal.solve(prediction, base, 100, 100).valid, "uncertain position must invalidate control");
+        check(!solve_gimbal(prediction, base, 100, 100, limits).valid, "uncertain position must invalidate control");
         prediction.position_variance = .01;
         limits.yaw_min_rad = -.1;
         limits.yaw_max_rad = .1;
-        check(!Gimbal(limits).solve(prediction, base, 100, 100).valid, "absolute joint limits must be enforced");
+        check(!solve_gimbal(prediction, base, 100, 100, limits).valid, "absolute joint limits must be enforced");
 
         const cv::Mat intrinsics = (cv::Mat_<double>(3, 3) << 800, 0, 320, 0, 800, 240, 0, 0, 1);
         const cv::Mat distortion = cv::Mat::zeros(1, 5, CV_64F);
@@ -66,15 +65,13 @@ int main(int argc, char **argv)
         for (auto type : {PREDICTOR_SINGLE_PLATE, PREDICTOR_POLAR, PREDICTOR_ARMOR})
         {
             Camera camera;
-            camera.open({VIDEO, fixture});
+            camera.open(VIDEO, fixture);
             check(camera.frame_id_ == 0 && camera.timestamp_ms == 0, "first frame clock");
             PoseBase poses;
             Solver solver(intrinsics, distortion);
             SinglePlateEKF single_plate;
             PolarEKF polar;
             ArmorEKF armor;
-            armor.base_frame = true;
-            Gimbal controller;
             Output output;
             const auto directory = root / std::to_string(type);
             output.open(directory, camera, type, false);
@@ -108,7 +105,7 @@ int main(int argc, char **argv)
                     view = polar.update_frame(camera.frame_id_, t, fixed.observations);
                 else
                     view = armor.update_frame(camera.frame_id_, t, fixed.observations);
-                const auto control = controller.solve(view, poses, t, t);
+                const auto control = solve_gimbal(view, poses, t, t);
                 if (count >= 5 && count <= 7)
                     check(view.status == "prediction_only" && !control.valid, "missing image observation must hold control");
                 if (type == PREDICTOR_SINGLE_PLATE && count > 1)

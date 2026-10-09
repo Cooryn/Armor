@@ -46,15 +46,13 @@ int main()
         if (camera_source == CAMERA)
             pose_base.receive(serial);
         Camera camera;
-        camera.open({camera_source, root / std::filesystem::u8path(video_file), camera_device, camera_recording_fps});
+        camera.open(camera_source, root / std::filesystem::u8path(video_file), camera_device, camera_recording_fps);
         Solver pnp(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
         if (camera_source == VIDEO)
             pnp.use_video_profile(video_camera_profile);
         SinglePlateEKF single_plate;
         PolarEKF polar;
         ArmorEKF armor;
-        armor.base_frame = true;
-        Gimbal gimbal(gimbal_config);
         Output output;
         output.open(root, camera, predictor_type, preview);
         if (camera_source == CAMERA)
@@ -76,8 +74,8 @@ int main()
                 prediction = polar.update_frame(camera.frame_id_, camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
             else
                 prediction = armor.update_frame(camera.frame_id_, camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
-            const auto command = gimbal.solve(prediction, pose_base, camera.timestamp_ms,
-                camera_source == CAMERA ? monotonic_time_ms() : camera.timestamp_ms);
+            const auto command = solve_gimbal(prediction, pose_base, camera.timestamp_ms,
+                camera_source == CAMERA ? monotonic_time_ms() : camera.timestamp_ms, gimbal_config);
             if (camera_source == CAMERA)
                 serial.send_target(command.yaw_rad, command.pitch_rad, command.valid);
             if (!output.write(camera, pnp, camera_poses, base_poses, pose_base, prediction, command, frame_start))
