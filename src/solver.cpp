@@ -8,7 +8,7 @@ constexpr float armor_width_m = 0.135f;
 constexpr float armor_height_m = 0.056f;
 
 // PnP求解装甲板位姿
-bool Solver::solve(Armor &armor, double yaw_hint)
+bool solver::solve(::armor &armor, double yaw_hint)
 {
     // 角点顺序：左上、左下、右下、右上
     static const std::vector<cv::Point3f> object_points = {
@@ -117,37 +117,37 @@ bool Solver::solve(Armor &armor, double yaw_hint)
 }
 
 // 前后帧装甲板匹配
-std::vector<int> Solver::temporal_matches(const std::vector<Armor> &armors, double timestamp_s) const
+std::vector<int> solver::temporal_matches(const std::vector<::armor> &armors, double timestamp_s) const
 {
     std::vector<int> matches(armors.size(), -1); // 初始化全部为未匹配
     const double dt = timestamp_s - previous_timestamp_s; // 计算当前帧和上一帧的时间差
     if (dt <= 0 || dt > .1 || previous.empty())
         return matches; // 判断上一帧信息是否可用
 
-    std::vector<std::vector<double>> costs(armors.size(), std::vector<double>(previous.size())); // 建立代价矩阵
-    for (size_t i = 0; i < armors.size(); ++i)
-        for (size_t j = 0; j < previous.size(); ++j)
-        {
-            const auto &previous_track = previous[j];
-            const double width = cv::norm(armors[i].vertices[3] - armors[i].vertices[0]);
-            const auto expected_center = previous_track.center + previous_track.velocity * static_cast<float>(dt);
-            costs[i][j] = (width > .5 * previous_track.width && width < 2 * previous_track.width) ? cv::norm(armors[i].center - expected_center) / std::max(10., previous_track.width) : 1e9; // 代价函数
-        }
-
-    // 比较代价
     for (size_t i = 0; i < armors.size(); ++i)
     {
-        const size_t j = std::min_element(costs[i].begin(), costs[i].end()) - costs[i].begin();
-        const double best = costs[i][j];
+        const double width = cv::norm(armors[i].vertices[3] - armors[i].vertices[0]);
+        double best = std::numeric_limits<double>::infinity();
+        for (size_t j = 0; j < previous.size(); ++j)
+        {
+            const auto &track = previous[j];
+            const auto expected_center = track.center + track.velocity * static_cast<float>(dt);
+            const double cost = (width > .5 * track.width && width < 2 * track.width)
+                ? cv::norm(armors[i].center - expected_center) / std::max(10., track.width) : 1e9;
+            if (cost < best)
+            {
+                best = cost;
+                matches[i] = static_cast<int>(j);
+            }
+        }
         if (best > .6)
-            continue;
-        matches[i] = static_cast<int>(j);
+            matches[i] = -1;
     }
     return matches;
 }
 
 // 根据上一帧装甲板信息计算yaw_hints
-std::vector<double> Solver::yaw_hints(const std::vector<Armor> &armors, double timestamp_s) const
+std::vector<double> solver::yaw_hints(const std::vector<::armor> &armors, double timestamp_s) const
 {
     const auto matches = temporal_matches(armors, timestamp_s);
     std::vector<double> hints(armors.size(), std::numeric_limits<double>::quiet_NaN());
@@ -161,7 +161,7 @@ std::vector<double> Solver::yaw_hints(const std::vector<Armor> &armors, double t
 }
 
 // 整理新的Track
-void Solver::finish_frame(const std::vector<Armor> &armors, double timestamp_s)
+void solver::finish_frame(const std::vector<::armor> &armors, double timestamp_s)
 {
     const auto matches = temporal_matches(armors, timestamp_s); // 解出上一帧对应装甲板
     std::vector<SolverTrack> next;
@@ -189,7 +189,7 @@ void Solver::finish_frame(const std::vector<Armor> &armors, double timestamp_s)
     previous_timestamp_s = timestamp_s;
 }
 
-void Solver::use_video_profile(int profile)
+void solver::use_video_profile(int profile)
 {
     if (profile == 2)
     {
@@ -205,7 +205,7 @@ void Solver::use_video_profile(int profile)
     }
 }
 
-SolvedFrame Solver::solve_frame(std::vector<Armor> armors, double timestamp_ms)
+SolvedFrame solver::solve_frame(std::vector<::armor> armors, double timestamp_ms)
 {
     const double timestamp_s = timestamp_ms / 1000;
     const auto hints = yaw_hints(armors, timestamp_s);
@@ -218,7 +218,7 @@ SolvedFrame Solver::solve_frame(std::vector<Armor> armors, double timestamp_ms)
         const Eigen::Vector3d position(armor.tvec.at<double>(0), armor.tvec.at<double>(1), armor.tvec.at<double>(2));
         const Eigen::Vector4d z(std::atan2(position(0), position(2)), std::atan2(position(1), std::hypot(position(0), position(2))),
                                 position.norm(), std::remainder(armor.yaw * CV_PI / 180, 2 * CV_PI));
-        result.observations.push_back({position, z});
+        result.observations.push_back(z);
         result.armors.push_back(std::move(armor));
     }
     finish_frame(result.armors, timestamp_s);

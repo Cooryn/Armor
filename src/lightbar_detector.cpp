@@ -5,7 +5,7 @@
 #include <limits>
 
 // 提取灯条mask
-cv::Mat extractColor(const cv::Mat &image, EnemyColor color, int color_th, int gray_th)
+cv::Mat detector::extract_color(const cv::Mat &image, EnemyColor color, int color_th, int gray_th)
 {
     // 分离BGR通道
     std::vector<cv::Mat> channels;
@@ -47,7 +47,7 @@ cv::Mat extractColor(const cv::Mat &image, EnemyColor color, int color_th, int g
 }
 
 // 筛选有效灯条的旋转矩形
-std::vector<cv::RotatedRect> getValidLightRects(
+std::vector<cv::RotatedRect> detector::get_valid_light_rects(
     const std::vector<std::vector<cv::Point>> &light_bars, std::vector<float> &quality,
     float min_angle,
     double minAspectRatio, double minArea)
@@ -153,7 +153,7 @@ struct Candidate
 };
 
 // 灯条匹配装甲板
-std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &light_bars,
+std::vector<::armor> detector::match_armors(const std::vector<cv::RotatedRect> &light_bars,
                                const std::vector<float> &light_quality,
                                float max_angle_diff,
                                float max_length_ratio,
@@ -162,7 +162,7 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &light_bars,
                                float max_aspect_ratio,
                                float min_detection_score)
 {
-    std::vector<Armor> armors;
+    std::vector<::armor> armors;
 
     // 按照灯条中心位置从左往右、从上到下排序，将顺序存入order
     std::vector<cv::RotatedRect> bars;
@@ -271,12 +271,12 @@ std::vector<Armor> matchArmors(const std::vector<cv::RotatedRect> &light_bars,
     }
 
     // 将装甲板从左往右排序
-    std::sort(armors.begin(), armors.end(), [](const Armor &a, const Armor &b)
+    std::sort(armors.begin(), armors.end(), [](const ::armor &a, const ::armor &b)
               { return a.center.x < b.center.x; });
     return armors;
 }
 
-void drawArmors(cv::Mat &image, const std::vector<Armor> &armors)
+void detector::draw_armors(cv::Mat &image, const std::vector<::armor> &armors)
 {
     for (const auto &armor : armors)
     {
@@ -287,7 +287,7 @@ void drawArmors(cv::Mat &image, const std::vector<Armor> &armors)
     }
 }
 
-void drawVideoInfo(cv::Mat &image, const std::vector<Armor> &armors, const std::string &status)
+void detector::draw_video_info(cv::Mat &image, const std::vector<::armor> &armors, const std::string &status)
 {
     std::vector<std::string> lines{status, "Camera XYZ (m): X right, Y down, Z forward"};
     if (armors.empty())
@@ -309,12 +309,12 @@ void drawVideoInfo(cv::Mat &image, const std::vector<Armor> &armors, const std::
     }
 }
 
-std::vector<Armor> detectArmors(const cv::Mat &image, EnemyColor color)
+std::vector<::armor> detector::detect(const cv::Mat &image, EnemyColor color)
 {
-    const auto mask = extractColor(image, color, 70, 170);
+    const auto mask = detector::extract_color(image, color, 70, 170);
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE); // 提取灯条轮廓
     std::vector<float> quality;
-    const auto lights = getValidLightRects(contours, quality, 55, 1.5, 40);
-    return matchArmors(lights, quality, 20, 2.f, .8f, .8f, 3.1f, .35f);
+    const auto lights = detector::get_valid_light_rects(contours, quality, 55, 1.5, 40);
+    return detector::match_armors(lights, quality, 20, 2.f, .8f, .8f, 3.1f, .35f);
 }

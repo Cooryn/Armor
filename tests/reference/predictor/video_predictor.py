@@ -11,9 +11,8 @@ BASIC_COLUMNS = ('frame_id predicted_x observed_x error_x predicted_z observed_z
 POLAR_COLUMNS = ('frame_id xc vxc yc vyc zc vzc body_yaw w r err_target_yaw err_target_pitch '
                  'err_distance err_armor_yaw obs_armor_yaw').split()
 ARMOR_COLUMNS = ('frame_id timestamp prediction_horizon_ms prediction_timestamp future_xc future_yc future_zc '
-                 'future_body_yaw xc yc zc vxc vyc vzc w xa za armor_id body_yaw pred_armor_yaw obs_armor_yaw '
-                 'err_target_yaw err_target_pitch err_distance err_armor_yaw r dl dh observation_count '
-                 'accepted_count rejected_count status').split()
+                 'future_body_yaw xc yc zc xa za body_yaw pred_armor_yaw obs_armor_yaw '
+                 'err_target_yaw err_target_pitch err_distance err_armor_yaw r dl dh status').split()
 FUTURE_COLUMNS = ('frame_id timestamp prediction_timestamp prediction_horizon_ms armor_id x y z '
                   'armor_orientation_yaw source_status').split()
 GEOMETRY_COLUMNS = ['frame_id', 'timestamp', 'initialized', 'status']
@@ -52,6 +51,8 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
         return center, poses
 
     for fid, timestamp, obs in frames:
+        obs = [(z[2] * np.array([np.cos(z[1])*np.sin(z[0]), np.sin(z[1]),
+                                 np.cos(z[1])*np.cos(z[0])]), z) for _, z in obs]
         if (fid < 0 or fid != int(fid) or fid <= last_id or not np.isfinite(timestamp) or timestamp < 0
                 or (last_id >= 0 and timestamp <= last_time)):
             raise ValueError('Invalid frame clock')
@@ -111,8 +112,8 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
                 for i, p in enumerate(forecast['plates']):
                     futures.append([fid, timestamp, timestamp + horizon_ms, horizon_ms, i, *p, status])
                 results.append([fid, timestamp, horizon_ms, timestamp + horizon_ms, *f[[0, 2, 4, 6]],
-                                *s[[0, 2, 4, 1, 3, 5, 7]], plate[0], plate[2], aid, s[6], plate[3], observed_yaw,
-                                *e, *s[8:], len(obs), len(matches), len(obs) - len(matches), status])
+                                *s[[0, 2, 4]], plate[0], plate[2], s[6], plate[3], observed_yaw,
+                                *e, *s[8:], status])
             status = 'updated' if updated else 'prediction_only'
             errors.append(e)
         g = [fid, timestamp, ekf.is_initialized, status]

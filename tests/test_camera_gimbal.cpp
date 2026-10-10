@@ -12,7 +12,7 @@ int main() {
         CameraCalibration mount;
         mount.yaw_to_pitch = {0.1, 0, 0};
         mount.camera_in_pitch = {0, 0, 0.2};
-        PoseBase frames{mount, {{0, 0, 0, 0}, {100, 90, 0, 0}, {200, 90, 90, 0}}};
+        ::pose frames{mount, {{0, 0, 0, 0}, {100, 90, 0, 0}, {200, 90, 90, 0}}};
         frames.reset_origin(0);
         auto T = frames.at(0);
         check((T * Eigen::Vector3d(0, 0, 1) - Eigen::Vector3d(0, 0, 1)).norm() < 1e-12, "lever arm");
@@ -29,17 +29,17 @@ int main() {
         check((frames.at(200).linear() - T.linear()).norm() < 1e-12, "reset preserves base axes");
         check((frames.reset_origin(100).matrix() - Eigen::Matrix4d::Identity()).norm() < 1e-12, "repeated reset identity");
         check(!frames.covered(300), "origin reset requires covered timestamp");
-        PoseBase interpolated{mount, {{0, 0, 0, 0}, {100, 90, 0, 0}}, 100};
+        ::pose interpolated{mount, {{0, 0, 0, 0}, {100, 90, 0, 0}}, 100};
         interpolated.reset_origin(50);
         check(interpolated.at(50).translation().norm() < 1e-12, "interpolated reference origin");
-        PoseBase crossing{{}, {{0, 179, 0, 0}, {100, -179, 0, 0}}};
+        ::pose crossing{{}, {{0, 179, 0, 0}, {100, -179, 0, 0}}};
         check((crossing.at(50).linear() * Eigen::Vector3d::UnitZ() + Eigen::Vector3d::UnitZ()).norm() < 1e-12,
               "shortest interpolation across wrap");
         check(!crossing.covered(101), "no telemetry extrapolation");
-        PoseBase sparse{{}, {{0, 0, 0, 0}, {500, 0, 0, 0}}};
+        ::pose sparse{{}, {{0, 0, 0, 0}, {500, 0, 0, 0}}};
         check(!sparse.covered(250), "telemetry gap is unavailable");
 
-        PoseBase live{mount, {}};
+        ::pose live{mount, {}};
         live.push({10, 0, 0, 0, HOST_IDLE, 0});
         live.push({110, static_cast<float>(CV_PI / 2), 0, 0, HOST_IDLE, 0});
         const Eigen::Vector3d halfway(1.3 / std::sqrt(2.) - .1, 0, 1.1 / std::sqrt(2.) - .2);
@@ -48,12 +48,12 @@ int main() {
         check(live.reference_time_ms_ == 10 && (live.origin_in_mechanical_ - Eigen::Vector3d(.1, 0, .2)).norm() < 1e-12,
               "first serial sample fixes the optical-center origin");
         check(!live.covered(111), "live attitude requires received coverage");
-        PoseBase serial_crossing{};
+        ::pose serial_crossing{};
         serial_crossing.push({0, static_cast<float>(179 * CV_PI / 180), 0, 0, HOST_IDLE, 0});
         serial_crossing.push({20, static_cast<float>(-179 * CV_PI / 180), 0, 0, HOST_IDLE, 0});
         check((serial_crossing.at(10).linear() * Eigen::Vector3d::UnitZ() + Eigen::Vector3d::UnitZ()).norm() < 1e-6,
               "serial angle wrap interpolates through pi");
-        PoseBase dropped{};
+        ::pose dropped{};
         dropped.push({0, 0, 0, 0, HOST_IDLE, 0});
         dropped.push({200, .2f, 0, 0, HOST_IDLE, 0});
         check(!dropped.covered(100), "missing serial coverage");
@@ -61,7 +61,7 @@ int main() {
         corrected_mount.angle_zero_rad = {.25, .5, 0};
         corrected_mount.angle_direction = {-1, 1, 1};
         corrected_mount.camera_to_pitch = Eigen::AngleAxisd(.2, Eigen::Vector3d::UnitZ());
-        PoseBase corrected{corrected_mount, {}};
+        ::pose corrected{corrected_mount, {}};
         corrected.push({0, 1, .5f, 0, HOST_IDLE, 0});
         const Eigen::Matrix3d corrected_rotation =
             (Eigen::AngleAxisd(-.75, Eigen::Vector3d::UnitY()) * Eigen::AngleAxisd(.2, Eigen::Vector3d::UnitZ())).toRotationMatrix();
@@ -72,8 +72,8 @@ int main() {
               (live.origin_in_mechanical_ - Eigen::Vector3d(.1, 0, .2)).norm() < 1e-12,
               "bounded live cache preserves the fixed origin when old samples are removed");
 
-        const GimbalState received{monotonic_time_ms(), 1, -.5f, 0, HOST_AUTO_AIM, 0};
-        PoseBase received_frames{};
+        const GimbalState received{serial::monotonic_time_ms(), 1, -.5f, 0, HOST_AUTO_AIM, 0};
+        ::pose received_frames{};
         received_frames.push(received);
         const auto received_pose = received_frames.to_base({0, 0, 2}, Eigen::Vector3d::Zero(), received.receive_timestamp_ms);
         const Eigen::Vector3d received_position(2 * std::sin(1.) * std::cos(.5), 2 * std::sin(.5), 2 * std::cos(1.) * std::cos(.5));
@@ -89,7 +89,7 @@ int main() {
         moving_mount.camera_in_pitch = {.03, -.015, .15};
         moving_mount.camera_to_pitch = Eigen::AngleAxisd(.08, Eigen::Vector3d::UnitX()) *
                                         Eigen::AngleAxisd(-.12, Eigen::Vector3d::UnitZ());
-        PoseBase moving{moving_mount, {}};
+        ::pose moving{moving_mount, {}};
         for (int i = 0; i < 5; ++i)
             moving.push({i * 20., i * .05f, i * -.025f, i * .01f, HOST_IDLE, 0});
         const Eigen::Vector3d fixed_position(.2, -.1, 3);
@@ -97,7 +97,7 @@ int main() {
             Eigen::AngleAxisd(.12, Eigen::Vector3d::UnitX()) * Eigen::AngleAxisd(-.15, Eigen::Vector3d::UnitZ())).toRotationMatrix();
         const cv::Mat camera = (cv::Mat_<double>(3, 3) << 800, 0, 320, 0, 800, 240, 0, 0, 1);
         const cv::Mat distortion = cv::Mat::zeros(1, 5, CV_64F);
-        Solver solver(camera, distortion);
+        ::solver solver(camera, distortion);
         const std::vector<cv::Point3f> object_points = {{-.0675f, -.028f, 0}, {-.0675f, .028f, 0},
                                                        {.0675f, .028f, 0}, {.0675f, -.028f, 0}};
         for (double timestamp : {0., 10., 30., 50., 80.})
@@ -115,7 +115,7 @@ int main() {
             cv::Mat tvec = (cv::Mat_<double>(3, 1) << camera_position.x(), camera_position.y(), camera_position.z());
             std::vector<cv::Point2f> pixels;
             cv::projectPoints(object_points, rvec, tvec, camera, distortion, pixels);
-            Armor detected;
+            ::armor detected;
             for (int i = 0; i < 4; ++i) detected.vertices[i] = pixels[i];
             check(solver.solve(detected), "moving-camera synthetic armor PnP solved");
             const auto solved = moving.to_base({detected.tvec.at<double>(0), detected.tvec.at<double>(1), detected.tvec.at<double>(2)},
@@ -125,11 +125,11 @@ int main() {
                   "PnP and lower-controller attitude recover a stationary armor pose");
         }
         check(moving.covered(10) && !moving.covered(100) && !dropped.covered(100), "synchronization availability");
-        PoseBase turned;
+        ::pose turned;
         turned.push({0, 2, 0, 0, HOST_IDLE, 0});
         const auto back_pose = turned.to_base({0, 0, 3}, Eigen::Vector3d::Zero(), 0);
-        ArmorEKF fixed;
-        check(fixed.update_frame(0, 0, {{back_pose.position, back_pose.measurement}}).initialized,
+        ::predictor_armor fixed;
+        check(fixed.update_frame(0, {back_pose.measurement}).status == "initialized",
               "fixed-frame Armor accepts a target behind the base Z axis");
         std::cout << "PoseBase checks passed\n";
         return 0;

@@ -6,12 +6,12 @@ constexpr int camera_width = 1280;
 constexpr int camera_height = 720;
 constexpr double camera_capture_fps = 60;
 
-bool Camera::live() const
+bool camera::live() const
 {
     return source_ == CAMERA;
 }
 
-void Camera::open(CameraSource source, const std::filesystem::path &video_path, int camera_device, double recording_fps)
+void camera::open(CameraSource source, const std::filesystem::path &video_path, int camera_device, double recording_fps)
 {
     stream_.release();
     source_ = source;
@@ -51,7 +51,7 @@ void Camera::open(CameraSource source, const std::filesystem::path &video_path, 
         throw std::runtime_error("Cannot read the first image: " + stem_);
 }
 
-bool Camera::next()
+bool camera::next()
 {
     if (!stream_.read(image_))
     {
@@ -60,6 +60,6 @@ bool Camera::next()
         return false;
     }
     ++frame_id_;
-    timestamp_ms = live() ? monotonic_time_ms() : double(frame_id_) * 1000 / fps_;
+    timestamp_ms = live() ? serial::monotonic_time_ms() : double(frame_id_) * 1000 / fps_;
     return true;
 }

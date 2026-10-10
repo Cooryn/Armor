@@ -1,4 +1,5 @@
 #include "serial.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -12,13 +13,13 @@
 
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559, "Protocol requires IEEE-754 float32");
 
-double monotonic_time_ms()
+double serial::monotonic_time_ms()
 {
     static const auto origin = std::chrono::steady_clock::now();
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - origin).count();
 }
 
-static std::uint8_t serial_crc8(const std::uint8_t *bytes, std::size_t size)
+std::uint8_t serial::crc8(const std::uint8_t *bytes, std::size_t size)
 {
     std::uint8_t crc = 0;
     for (std::size_t i = 0; i < size; ++i)
@@ -30,12 +31,12 @@ static std::uint8_t serial_crc8(const std::uint8_t *bytes, std::size_t size)
     return crc;
 }
 
-Serial::~Serial()
+serial::~serial()
 {
     try { close(); } catch (...) {}
 }
 
-void Serial::open(const std::string &serial_port)
+void serial::open(const std::string &serial_port)
 {
     close();
 #ifdef _WIN32
@@ -66,14 +67,14 @@ void Serial::open(const std::string &serial_port)
     }
     handle = opened;
     running = true;
-    try { worker = std::thread(&Serial::run, this); }
+    try { worker = std::thread(&serial::run, this); }
     catch (...) { close(); throw; }
 #else
     throw std::runtime_error("Serial hardware transport requires Windows");
 #endif
 }
 
-void Serial::close()
+void serial::close()
 {
     running = false;
     if (worker.joinable())
@@ -93,7 +94,7 @@ void Serial::close()
         throw std::runtime_error(failure);
 }
 
-bool Serial::receive(GimbalState &gimbal_state)
+bool serial::receive(GimbalState &gimbal_state)
 {
     std::lock_guard<std::mutex> lock(mutex);
     if (!error.empty())
@@ -105,7 +106,7 @@ bool Serial::receive(GimbalState &gimbal_state)
     return true;
 }
 
-void Serial::send_target(float yaw_rad, float pitch_rad, bool valid)
+void serial::send_target(float yaw_rad, float pitch_rad, bool valid)
 {
     std::vector<std::uint8_t> packet{0xA5, HOST_TARGET, 9};
     for (float angle : {yaw_rad, pitch_rad})
@@ -116,24 +117,25 @@ void Serial::send_target(float yaw_rad, float pitch_rad, bool valid)
             packet.push_back(static_cast<std::uint8_t>(bits >> (byte * 8)));
     }
     packet.push_back(valid ? 1 : 0);
-    packet.push_back(serial_crc8(packet.data() + 1, packet.size() - 1));
+    packet.push_back(serial::crc8(packet.data() + 1, packet.size() - 1));
     std::lock_guard<std::mutex> lock(mutex);
     if (!running)
         throw std::runtime_error(error.empty() ? "Serial port is not open" : error);
     pending_target = std::move(packet);
+    target_updated_ms = serial::monotonic_time_ms();
 }
 
-void Serial::send_mode(std::uint8_t mode)
+void serial::send_mode(std::uint8_t mode)
 {
     std::vector<std::uint8_t> packet{0xA5, HOST_MODE, 1, mode};
-    packet.push_back(serial_crc8(packet.data() + 1, packet.size() - 1));
+    packet.push_back(serial::crc8(packet.data() + 1, packet.size() - 1));
     std::lock_guard<std::mutex> lock(mutex);
     if (!running)
         throw std::runtime_error(error.empty() ? "Serial port is not open" : error);
     pending_mode = std::move(packet);
 }
 
-void Serial::run()
+void serial::run()
 {
 #ifdef _WIN32
     try
@@ -141,8 +143,11 @@ void Serial::run()
         std::vector<std::uint8_t> buffer;
         std::uint8_t bytes[256];
         double next_heartbeat_ms = 0;
+        double next_target_ms = 0;
+        std::vector<std::uint8_t> target_packet{0xA5, HOST_TARGET, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x3E};
+        double target_time_ms = 0;
         std::vector<std::uint8_t> heartbeat{0xA5, HOST_HEARTBEAT, 0};
-        heartbeat.push_back(serial_crc8(heartbeat.data() + 1, 2));
+        heartbeat.push_back(serial::crc8(heartbeat.data() + 1, 2));
         const auto write_packet = [this](const std::vector<std::uint8_t> &packet)
         {
             DWORD sent = 0;
@@ -153,10 +158,10 @@ void Serial::run()
         {
             if (running)
             {
-                if (monotonic_time_ms() >= next_heartbeat_ms)
+                if (serial::monotonic_time_ms() >= next_heartbeat_ms)
                 {
                     write_packet(heartbeat);
-                    next_heartbeat_ms = monotonic_time_ms() + 50;
+                    next_heartbeat_ms = serial::monotonic_time_ms() + 50;
                 }
                 DWORD count = 0, errors = 0;
                 if (!ClearCommError(handle, &errors, nullptr) || !ReadFile(handle, bytes, sizeof(bytes), &count, nullptr))
@@ -164,12 +169,33 @@ void Serial::run()
                 buffer.insert(buffer.end(), bytes, bytes + count);
                 GimbalState gimbal_state;
                 bool received = false;
-                while (buffer.size() >= 18)
+                while (!buffer.empty())
                 {
-                    if (buffer[0] != 0xA5 || buffer[1] != HOST_STATE || buffer[2] != 14)
-                        throw std::runtime_error("Invalid MCU STATE packet header");
-                    if (serial_crc8(buffer.data() + 1, 16) != buffer[17])
-                        throw std::runtime_error("MCU STATE CRC mismatch");
+                    buffer.erase(buffer.begin(), std::find(buffer.begin(), buffer.end(), 0xA5));
+                    if (buffer.size() < 3)
+                        break;
+                    const auto cmd = buffer[1];
+                    const auto length = buffer[2];
+                    if (length > 24 || (cmd == HOST_STATE && length != 14) ||
+                        (cmd == HOST_HEARTBEAT && length != 0))
+                    {
+                        buffer.erase(buffer.begin());
+                        continue;
+                    }
+                    const std::size_t frame_size = length + 4;
+                    if (buffer.size() < frame_size)
+                        break;
+                    if (serial::crc8(buffer.data() + 1, length + 2) != buffer[frame_size - 1])
+                    {
+                        buffer.erase(buffer.begin());
+                        continue;
+                    }
+                    // HEARTBEAT and other commands do not publish or refresh a STATE sample.
+                    if (cmd != HOST_STATE)
+                    {
+                        buffer.erase(buffer.begin(), buffer.begin() + frame_size);
+                        continue;
+                    }
                     float *angles[] = {&gimbal_state.yaw_rad, &gimbal_state.pitch_rad, &gimbal_state.roll_rad};
                     for (unsigned angle = 0; angle < 3; ++angle)
                     {
@@ -180,7 +206,9 @@ void Serial::run()
                     }
                     gimbal_state.mode = buffer[15];
                     gimbal_state.flags = buffer[16];
-                    gimbal_state.receive_timestamp_ms = monotonic_time_ms();
+                    // Protocol v1.0 reserves roll; do not use it as measured attitude.
+                    gimbal_state.roll_rad = 0;
+                    gimbal_state.receive_timestamp_ms = serial::monotonic_time_ms();
                     received = true;
                     buffer.erase(buffer.begin(), buffer.begin() + 18);
                 }
@@ -196,7 +224,26 @@ void Serial::run()
                 std::vector<std::uint8_t> packet;
                 {
                     std::lock_guard<std::mutex> lock(mutex);
+                    if (target && running && serial::monotonic_time_ms() < next_target_ms)
+                        continue;
                     packet.swap(target ? pending_target : pending_mode);
+                    if (target)
+                    {
+                        if (!packet.empty())
+                        {
+                            target_packet = packet;
+                            target_time_ms = target_updated_ms;
+                        }
+                        if (running)
+                            packet = target_packet;
+                        // Repetition must never make an old vision result valid again.
+                        if (!packet.empty() && serial::monotonic_time_ms() - target_time_ms >= 100)
+                        {
+                            packet[11] = 0;
+                            packet[12] = serial::crc8(packet.data() + 1, 11);
+                        }
+                        next_target_ms = serial::monotonic_time_ms() + 25; // 40 Hz
+                    }
                 }
                 if (!packet.empty())
                     write_packet(packet);

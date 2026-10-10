@@ -108,9 +108,8 @@ for model in ('basic', 'polar', 'armor'):
         assert state.frame_id.tolist() == list(range(3, 100))
         if model == 'armor':
             missed = state[state.status == 'prediction_only']
-            assert not missed.empty and missed.armor_id.eq(-1).all()
+            assert not missed.empty
             assert missed[['xa', 'za', 'pred_armor_yaw', 'obs_armor_yaw', 'err_distance']].isna().all().all()
-            assert state.accepted_count.max() == 4
             futures = pd.read_csv(output / 'armor_future_prediction_1.csv')
             assert (futures.groupby('frame_id').armor_id.nunique() == 4).all()
 

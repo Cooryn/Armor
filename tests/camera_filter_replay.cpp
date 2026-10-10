@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
         futures.exceptions(std::ios::failbit | std::ios::badbit);
         states << "frame_id,timestamp,xc,yc,zc,vxc,vyc,vzc,w,accepted_count,status\n" << std::setprecision(17);
         futures << "frame_id,timestamp,armor_id,x,y,z,qw,qx,qy,qz\n" << std::setprecision(17);
-        ArmorEKF filter{};
+        ::predictor_armor filter{};
         long long frame;
         double time, previous_time = -1;
         while (input >> frame) {

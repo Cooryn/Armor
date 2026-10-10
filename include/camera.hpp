@@ -5,7 +5,7 @@
 #include <string>
 
 enum CameraSource { VIDEO, CAMERA };
-class Camera
+class camera
 {
 public:
     void open(CameraSource source, const std::filesystem::path &video_path, int camera_device = 0, double recording_fps = 30);

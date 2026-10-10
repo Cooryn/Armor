@@ -24,11 +24,12 @@ target_include_directories(serial INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(serial PUBLIC Threads::Threads)
 
 add_library(predictor_filters STATIC
-    src/predictor.cpp
+    src/predictor_single.cpp
     src/predictor_polar.cpp
     src/predictor_armor.cpp)
 configure_target(predictor_filters)
-target_include_directories(predictor_filters INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(predictor_filters PUBLIC ${OpenCV_INCLUDE_DIRS}
+    INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(predictor_filters PUBLIC Eigen3::Eigen)
 
 add_library(armor_vision STATIC src/lightbar_detector.cpp src/solver.cpp)

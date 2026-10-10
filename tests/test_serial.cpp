@@ -103,7 +103,7 @@ static void feed(std::vector<std::uint8_t> bytes)
     std::lock_guard<std::mutex> lock(transport_mutex);
     incoming.push_back(std::move(bytes));
 }
-static GimbalState await_state(Serial &link)
+static GimbalState await_state(::serial &link)
 {
     GimbalState state;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -121,7 +121,7 @@ int main()
     try
     {
         const std::string text = "123456789";
-        check(serial_crc8(reinterpret_cast<const std::uint8_t *>(text.data()), text.size()) == 0xF4,
+        check(serial::crc8(reinterpret_cast<const std::uint8_t *>(text.data()), text.size()) == 0xF4,
               "CRC-8/ATM reference vector");
 #ifdef _WIN32
         const std::vector<std::uint8_t> packet{
@@ -129,7 +129,7 @@ int main()
         for (std::size_t split = 0; split < packet.size(); ++split)
         {
             reset_transport();
-            Serial link;
+            ::serial link;
             link.open("TEST");
             feed({packet.begin(), packet.begin() + split});
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -140,25 +140,25 @@ int main()
             }
             GimbalState state;
             check(!link.receive(state), "partial STATE emits nothing");
-            const auto before = monotonic_time_ms();
+            const auto before = serial::monotonic_time_ms();
             feed({packet.begin() + split, packet.end()});
             state = await_state(link);
             check(state.yaw_rad == 1 && state.pitch_rad == -.5f && state.roll_rad == 0 && state.mode == 2 && state.flags == 0,
                   "all split points, little-endian fields and reserved STATE.flags=0");
-            check(state.receive_timestamp_ms >= before && state.receive_timestamp_ms <= monotonic_time_ms(),
+            check(state.receive_timestamp_ms >= before && state.receive_timestamp_ms <= serial::monotonic_time_ms(),
                   "timestamp after complete packet validation");
             check(!link.receive(state), "sample consumed once");
             link.close();
         }
         reset_transport();
         {
-            Serial link;
+            ::serial link;
             link.open("TEST");
             for (auto byte : packet) feed({byte});
             check(await_state(link).pitch_rad == -.5f, "bytewise reception");
             auto last = packet;
             last[3] = 0xA5; last[15] = 4; last[16] = 0x80;
-            last.back() = serial_crc8(last.data() + 1, 16);
+            last.back() = serial::crc8(last.data() + 1, 16);
             auto stream = packet;
             stream.insert(stream.end(), last.begin(), last.end());
             feed(stream);
@@ -177,10 +177,49 @@ int main()
         check(std::find(outgoing.begin(), outgoing.end(), std::vector<std::uint8_t>{0xA5, 4, 0, 0x54}) != outgoing.end(),
               "HEARTBEAT golden frame");
 
-        for (int failure = 0; failure < 4; ++failure)
+        reset_transport();
+        {
+            ::serial link;
+            link.open("TEST");
+            feed({0xA5, 4});
+            feed({0, 0x54});
+            feed({0x12, 0x34, 0xA5, 2, 25, 0xA5, 2, 0, 0xA5, 4, 1});
+            auto bad = packet;
+            bad.back() ^= 1;
+            feed(bad);
+            auto stream = std::vector<std::uint8_t>{0xA5, 4, 0, 0x54};
+            auto reserved = packet;
+            reserved[13] = 0x80; reserved[14] = 0x3F;
+            reserved.back() = serial::crc8(reserved.data() + 1, 16);
+            stream.insert(stream.end(), reserved.begin(), reserved.end());
+            stream.insert(stream.end(), {0xA5, 4, 0, 0x54});
+            feed(stream);
+            const auto state = await_state(link);
+            check(state.yaw_rad == 1 && state.roll_rad == 0, "resync, heartbeat and ignored roll");
+            link.send_target(1, -.5f, true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(220));
+            GimbalState extra;
+            check(!link.receive(extra), "heartbeat does not publish STATE");
+            link.close();
+        }
+        int valid_targets = 0, invalid_targets = 0;
+        for (const auto &frame : outgoing)
+        {
+            if (frame[1] != HOST_TARGET) continue;
+            check(serial::crc8(frame.data() + 1, 11) == frame[12], "periodic TARGET CRC");
+            if (frame[11])
+            {
+                check(invalid_targets == 0, "stale target never becomes valid again");
+                ++valid_targets;
+            }
+            else if (valid_targets) ++invalid_targets;
+        }
+        check(valid_targets >= 2 && invalid_targets >= 2, "periodic targets expire after vision stalls");
+
+        for (int failure = 2; failure < 4; ++failure)
         {
             reset_transport();
-            Serial link;
+            ::serial link;
             link.open("TEST");
             if (failure < 2)
             {
@@ -206,14 +245,14 @@ int main()
         }
         reset_transport();
         {
-            Serial link;
+            ::serial link;
             link.open("TEST");
             link.send_target(1, -.5f, true);
         }
         check(closed == 1 && std::any_of(outgoing.begin(), outgoing.end(), [](const auto &p) { return p[1] == HOST_TARGET; }),
               "destructor drains queued target");
 #endif
-        Serial link;
+        ::serial link;
         GimbalState state;
         check(!link.receive(state), "unopened link has no sample");
         bool rejected = false;

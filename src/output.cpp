@@ -5,21 +5,20 @@
 #include <initializer_list>
 #include <stdexcept>
 
-void Output::open(const std::filesystem::path &root, const Camera &camera, PredictorType model, bool preview)
+void output::open(const std::filesystem::path &root, const ::camera &camera, PredictorType model, bool preview, double horizon_ms)
 {
     type_ = model;
     preview_ = preview;
     processed_ = 0;
     output_path_ = root / "results" / (camera.stem_ + ".avi");
-    raw_path_ = root / "data" / ("pose_raw_" + camera.suffix_ + ".csv");
     if (!camera.live() && std::filesystem::weakly_canonical(camera.path_) == std::filesystem::weakly_canonical(output_path_))
         throw std::invalid_argument("Output video must not overwrite the input video");
-    predictions_ = PredictionOutput(model, root / "results", camera.suffix_, true);
+    open_predictions(model, root / "results", camera.suffix_, horizon_ms, true);
     writer_.open(output_path_.string(), cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), camera.fps_, camera.image_.size());
     if (!writer_.isOpened())
         throw std::runtime_error("Cannot write video: " + output_path_.string());
     std::filesystem::create_directories(root / "data");
-    raw_.open(raw_path_);
+    raw_.open(root / "data" / ("pose_raw_" + camera.suffix_ + ".csv"));
     base_.open(root / "data" / ("pose_base_" + camera.suffix_ + ".csv"));
     transforms_.open(root / "data" / ("camera_pose_" + camera.suffix_ + ".csv"));
     controls_.open(root / "results" / ("control_target_" + camera.suffix_ + ".csv"));
@@ -35,7 +34,7 @@ void Output::open(const std::filesystem::path &root, const Camera &camera, Predi
     raw_ << pose_columns << ",coordinate_frame\n";
     base_ << pose_columns << ",qw,qx,qy,qz,coordinate_frame,base_reference_timestamp_ms,base_origin_x_m,base_origin_y_m,base_origin_z_m\n";
     transforms_ << "frame_id,timestamp,synchronized,qw,qx,qy,qz,x,y,z,base_reference_timestamp_ms,base_origin_x_m,base_origin_y_m,base_origin_z_m\n";
-    controls_ << "frame_id,timestamp,yaw_rad,pitch_rad,valid,armor_id,status,position_variance\n";
+    controls_ << "frame_id,timestamp,yaw_rad,pitch_rad,valid,armor_id,status\n";
     if (preview_)
     {
         cv::namedWindow(window, cv::WINDOW_NORMAL);
@@ -44,8 +43,8 @@ void Output::open(const std::filesystem::path &root, const Camera &camera, Predi
     finished_ = false;
 }
 
-static void draw_prediction(cv::Mat &image, const PredictionGeometry &geometry, const Eigen::Isometry3d &camera_from_base,
-                            const Solver &solver, bool future, PredictorType type)
+void output::draw_prediction(cv::Mat &image, const PredictionGeometry &geometry, const Eigen::Isometry3d &camera_from_base,
+                            const ::solver &solver, bool future, PredictorType type)
 {
     const std::array<cv::Scalar, 4> colors = {cv::Scalar(0, 255, 255), cv::Scalar(255, 180, 0),
                                             cv::Scalar(255, 0, 255), cv::Scalar(0, 255, 100)};
@@ -108,9 +107,9 @@ static void draw_prediction(cv::Mat &image, const PredictionGeometry &geometry, 
     }
 }
 
-bool Output::write(const Camera &camera, const Solver &solver, const SolvedFrame &camera_poses,
-                   const SolvedFrame &base_poses, const PoseBase &pose_base,
-                   const VideoPrediction &prediction, const ControlTarget &control,
+bool output::write(const ::camera &camera, const ::solver &solver, const SolvedFrame &camera_poses,
+                   const SolvedFrame &base_poses, const ::pose &pose_base,
+                   const PredictionResult &prediction, const ControlTarget &control,
                    std::chrono::steady_clock::time_point frame_start)
 {
     for (const auto *poses : {&camera_poses, &base_poses})
@@ -120,8 +119,8 @@ bool Output::write(const Camera &camera, const Solver &solver, const SolvedFrame
         for (std::size_t i = 0; i < poses->observations.size(); ++i)
         {
             const auto &armor = poses->armors.at(i);
-            const auto &position = poses->observations[i].position;
-            const auto &z = poses->observations[i].measurement;
+            const Eigen::Vector3d position(armor.tvec.at<double>(0), armor.tvec.at<double>(1), armor.tvec.at<double>(2));
+            const auto &z = poses->observations[i];
             stream << camera.frame_id_ << ',' << camera.timestamp_ms << ',' << position.x() << ',' << position.y() << ',' << position.z();
             for (int j = 0; j < 4; ++j)
                 stream << ',' << z(j);
@@ -145,14 +144,14 @@ bool Output::write(const Camera &camera, const Solver &solver, const SolvedFrame
             }
         }
     }
-    predictions_.write(camera.frame_id_, camera.timestamp_ms, prediction);
+    write(camera.frame_id_, camera.timestamp_ms, prediction);
     const auto base_from_camera = pose_base.at(camera.timestamp_ms);
     const Eigen::Quaterniond q(base_from_camera.linear());
     const auto &position = base_from_camera.translation();
     transforms_ << camera.frame_id_ << ',' << camera.timestamp_ms << ",1," << q.w() << ',' << q.x() << ',' << q.y() << ',' << q.z()
                 << ',' << position.x() << ',' << position.y() << ',' << position.z();
     cv::Mat canvas = camera.image_.clone();
-    drawArmors(canvas, camera_poses.armors);
+    detector::draw_armors(canvas, camera_poses.armors);
     const auto camera_from_base = base_from_camera.inverse();
     draw_prediction(canvas, prediction.current, camera_from_base, solver, false, type_);
     draw_prediction(canvas, prediction.future, camera_from_base, solver, true, type_);
@@ -161,9 +160,9 @@ bool Output::write(const Camera &camera, const Solver &solver, const SolvedFrame
         transforms_ << ',' << pose_base.origin_in_mechanical_(j);
     transforms_ << '\n';
     controls_ << camera.frame_id_ << ',' << camera.timestamp_ms << ',' << control.yaw_rad << ',' << control.pitch_rad << ','
-              << control.valid << ',' << control.armor_id << ',' << control.status << ',' << prediction.position_variance << '\n';
+              << control.valid() << ',' << control.armor_id << ',' << control.status << '\n';
     const char *model = type_ == PREDICTOR_SINGLE_PLATE ? "SinglePlate" : type_ == PREDICTOR_POLAR ? "Polar" : "Armor";
-    drawVideoInfo(canvas, camera_poses.armors, cv::format("%s %s frame %lld %s  control %s",
+    detector::draw_video_info(canvas, camera_poses.armors, cv::format("%s %s frame %lld %s  control %s",
         camera.live() ? "LIVE" : "REPLAY", model, static_cast<long long>(camera.frame_id_),
         prediction.status.c_str(), control.status.c_str()));
     writer_.write(canvas);
@@ -192,11 +191,11 @@ bool Output::write(const Camera &camera, const Solver &solver, const SolvedFrame
     return true;
 }
 
-void Output::finish()
+void output::finish()
 {
+    finish_predictions();
     if (finished_)
         return;
-    predictions_.finish();
     for (auto *stream : {&raw_, &base_, &transforms_, &controls_})
         stream->close();
     writer_.release();
@@ -212,8 +211,8 @@ void Output::finish()
 constexpr double missing = std::numeric_limits<double>::quiet_NaN();
 
 
-void PredictionOutput::write(std::int64_t frame_id, double timestamp_ms,
-                             const VideoPrediction &prediction)
+void output::write(std::int64_t frame_id, double timestamp_ms,
+                             const PredictionResult &prediction)
 {
     auto numbers = [](std::ofstream &csv, std::initializer_list<double> values, bool first = false)
     {
@@ -225,19 +224,31 @@ void PredictionOutput::write(std::int64_t frame_id, double timestamp_ms,
             first = false;
         }
     };
-    if (!prediction.value_count)
+    if (prediction.status == "waiting" || prediction.status == "initialized")
         return;
-    const std::size_t columns = type == PREDICTOR_SINGLE_PLATE ? 13 : type == PREDICTOR_POLAR ? 15
-                                                                                              : 31;
-    for (std::size_t i = 0; i < columns; ++i)
-        numbers(results, {prediction.values[i]}, i == 0);
-    if (type == PREDICTOR_ARMOR)
+    const auto &v = prediction.values;
+    const auto &errors = prediction.errors;
+    numbers(results, {double(frame_id)}, true);
+    if (type_ == PREDICTOR_SINGLE_PLATE)
+        numbers(results, {v[0], v[1], errors(0), v[2], v[3], errors(1), v[4], v[5], errors(2), v[6], v[7], errors(3)});
+    else if (type_ == PREDICTOR_POLAR)
     {
+        const auto &center = prediction.current.center.value();
+        numbers(results, {center.x(), v[0], center.y(), v[1], center.z(), v[2], v[3], v[4], v[5],
+                          errors(0), errors(1), errors(2), errors(3), v[6]});
+    }
+    else
+    {
+        const auto &current = prediction.current.center.value();
+        const auto &future = prediction.future.center.value();
+        numbers(results, {timestamp_ms, horizon_ms_, timestamp_ms + horizon_ms_, future.x(), future.y(), future.z(),
+                          v[0], current.x(), current.y(), current.z(), v[1], v[2], v[3], v[4], v[5],
+                          errors(0), errors(1), errors(2), errors(3), v[6], v[7], v[8]});
         results << "," << prediction.status;
         for (std::size_t i = 0; i < prediction.future.plates.size(); ++i)
         {
             const auto &position = prediction.future.plates[i];
-            numbers(futures, {double(frame_id), timestamp_ms, timestamp_ms + prediction.horizon_ms, prediction.horizon_ms,
+            numbers(futures, {double(frame_id), timestamp_ms, timestamp_ms + horizon_ms_, horizon_ms_,
                               double(i), position(0), position(1), position(2), position(3)}, true);
             futures << "," << prediction.status;
             futures << (base_coordinates ? ",base\n" : "\n");
@@ -257,9 +268,9 @@ void PredictionOutput::write(std::int64_t frame_id, double timestamp_ms,
     }
 }
 
-void PredictionOutput::finish()
+void output::finish_predictions()
 {
-    if (finished)
+    if (predictions_finished_)
         return;
     for (auto *csv : {&results, &futures})
         if (csv->is_open())
@@ -271,17 +282,69 @@ void PredictionOutput::finish()
     if (!metrics)
         throw std::runtime_error("Cannot write " + metrics_path.string());
     metrics.exceptions(std::ios::badbit | std::ios::failbit);
-    if (type == PREDICTOR_ARMOR)
+    if (type_ == PREDICTOR_ARMOR)
         metrics << "Metrics: prior residuals of accepted observations only; not ground-truth error.\n";
     metrics << std::fixed << std::setprecision(6);
     const std::array<const char *, 4> basic_names = {"RMSE_x", "RMSE_z", "RMSE_yaw", "RMSE_distance"},
                                       angular_names = {"RMSE_target_yaw", "RMSE_target_pitch", "RMSE_distance", "RMSE_armor_yaw"},
                                       basic_units = {"m", "m", "rad", "m"}, angular_units = {"rad", "rad", "m", "rad"};
-    const auto &names = type == PREDICTOR_SINGLE_PLATE ? basic_names : angular_names;
-    const auto &units = type == PREDICTOR_SINGLE_PLATE ? basic_units : angular_units;
+    const auto &names = type_ == PREDICTOR_SINGLE_PLATE ? basic_names : angular_names;
+    const auto &units = type_ == PREDICTOR_SINGLE_PLATE ? basic_units : angular_units;
     for (std::size_t i = 0; i < names.size(); ++i)
         metrics << names[i] << ": " << (error_counts[i] ? std::sqrt(squared_errors[i] / double(error_counts[i])) : missing)
                 << ' ' << units[i] << '\n';
     metrics.close();
-    finished = true;
+    predictions_finished_ = true;
+}
+
+output::output(PredictorType model, const std::filesystem::path &directory,
+               const std::string &suffix, double horizon_ms, bool base_frame)
+{
+    open_predictions(model, directory, suffix, horizon_ms, base_frame);
+}
+
+void output::open_predictions(PredictorType model, const std::filesystem::path &directory,
+                              const std::string &suffix, double horizon_ms, bool base_frame)
+{
+    constexpr const char *basic_header =
+        "frame_id,predicted_x,observed_x,error_x,predicted_z,observed_z,error_z,"
+        "predicted_yaw,observed_yaw,error_yaw,predicted_distance,observed_distance,error_distance";
+    constexpr const char *polar_header =
+        "frame_id,xc,vxc,yc,vyc,zc,vzc,body_yaw,w,r,err_target_yaw,err_target_pitch,"
+        "err_distance,err_armor_yaw,obs_armor_yaw";
+    constexpr const char *armor_header =
+        "frame_id,timestamp,prediction_horizon_ms,prediction_timestamp,future_xc,future_yc,future_zc,"
+        "future_body_yaw,xc,yc,zc,xa,za,body_yaw,pred_armor_yaw,obs_armor_yaw,"
+        "err_target_yaw,err_target_pitch,err_distance,err_armor_yaw,r,dl,dh,status";
+
+    type_ = model;
+    squared_errors.fill(0);
+    error_counts.fill(0);
+    predictions_finished_ = false;
+    base_coordinates = base_frame;
+    horizon_ms_ = horizon_ms;
+
+    const std::array<const char *, 3> prefixes = {"", "polar_", "armor_"},
+                                     headers = {basic_header, polar_header, armor_header};
+    const char *prefix = prefixes[type_], *header = headers[type_];
+    auto open_csv = [](std::ofstream &csv, const std::filesystem::path &path, const char *header)
+    {
+        csv.open(path);
+        if (!csv)
+            throw std::runtime_error("Cannot write " + path.string());
+        csv.exceptions(std::ios::badbit | std::ios::failbit);
+        csv << header;
+    };
+    std::filesystem::create_directories(directory);
+    open_csv(results, directory / (std::string(prefix) + "prediction_result_" + suffix + ".csv"), header);
+    metrics_path = directory / (std::string(prefix) + "rmse_result_" + suffix + ".txt");
+    if (type_ == PREDICTOR_ARMOR)
+    {
+        open_csv(futures, directory / ("armor_future_prediction_" + suffix + ".csv"),
+             "frame_id,timestamp,prediction_timestamp,prediction_horizon_ms,armor_id,x,y,z,"
+             "armor_orientation_yaw,source_status");
+    }
+    for (auto *csv : {&results, &futures})
+        if (csv->is_open())
+            *csv << (base_coordinates ? ",coordinate_frame\n" : "\n") << std::setprecision(17);
 }

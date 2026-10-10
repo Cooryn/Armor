@@ -2,7 +2,7 @@
 #include "lightbar_detector.hpp"
 #include "solver.hpp"
 #include "pose_base.hpp"
-#include "predictor.hpp"
+#include "predictor_single.hpp"
 #include "predictor_polar.hpp"
 #include "predictor_armor.hpp"
 #include "gimbal.hpp"
@@ -44,45 +44,45 @@ int main()
     try
     {
         const std::filesystem::path root = ARMOR_PROJECT_ROOT;
-        Serial serial;
+        ::serial serial;
         if (camera_source == CAMERA)
             serial.open(serial_port);
-        PoseBase pose_base(camera_source == CAMERA ? camera_calibration : CameraCalibration{});
+        ::pose pose_base(camera_source == CAMERA ? camera_calibration : CameraCalibration{});
         if (camera_source == CAMERA)
             pose_base.receive(serial);
-        Camera camera;
+        ::camera camera;
         camera.open(camera_source, root / std::filesystem::u8path(video_file), camera_device, camera_recording_fps);
-        Solver solver(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
+        ::solver solver(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
         if (camera_source == VIDEO)
             solver.use_video_profile(video_camera_profile);
-        SinglePlateEKF single_plate;
-        PolarEKF polar;
-        ArmorEKF armor;
-        Output output;
-        output.open(root, camera, predictor_type, preview);
+        ::predictor_single single_plate;
+        ::predictor_polar polar;
+        ::predictor_armor armor;
+        ::output output;
+        output.open(root, camera, predictor_type, preview, prediction_horizon_ms);
         if (camera_source == CAMERA)
             serial.send_mode(HOST_AUTO_AIM);
         do
         {
             const auto frame_start = std::chrono::steady_clock::now();
-            auto detections = detectArmors(camera.image_, target_color);
+            auto detections = detector::detect(camera.image_, target_color);
             const auto camera_poses = solver.solve_frame(std::move(detections), camera.timestamp_ms);
             if (camera_source == VIDEO)
                 pose_base.push({camera.timestamp_ms, 0, 0, 0, HOST_IDLE, 0});
             if (camera_source == CAMERA)
                 pose_base.synchronize(serial, camera.timestamp_ms);
             const auto base_poses = pose_base.convert(camera_poses, camera.timestamp_ms);
-            VideoPrediction prediction;
+            PredictionResult prediction;
             if (predictor_type == PREDICTOR_SINGLE_PLATE)
-                prediction = single_plate.update_frame(camera.frame_id_, camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
+                prediction = single_plate.update_frame(camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
             else if (predictor_type == PREDICTOR_POLAR)
-                prediction = polar.update_frame(camera.frame_id_, camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
+                prediction = polar.update_frame(camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
             else
-                prediction = armor.update_frame(camera.frame_id_, camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
-            const auto control = solve_gimbal(prediction, pose_base, camera.timestamp_ms,
-                camera_source == CAMERA ? monotonic_time_ms() : camera.timestamp_ms, gimbal_config);
+                prediction = armor.update_frame(camera.timestamp_ms, base_poses.observations, prediction_horizon_ms);
+            const auto control = gimbal::solve(prediction, pose_base, camera.timestamp_ms,
+                camera_source == CAMERA ? serial::monotonic_time_ms() : camera.timestamp_ms, gimbal_config);
             if (camera_source == CAMERA)
-                serial.send_target(control.yaw_rad, control.pitch_rad, control.valid);
+                serial.send_target(control.yaw_rad, control.pitch_rad, control.valid());
             if (!output.write(camera, solver, camera_poses, base_poses, pose_base, prediction, control, frame_start))
                 break;
             if (camera_source == CAMERA)

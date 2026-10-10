@@ -23,18 +23,18 @@ struct BaseArmorPose
     Eigen::Vector3d rvec = Eigen::Vector3d::Zero();
     Eigen::Vector4d measurement = Eigen::Vector4d::Zero();
 };
-class PoseBase
+class pose
 {
 public:
-    PoseBase(const CameraCalibration &calibration = CameraCalibration{},
+    pose(const CameraCalibration &calibration = CameraCalibration{},
              const std::vector<CameraSample> &samples = {}, double max_gap_ms = 100)
     {
         calibration_ = calibration;
         samples_ = samples;
         max_gap_ms_ = max_gap_ms;
     }
-    void receive(Serial &serial);
-    void synchronize(Serial &serial, double timestamp_ms);
+    void receive(::serial &serial);
+    void synchronize(::serial &serial, double timestamp_ms);
     bool covered(double timestamp_ms) const;
     SolvedFrame convert(const SolvedFrame &camera_poses, double timestamp_ms) const;
     Eigen::Isometry3d at_angles(const Eigen::Vector3d &raw_angles) const;

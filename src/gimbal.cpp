@@ -1,9 +1,10 @@
 #include "gimbal.hpp"
+#include "output.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
-ControlTarget solve_gimbal(const VideoPrediction &prediction, const PoseBase &pose_base,
+ControlTarget gimbal::solve(const PredictionResult &prediction, const ::pose &pose_base,
                                  double image_timestamp_ms, double now_ms, const GimbalConfig &gimbal_config)
 {
     const auto &gimbal_state = pose_base.latest_state_;
@@ -15,13 +16,8 @@ ControlTarget solve_gimbal(const VideoPrediction &prediction, const PoseBase &po
         control.status = "stale_pose";
         return control;
     }
-    if (!prediction.initialized || (prediction.status != "updated" && prediction.status != "initialized"))
+    if (prediction.status != "updated" && prediction.status != "initialized")
         return control;
-    if (prediction.position_variance > gimbal_config.max_position_variance)
-    {
-        control.status = "uncertain";
-        return control;
-    }
     const auto camera_from_base = pose_base.at(image_timestamp_ms).inverse();
     const Eigen::Vector4d *selected_plate = nullptr;
     double nearest = std::numeric_limits<double>::infinity();
@@ -79,7 +75,6 @@ ControlTarget solve_gimbal(const VideoPrediction &prediction, const PoseBase &po
     }
     control.yaw_rad = static_cast<float>(angles.x());
     control.pitch_rad = static_cast<float>(angles.y());
-    control.valid = true;
     control.status = "tracking";
     return control;
 }

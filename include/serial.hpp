@@ -7,7 +7,6 @@
 #include <thread>
 #include <vector>
 
-double monotonic_time_ms();
 
 enum HostCommand : std::uint8_t { HOST_TARGET = 1, HOST_STATE = 2, HOST_MODE = 3, HOST_HEARTBEAT = 4 };
 enum HostMode : std::uint8_t { HOST_IDLE = 0, HOST_MANUAL = 1, HOST_AUTO_AIM = 2, HOST_STABILIZE = 3 };
@@ -19,10 +18,12 @@ struct GimbalState
     std::uint8_t mode = 0, flags = 0;
 };
 
-class Serial
+class serial
 {
 public:
-    ~Serial();
+    static double monotonic_time_ms();
+    static std::uint8_t crc8(const std::uint8_t *bytes, std::size_t size);
+    ~serial();
     void open(const std::string &serial_port);
     void close();
     bool receive(GimbalState &gimbal_state);
@@ -37,5 +38,6 @@ private:
     GimbalState latest_state;
     bool has_state = false;
     std::vector<std::uint8_t> pending_target, pending_mode;
+    double target_updated_ms = 0;
     std::string error;
 };

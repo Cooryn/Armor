@@ -6,14 +6,14 @@
 #include <chrono>
 #include <stdexcept>
 
-Eigen::Isometry3d PoseBase::at(double timestamp_ms) const
+Eigen::Isometry3d pose::at(double timestamp_ms) const
 {
     Eigen::Isometry3d pose = mechanical_at(timestamp_ms);
     pose.translation() -= origin_in_mechanical_;
     return pose;
 }
 
-Eigen::Isometry3d PoseBase::reset_origin(double timestamp_ms)
+Eigen::Isometry3d pose::reset_origin(double timestamp_ms)
 {
     const Eigen::Vector3d new_origin = mechanical_at(timestamp_ms).translation();
     Eigen::Isometry3d new_from_old = Eigen::Isometry3d::Identity();
@@ -23,7 +23,7 @@ Eigen::Isometry3d PoseBase::reset_origin(double timestamp_ms)
     return new_from_old;
 }
 
-Eigen::Isometry3d PoseBase::mechanical_at(double timestamp_ms) const
+Eigen::Isometry3d pose::mechanical_at(double timestamp_ms) const
 {
     auto right = std::lower_bound(samples_.begin(), samples_.end(), timestamp_ms,
                                   [](const CameraSample &sample, double t)
@@ -38,7 +38,7 @@ Eigen::Isometry3d PoseBase::mechanical_at(double timestamp_ms) const
                       angle(left.pitch_deg, right->pitch_deg), angle(left.roll_deg, right->roll_deg)});
 }
 
-Eigen::Isometry3d PoseBase::transform(const CameraSample &sample) const
+Eigen::Isometry3d pose::transform(const CameraSample &sample) const
 {
     constexpr double radians = 3.14159265358979323846 / 180;
     const Eigen::Matrix3d yaw = Eigen::AngleAxisd(sample.yaw_deg * radians, Eigen::Vector3d::UnitY()).toRotationMatrix();
@@ -51,7 +51,7 @@ Eigen::Isometry3d PoseBase::transform(const CameraSample &sample) const
     return pose;
 }
 
-void PoseBase::push(const GimbalState &gimbal_state)
+void pose::push(const GimbalState &gimbal_state)
 {
     const Eigen::Vector3d raw_angles(gimbal_state.yaw_rad, gimbal_state.pitch_rad, gimbal_state.roll_rad);
     const Eigen::Vector3d angles = calibration_.angle_direction.cwiseProduct(raw_angles - calibration_.angle_zero_rad) *
@@ -68,7 +68,7 @@ void PoseBase::push(const GimbalState &gimbal_state)
         samples_.erase(samples_.begin(), samples_.end() - 256);
 }
 
-BaseArmorPose PoseBase::to_base(const Eigen::Vector3d &camera_position,
+BaseArmorPose pose::to_base(const Eigen::Vector3d &camera_position,
                                     const Eigen::Vector3d &camera_rvec, double image_timestamp_ms) const
 {
     const auto base_from_camera = at(image_timestamp_ms);
@@ -89,7 +89,7 @@ BaseArmorPose PoseBase::to_base(const Eigen::Vector3d &camera_position,
     return result;
 }
 
-bool PoseBase::covered(double timestamp_ms) const
+bool pose::covered(double timestamp_ms) const
 {
     auto right = std::lower_bound(samples_.begin(), samples_.end(), timestamp_ms,
         [](const CameraSample &sample, double t) { return sample.timestamp_ms < t; });
@@ -99,20 +99,20 @@ bool PoseBase::covered(double timestamp_ms) const
            right->timestamp_ms - std::prev(right)->timestamp_ms <= max_gap_ms_;
 }
 
-void PoseBase::receive(Serial &serial)
+void pose::receive(::serial &serial)
 {
     GimbalState gimbal_state;
-    const double deadline = monotonic_time_ms() + 100;
+    const double deadline = serial::monotonic_time_ms() + 100;
     while (!serial.receive(gimbal_state))
     {
-        if (monotonic_time_ms() >= deadline)
+        if (serial::monotonic_time_ms() >= deadline)
             throw std::runtime_error("Timed out waiting for MCU STATE");
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     push(gimbal_state);
 }
 
-void PoseBase::synchronize(Serial &serial, double timestamp_ms)
+void pose::synchronize(::serial &serial, double timestamp_ms)
 {
     while (!covered(timestamp_ms))
     {
@@ -122,7 +122,7 @@ void PoseBase::synchronize(Serial &serial, double timestamp_ms)
     }
 }
 
-Eigen::Isometry3d PoseBase::at_angles(const Eigen::Vector3d &raw_angles) const
+Eigen::Isometry3d pose::at_angles(const Eigen::Vector3d &raw_angles) const
 {
     const Eigen::Vector3d angles = calibration_.angle_direction.cwiseProduct(raw_angles - calibration_.angle_zero_rad) *
                                  (180 / 3.14159265358979323846);
@@ -131,19 +131,19 @@ Eigen::Isometry3d PoseBase::at_angles(const Eigen::Vector3d &raw_angles) const
     return pose;
 }
 
-SolvedFrame PoseBase::convert(const SolvedFrame &camera_poses, double timestamp_ms) const
+SolvedFrame pose::convert(const SolvedFrame &camera_poses, double timestamp_ms) const
 {
     SolvedFrame result;
     for (std::size_t i = 0; i < camera_poses.armors.size(); ++i)
     {
         auto armor = camera_poses.armors[i];
-        const auto pose = to_base(camera_poses.observations.at(i).position,
+        const auto pose = to_base(Eigen::Vector3d(armor.tvec.at<double>(0), armor.tvec.at<double>(1), armor.tvec.at<double>(2)),
             {armor.rvec.at<double>(0), armor.rvec.at<double>(1), armor.rvec.at<double>(2)}, timestamp_ms);
         armor.tvec = (cv::Mat_<double>(3, 1) << pose.position.x(), pose.position.y(), pose.position.z());
         armor.rvec = (cv::Mat_<double>(3, 1) << pose.rvec.x(), pose.rvec.y(), pose.rvec.z());
         armor.yaw = pose.measurement(3) * 180 / CV_PI;
         result.armors.push_back(std::move(armor));
-        result.observations.push_back({pose.position, pose.measurement});
+        result.observations.push_back(pose.measurement);
     }
     return result;
 }

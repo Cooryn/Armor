@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
         double v0, v1, v2, v3;
         while (candidates >> name >> v0 >> v1 >> v2 >> v3) {
             for (const auto &s : sequences) {
-                ArmorEKF b{};
+                ::predictor_armor b{};
                 b.R = Eigen::Vector4d(v0, v1, v2, v3).asDiagonal();
                 std::array<Stats, 2> stats{};
                 std::optional<Eigen::Matrix<double, 11, 1>> previous;
@@ -85,7 +85,7 @@ int main(int argc, char **argv) {
                                 Eigen::Vector4d residual;
                                 double smallest = std::numeric_limits<double>::infinity();
                                 for (int id = 0; id < 4; ++id) {
-                                    auto r = armor_angular_residual(o, armor_h(forecast.state, id));
+                                    auto r = predictor_armor::angular_residual(o, predictor_armor::h(forecast.state, id));
                                     if (std::abs(r(3)) < smallest) { smallest = std::abs(r(3)); residual = r; }
                                 }
                                 for (int k = 0; k < 4; ++k) m.error[k] += residual(k) * residual(k);
@@ -101,16 +101,16 @@ int main(int argc, char **argv) {
                                 for (int axis : {0, 2, 4}) m.center_truth += std::pow(lead.state(axis) - truth(axis), 2);
                                 double error = 0;
                                 for (int id = 0; id < 4; ++id) {
-                                    auto z = armor_h(truth, id);
+                                    auto z = predictor_armor::h(truth, id);
                                     double smallest = std::numeric_limits<double>::infinity();
                                     double matched_error = 0;
                                     for (int other = 0; other < 4; ++other) {
-                                        auto predicted = armor_h(lead.state, other);
-                                        auto r = armor_angular_residual(z, predicted);
+                                        auto predicted = predictor_armor::h(lead.state, other);
+                                        auto r = predictor_armor::angular_residual(z, predicted);
                                         if (std::abs(r(3)) < smallest) {
                                             smallest = std::abs(r(3));
                                             const double r_true = truth(8) + (id % 2 ? truth(9) : 0);
-                                            const double yaw = truth(6) + id * armor_pi / 2;
+                                            const double yaw = truth(6) + id * predictor_armor::pi / 2;
                                             Eigen::Vector3d p(truth(0) + r_true * std::sin(yaw),
                                                               truth(2) + (id % 2 ? truth(10) : 0),
                                                               truth(4) - r_true * std::cos(yaw));

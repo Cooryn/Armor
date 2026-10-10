@@ -1,28 +1,28 @@
-#include "predictor.hpp"
+#include "predictor_single.hpp"
 
 #include <Eigen/Dense>
 #include <cmath>
 #include <algorithm>
 
-double single_plate_wrap_to_pi(double angle)
+double predictor_single::wrap_to_pi(double angle)
 {
-    double result = std::fmod(angle + single_plate_pi, 2 * single_plate_pi);
-    return (result < 0 ? result + 2 * single_plate_pi : result) - single_plate_pi;
+    double result = std::fmod(angle + predictor_single::pi, 2 * predictor_single::pi);
+    return (result < 0 ? result + 2 * predictor_single::pi : result) - predictor_single::pi;
 }
 
-bool single_plate_valid_observation(const Eigen::Vector3d &z)
+bool predictor_single::valid_observation(const Eigen::Vector3d &z)
 {
-    return z(2) > single_plate_geometry_epsilon && std::abs(z(1)) < single_plate_pi / 2 &&
-           z(2) * std::cos(z(1)) > single_plate_geometry_epsilon;
+    return z(2) > predictor_single::geometry_epsilon && std::abs(z(1)) < predictor_single::pi / 2 &&
+           z(2) * std::cos(z(1)) > predictor_single::geometry_epsilon;
 }
 
-Eigen::Vector3d single_plate_h(const Eigen::Matrix<double, 6, 1> &state)
+Eigen::Vector3d predictor_single::h(const Eigen::Matrix<double, 6, 1> &state)
 {
     const double horizontal = std::hypot(state(0), state(4));
     return {std::atan2(state(0), state(4)), std::atan2(state(2), horizontal), std::hypot(horizontal, state(2))};
 }
 
-Eigen::Matrix<double, 3, 6> single_plate_jacobian(const Eigen::Matrix<double, 6, 1> &state)
+Eigen::Matrix<double, 3, 6> predictor_single::jacobian(const Eigen::Matrix<double, 6, 1> &state)
 {
     const double x = state(0), y = state(2), z = state(4), horizontal = std::hypot(x, z),
                  distance = std::hypot(horizontal, y), horizontal2 = horizontal * horizontal,
@@ -39,7 +39,7 @@ Eigen::Matrix<double, 3, 6> single_plate_jacobian(const Eigen::Matrix<double, 6,
     return H;
 }
 
-void SinglePlateEKF::initialize(const Eigen::Vector3d &z)
+void predictor_single::initialize(const Eigen::Vector3d &z)
 {
     const double horizontal = z(2) * std::cos(z(1));
     X << horizontal * std::sin(z(0)), 0, z(2) * std::sin(z(1)), 0,
@@ -48,16 +48,16 @@ void SinglePlateEKF::initialize(const Eigen::Vector3d &z)
     is_initialized = true;
 }
 
-void SinglePlateEKF::predict(double dt)
+void predictor_single::predict(double dt)
 {
     Eigen::Matrix<double, 6, 6> F = Eigen::Matrix<double, 6, 6>::Identity(), Q = Eigen::Matrix<double, 6, 6>::Zero();
     const double dt2 = dt * dt, dt3 = dt2 * dt, dt4 = dt2 * dt2;
     for (int i = 0; i < 6; i += 2)
     {
         F(i, i + 1) = dt;
-        Q(i, i) = single_plate_process_noise * dt4 / 4;
-        Q(i, i + 1) = Q(i + 1, i) = single_plate_process_noise * dt3 / 2;
-        Q(i + 1, i + 1) = single_plate_process_noise * dt2;
+        Q(i, i) = predictor_single::process_noise * dt4 / 4;
+        Q(i, i + 1) = Q(i + 1, i) = predictor_single::process_noise * dt3 / 2;
+        Q(i + 1, i + 1) = predictor_single::process_noise * dt2;
     }
     const Eigen::Matrix<double, 6, 1> predicted = F * X;
     const Eigen::Matrix<double, 6, 6> covariance = F * P * F.transpose() + Q;
@@ -65,14 +65,14 @@ void SinglePlateEKF::predict(double dt)
     P = covariance;
 }
 
-bool SinglePlateEKF::update(const Eigen::Vector3d &z)
+bool predictor_single::update(const Eigen::Vector3d &z)
 {
-    if (std::hypot(X(0), X(4)) <= single_plate_geometry_epsilon)
+    if (std::hypot(X(0), X(4)) <= predictor_single::geometry_epsilon)
         return false;
-    const Eigen::Matrix<double, 3, 6> H = single_plate_jacobian(X);
-    Eigen::Vector3d residual = z - single_plate_h(X);
-    residual(0) = single_plate_wrap_to_pi(residual(0));
-    residual(1) = single_plate_wrap_to_pi(residual(1));
+    const Eigen::Matrix<double, 3, 6> H = predictor_single::jacobian(X);
+    Eigen::Vector3d residual = z - predictor_single::h(X);
+    residual(0) = predictor_single::wrap_to_pi(residual(0));
+    residual(1) = predictor_single::wrap_to_pi(residual(1));
     const Eigen::Matrix3d R = Eigen::Vector3d(.0016, .0016, .16).asDiagonal(),
                           S = H * P * H.transpose() + R;
     const Eigen::LDLT<Eigen::Matrix3d> decomposition(S);
@@ -87,45 +87,47 @@ bool SinglePlateEKF::update(const Eigen::Vector3d &z)
 }
 
 
-VideoPrediction SinglePlateEKF::update_frame(std::int64_t frame_id, double timestamp_ms,
-                                            const std::vector<VideoObservation> &observations, double horizon_ms)
+PredictionResult predictor_single::update_frame(double timestamp_ms,
+                                            const std::vector<Eigen::Vector4d> &observations, double horizon_ms)
 {
     const double dt = (timestamp_ms - last_timestamp_ms) / 1000;
     last_timestamp_ms = timestamp_ms;
     const double missing = std::numeric_limits<double>::quiet_NaN();
-    VideoPrediction prediction;
-    prediction.horizon_ms = horizon_ms;
-    const VideoObservation *selected_observation = nullptr;
+    PredictionResult prediction;
+    const Eigen::Vector4d *selected_observation = nullptr;
     for (const auto &observation : observations)
-        if (single_plate_valid_observation(observation.measurement.head<3>()) &&
-            (!selected_observation || observation.measurement(2) < selected_observation->measurement(2)))
+        if (predictor_single::valid_observation(observation.head<3>()) &&
+            (!selected_observation || observation(2) < (*selected_observation)(2)))
             selected_observation = &observation;
 
+    Eigen::Vector3d observed_position = Eigen::Vector3d::Constant(missing);
+    if (selected_observation)
+    {
+        const auto &z = *selected_observation;
+        observed_position = {z(2) * std::cos(z(1)) * std::sin(z(0)), z(2) * std::sin(z(1)),
+                             z(2) * std::cos(z(1)) * std::cos(z(0))};
+    }
     if (!is_initialized)
     {
         if (selected_observation)
-            initialize(selected_observation->measurement.head<3>());
+            initialize((*selected_observation).head<3>());
         prediction.status = selected_observation ? "initialized" : "waiting";
     }
     else
     {
         predict(dt);
-        const auto predicted = single_plate_h(X);
+        const auto predicted = predictor_single::h(X);
         auto &errors = prediction.errors;
         if (selected_observation)
-            errors << X(0) - selected_observation->position(0), X(4) - selected_observation->position(2),
-                single_plate_wrap_to_pi(predicted(0) - selected_observation->measurement(0)), predicted(2) - selected_observation->measurement(2);
-        prediction.values = {double(frame_id), X(0), selected_observation ? selected_observation->position(0) : missing, errors(0),
-                         X(4), selected_observation ? selected_observation->position(2) : missing, errors(1), predicted(0),
-                         selected_observation ? selected_observation->measurement(0) : missing, errors(2), predicted(2),
-                         selected_observation ? selected_observation->measurement(2) : missing, errors(3)};
-        prediction.value_count = 13;
-        prediction.status = selected_observation && update(selected_observation->measurement.head<3>()) ? "updated" : "prediction_only";
+            errors << X(0) - observed_position(0), X(4) - observed_position(2),
+                predictor_single::wrap_to_pi(predicted(0) - (*selected_observation)(0)), predicted(2) - (*selected_observation)(2);
+        prediction.values = {X(0), observed_position(0), X(4), observed_position(2), predicted(0),
+                             selected_observation ? (*selected_observation)(0) : missing, predicted(2),
+                             selected_observation ? (*selected_observation)(2) : missing};
+        prediction.status = selected_observation && update((*selected_observation).head<3>()) ? "updated" : "prediction_only";
     }
-    prediction.initialized = is_initialized;
     if (is_initialized)
     {
-        prediction.position_variance = std::max({P(0, 0), P(2, 2), P(4, 4)});
         prediction.current.plates.emplace_back(X(0), X(2), X(4), 0);
         const double horizon_s = horizon_ms / 1000;
         prediction.future.plates.emplace_back(X(0) + horizon_s * X(1), X(2) + horizon_s * X(3),

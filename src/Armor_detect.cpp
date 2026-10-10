@@ -30,9 +30,9 @@ int main()
     {
         const std::filesystem::path root = ARMOR_PROJECT_ROOT;
         const char *const window = "Armor detection - Esc to stop";
-        Camera camera;
+        ::camera camera;
         camera.open(camera_source, root / std::filesystem::u8path(video_file), camera_device, camera_recording_fps);
-        Solver solver(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
+        ::solver solver(camera_source == CAMERA ? live_camera_matrix : cv::Mat(), camera_source == CAMERA ? live_distortion : cv::Mat());
         if (camera_source == VIDEO)
             solver.use_video_profile(video_camera_profile);
         if (preview)
@@ -45,11 +45,11 @@ int main()
         do
         {
             const auto frame_start = std::chrono::steady_clock::now();
-            auto detections = detectArmors(camera.image_, target_color);
+            auto detections = detector::detect(camera.image_, target_color);
             const auto poses = solver.solve_frame(std::move(detections), camera.timestamp_ms);
             cv::Mat canvas = camera.image_.clone();
-            drawArmors(canvas, poses.armors);
-            drawVideoInfo(canvas, poses.armors, cv::format("%s Detect frame %lld",
+            detector::draw_armors(canvas, poses.armors);
+            detector::draw_video_info(canvas, poses.armors, cv::format("%s Detect frame %lld",
                 camera_source == CAMERA ? "LIVE" : "REPLAY", static_cast<long long>(camera.frame_id_)));
             ++processed;
             if (preview)
