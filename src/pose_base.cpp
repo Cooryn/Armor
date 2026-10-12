@@ -1,149 +1,73 @@
 #include "pose_base.hpp"
-#include "serial.hpp"
-#include <algorithm>
 #include <cmath>
-#include <thread>
-#include <chrono>
 #include <stdexcept>
 
-Eigen::Isometry3d pose::at(double timestamp_ms) const
-{
-    Eigen::Isometry3d pose = mechanical_at(timestamp_ms);
-    pose.translation() -= origin_in_mechanical_;
-    return pose;
-}
-
-Eigen::Isometry3d pose::reset_origin(double timestamp_ms)
-{
-    const Eigen::Vector3d new_origin = mechanical_at(timestamp_ms).translation();
-    Eigen::Isometry3d new_from_old = Eigen::Isometry3d::Identity();
-    new_from_old.translation() = origin_in_mechanical_ - new_origin;
-    origin_in_mechanical_ = new_origin;
-    reference_time_ms_ = timestamp_ms;
-    return new_from_old;
-}
-
-Eigen::Isometry3d pose::mechanical_at(double timestamp_ms) const
-{
-    auto right = std::lower_bound(samples_.begin(), samples_.end(), timestamp_ms,
-                                  [](const CameraSample &sample, double t)
-                                  { return sample.timestamp_ms < t; });
-    if (right->timestamp_ms == timestamp_ms)
-        return transform(*right);
-    const auto &left = *std::prev(right);
-    const double f = (timestamp_ms - left.timestamp_ms) / (right->timestamp_ms - left.timestamp_ms);
-    auto angle = [f](double a, double b)
-    { return a + f * std::remainder(b - a, 360.0); };
-    return transform({timestamp_ms, angle(left.yaw_deg, right->yaw_deg),
-                      angle(left.pitch_deg, right->pitch_deg), angle(left.roll_deg, right->roll_deg)});
-}
-
-Eigen::Isometry3d pose::transform(const CameraSample &sample) const
-{
-    constexpr double radians = 3.14159265358979323846 / 180;
-    const Eigen::Matrix3d yaw = Eigen::AngleAxisd(sample.yaw_deg * radians, Eigen::Vector3d::UnitY()).toRotationMatrix();
-    const Eigen::Matrix3d pitch_roll = (Eigen::AngleAxisd(sample.pitch_deg * radians, Eigen::Vector3d::UnitX()) *
-                                        Eigen::AngleAxisd(sample.roll_deg * radians, Eigen::Vector3d::UnitZ()))
-                                           .toRotationMatrix();
-    Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
-    pose.linear() = yaw * pitch_roll * calibration_.camera_to_pitch.toRotationMatrix();
-    pose.translation() = yaw * (calibration_.yaw_to_pitch + pitch_roll * calibration_.camera_in_pitch);
-    return pose;
-}
-
-void pose::push(const GimbalState &gimbal_state)
+void pose::update(const GimbalState &gimbal_state)
 {
     const Eigen::Vector3d raw_angles(gimbal_state.yaw_rad, gimbal_state.pitch_rad, gimbal_state.roll_rad);
-    const Eigen::Vector3d angles = calibration_.angle_direction.cwiseProduct(raw_angles - calibration_.angle_zero_rad) *
-                                   (180 / 3.14159265358979323846);
-    const CameraSample sample{gimbal_state.receive_timestamp_ms, angles.x(), angles.y(), angles.z()};
-    if (samples_.empty())
+    const Eigen::Vector3d angles = calibration_.angle_direction.cwiseProduct(raw_angles - calibration_.angle_zero_rad);
+    if (!initialized_)
     {
-        origin_in_mechanical_ = transform(sample).translation();
-        reference_time_ms_ = sample.timestamp_ms;
+        const Eigen::Vector3d forward = transform(angles).linear().col(2);
+        if (std::hypot(forward.x(), forward.z()) < 1e-6)
+            throw std::invalid_argument("Initial camera direction has no horizontal projection");
+        reference_yaw_rad_ = std::atan2(forward.x(), forward.z());
+        reference_time_ms_ = gimbal_state.receive_timestamp_ms;
     }
+    base_from_camera_ = transform(angles);
     latest_state_ = gimbal_state;
-    samples_.push_back(sample);
-    if (samples_.size() > 256)
-        samples_.erase(samples_.begin(), samples_.end() - 256);
+    initialized_ = true;
 }
 
-BaseArmorPose pose::to_base(const Eigen::Vector3d &camera_position,
-                                    const Eigen::Vector3d &camera_rvec, double image_timestamp_ms) const
+Eigen::Isometry3d pose::transform(const Eigen::Vector3d &angles) const
 {
-    const auto base_from_camera = at(image_timestamp_ms);
-    cv::Mat rotation;
-    cv::Rodrigues(cv::Vec3d(camera_rvec.x(), camera_rvec.y(), camera_rvec.z()), rotation);
-    const Eigen::Matrix3d camera_from_armor = Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(rotation.ptr<double>());
-    const Eigen::Matrix3d base_from_armor = base_from_camera.linear() * camera_from_armor;
-    BaseArmorPose result;
-    result.position = base_from_camera * camera_position;
-    const Eigen::AngleAxisd angle_axis(base_from_armor);
-    result.rvec = angle_axis.axis() * angle_axis.angle();
-    const Eigen::Vector3d normal = base_from_armor.col(2);
-    const double distance = result.position.norm();
-
-    result.measurement = {std::atan2(result.position.x(), result.position.z()),
-                          std::atan2(result.position.y(), std::hypot(result.position.x(), result.position.z())),
-                          distance, std::atan2(-normal.x(), normal.z())};
+    const Eigen::Matrix3d yaw = Eigen::AngleAxisd(angles.x() - reference_yaw_rad_,
+                                                  Eigen::Vector3d::UnitY())
+                                    .toRotationMatrix();
+    const Eigen::Matrix3d pitch_roll = (Eigen::AngleAxisd(angles.y(), Eigen::Vector3d::UnitX()) *
+                                        Eigen::AngleAxisd(angles.z(), Eigen::Vector3d::UnitZ()))
+                                           .toRotationMatrix();
+    Eigen::Isometry3d result = Eigen::Isometry3d::Identity();
+    result.linear() = yaw * pitch_roll * calibration_.camera_to_pitch.toRotationMatrix();
+    result.translation() = yaw * (calibration_.yaw_to_pitch + pitch_roll * calibration_.camera_in_pitch);
     return result;
-}
-
-bool pose::covered(double timestamp_ms) const
-{
-    auto right = std::lower_bound(samples_.begin(), samples_.end(), timestamp_ms,
-        [](const CameraSample &sample, double t) { return sample.timestamp_ms < t; });
-    if (right != samples_.end() && right->timestamp_ms == timestamp_ms)
-        return true;
-    return right != samples_.begin() && right != samples_.end() &&
-           right->timestamp_ms - std::prev(right)->timestamp_ms <= max_gap_ms_;
-}
-
-void pose::receive(::serial &serial)
-{
-    GimbalState gimbal_state;
-    const double deadline = serial::monotonic_time_ms() + 100;
-    while (!serial.receive(gimbal_state))
-    {
-        if (serial::monotonic_time_ms() >= deadline)
-            throw std::runtime_error("Timed out waiting for MCU STATE");
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    push(gimbal_state);
-}
-
-void pose::synchronize(::serial &serial, double timestamp_ms)
-{
-    while (!covered(timestamp_ms))
-    {
-        if (!samples_.empty() && samples_.back().timestamp_ms >= timestamp_ms)
-            throw std::runtime_error("MCU STATE does not cover the image time");
-        receive(serial);
-    }
 }
 
 Eigen::Isometry3d pose::at_angles(const Eigen::Vector3d &raw_angles) const
 {
-    const Eigen::Vector3d angles = calibration_.angle_direction.cwiseProduct(raw_angles - calibration_.angle_zero_rad) *
-                                 (180 / 3.14159265358979323846);
-    Eigen::Isometry3d pose = transform({0, angles.x(), angles.y(), angles.z()});
-    pose.translation() -= origin_in_mechanical_;
-    return pose;
+    if (!initialized_)
+        throw std::logic_error("Base heading requires an initial camera attitude");
+    const Eigen::Vector3d angles = calibration_.angle_direction.cwiseProduct(raw_angles - calibration_.angle_zero_rad);
+    return transform(angles);
 }
 
-SolvedFrame pose::convert(const SolvedFrame &camera_poses, double timestamp_ms) const
+SolvedFrame pose::convert(const SolvedFrame &camera_poses) const
 {
+    if (!initialized_)
+        throw std::logic_error("Camera attitude has not been initialized");
     SolvedFrame result;
-    for (std::size_t i = 0; i < camera_poses.armors.size(); ++i)
+    for (const auto &camera_armor : camera_poses.armors)
     {
-        auto armor = camera_poses.armors[i];
-        const auto pose = to_base(Eigen::Vector3d(armor.tvec.at<double>(0), armor.tvec.at<double>(1), armor.tvec.at<double>(2)),
-            {armor.rvec.at<double>(0), armor.rvec.at<double>(1), armor.rvec.at<double>(2)}, timestamp_ms);
-        armor.tvec = (cv::Mat_<double>(3, 1) << pose.position.x(), pose.position.y(), pose.position.z());
-        armor.rvec = (cv::Mat_<double>(3, 1) << pose.rvec.x(), pose.rvec.y(), pose.rvec.z());
-        armor.yaw = pose.measurement(3) * 180 / CV_PI;
+        auto armor = camera_armor;
+        const Eigen::Vector3d position = base_from_camera_ * Eigen::Vector3d(
+                                                                 armor.tvec.at<double>(0), armor.tvec.at<double>(1), armor.tvec.at<double>(2));
+        cv::Mat rotation;
+        cv::Rodrigues(armor.rvec, rotation);
+        const Eigen::Matrix3d camera_rotation =
+            Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(rotation.ptr<double>());
+        const Eigen::Matrix3d base_rotation = base_from_camera_.linear() * camera_rotation;
+        const Eigen::AngleAxisd angle_axis(base_rotation);
+        const Eigen::Vector3d rvec = angle_axis.axis() * angle_axis.angle();
+        const Eigen::Vector3d normal = base_rotation.col(2);
+        const Eigen::Vector4d measurement(
+            std::atan2(position.x(), position.z()),
+            std::atan2(position.y(), std::hypot(position.x(), position.z())),
+            position.norm(), std::atan2(-normal.x(), normal.z()));
+        armor.tvec = (cv::Mat_<double>(3, 1) << position.x(), position.y(), position.z());
+        armor.rvec = (cv::Mat_<double>(3, 1) << rvec.x(), rvec.y(), rvec.z());
+        armor.yaw = measurement(3) * 180 / CV_PI;
         result.armors.push_back(std::move(armor));
-        result.observations.push_back(pose.measurement);
+        result.observations.push_back(measurement);
     }
     return result;
 }

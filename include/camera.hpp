@@ -4,21 +4,25 @@
 #include <cstdint>
 #include <string>
 
-enum CameraSource { VIDEO, CAMERA };
+enum CameraSource
+{
+    VIDEO,
+    CAMERA
+};
 class camera
 {
 public:
-    void open(CameraSource source, const std::filesystem::path &video_path, int camera_device = 0, double recording_fps = 30);
+    void open(CameraSource input_source, const std::filesystem::path &video_path, int camera_device = 0, double recording_fps = 60);
     bool next();
-    bool live() const;
 
-    cv::Mat image_;
-    std::filesystem::path path_;
-    std::string stem_, suffix_;
-    double fps_ = 0, timestamp_ms = 0;
-    std::int64_t frame_id_ = -1;
+    CameraSource source = VIDEO;
+    cv::Mat image;
+    std::filesystem::path path;
+    std::string stem, suffix;
+    double fps = 0, timestamp_ms = 0, read_duration_ms = 0;
+    std::int64_t frame_id = -1;
+
 private:
-    CameraSource source_ = VIDEO;
-    cv::VideoCapture stream_;
-    double frame_count_ = 0;
+    cv::VideoCapture stream;
+    double frame_count = 0;
 };

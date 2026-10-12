@@ -7,9 +7,20 @@
 #include <thread>
 #include <vector>
 
-
-enum HostCommand : std::uint8_t { HOST_TARGET = 1, HOST_STATE = 2, HOST_MODE = 3, HOST_HEARTBEAT = 4 };
-enum HostMode : std::uint8_t { HOST_IDLE = 0, HOST_MANUAL = 1, HOST_AUTO_AIM = 2, HOST_STABILIZE = 3 };
+enum HostCommand : std::uint8_t
+{
+    HOST_TARGET = 1,
+    HOST_STATE = 2,
+    HOST_MODE = 3,
+    HOST_HEARTBEAT = 4
+};
+enum HostMode : std::uint8_t
+{
+    HOST_IDLE = 0,
+    HOST_MANUAL = 1,
+    HOST_AUTO_AIM = 2,
+    HOST_STABILIZE = 3
+};
 
 struct GimbalState
 {
@@ -29,6 +40,7 @@ public:
     bool receive(GimbalState &gimbal_state);
     void send_target(float yaw_rad, float pitch_rad, bool valid);
     void send_mode(std::uint8_t mode);
+
 private:
     void run();
     void *handle = nullptr;

@@ -167,15 +167,15 @@ def run_predict_armor(csv_input_path, output_dir, suffix="1",
     return res_df
 
 def main():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[3]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--suffix', default='1')
     parser.add_argument('--input', type=Path, help='Input pose CSV; overrides --suffix input')
-    parser.add_argument('--output-dir', type=Path, default=root / 'results')
+    parser.add_argument('--output-dir', type=Path, default=root / 'tests/outputs/armor-reference')
     parser.add_argument('--prediction-horizon-ms', type=float, default=50.0,
                         help='Forecast offset from each image timestamp, in ms (default: 50; 0 disables lead)')
     args = parser.parse_args()
-    source = args.input if args.input is not None else root / 'data' / f'pose_raw_{args.suffix}.csv'
+    source = args.input if args.input is not None else root / 'tests/reference/recordings' / f'pose_raw_{args.suffix}.csv'
     if not np.isfinite(args.prediction_horizon_ms) or args.prediction_horizon_ms < 0:
         parser.error('--prediction-horizon-ms must be finite and nonnegative')
     run_predict_armor(source, args.output_dir, args.suffix,

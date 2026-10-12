@@ -11,30 +11,23 @@ struct Match
     double distance;
     Eigen::Vector4d residual;
 };
-struct Forecast
-{
-    Eigen::Matrix<double, 11, 1> state;
-    Eigen::Matrix<double, 11, 11> covariance;
-    Eigen::Matrix4d plates;
-};
 
 class predictor_armor
 {
 public:
-    static constexpr double pi = 3.14159265358979323846;
+    static const double pi;
     static double wrap_to_pi(double angle);
     static Eigen::Vector4d angular_residual(const Eigen::Vector4d &observed, const Eigen::Vector4d &predicted);
     static Eigen::Vector4d plate_pose(const Eigen::Matrix<double, 11, 1> &state, int armor_id);
     static Eigen::Vector4d h(const Eigen::Matrix<double, 11, 1> &state, int armor_id);
-    static Eigen::Matrix<double, 4, 11> get_jacobian(const Eigen::Matrix<double, 11, 1> &state, int armor_id);
+    static Eigen::Matrix<double, 4, 11> jacobian(const Eigen::Matrix<double, 11, 1> &state, int armor_id);
 
     PredictionResult update_frame(double timestamp_ms,
-                                 const std::vector<Eigen::Vector4d> &observations, double horizon_ms = 50);
+                                  const std::vector<Eigen::Vector4d> &observations, double horizon_ms = 50);
     void initialize(const Eigen::Vector4d &z);
     void predict(double dt);
-    Forecast forecast(double horizon_s = .05) const;
     std::vector<Match> associate(const std::vector<Eigen::Vector4d> &observations) const;
-    std::vector<Match> update_multi(const std::vector<Eigen::Vector4d> &observations);
+    std::vector<Match> update(const std::vector<Eigen::Vector4d> &observations);
 
     Eigen::Matrix<double, 11, 1> X = Eigen::Matrix<double, 11, 1>::Zero();
     Eigen::Matrix<double, 11, 11> P = (Eigen::Matrix<double, 11, 1>() << 10, 10, 10, 10, 10, 10, 10, 10, .01, .05, .05).finished().asDiagonal();

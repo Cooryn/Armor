@@ -1,7 +1,9 @@
-"""Export raw PnP position and orientation curves; no EKF results required."""
+import os
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import os
+from ._cli import parse_paths
+
 
 def plot_raw_data(csv_path, output_dir, suffix="1"):
     # 确保输出目录存在
@@ -57,11 +59,11 @@ def plot_raw_data(csv_path, output_dir, suffix="1"):
     print(f"已生成位姿观测曲线: {pose_raw_path}")
 
     # ==========================================
-    # 任务目标二：生成 raw_yaw_curve.png
+    # 任务目标二：生成 raw_observation_yaw.png
     # 包含数据：target_yaw, armor_orientation_yaw
     # ==========================================
     fig2, axs2 = plt.subplots(2, 1, figsize=(12, 8), sharex=True, dpi=150)
-    fig2.suptitle('Raw Yaw Observation Curves', fontsize=18, fontweight='bold')
+    fig2.suptitle('Raw Observations: Target Bearing and Armor Yaw', fontsize=18, fontweight='bold')
 
     # Target Yaw (目标相对于相机中心的偏航角)
     axs2[0].plot(frames, df['target_yaw'], color='#17becf', linewidth=1.5)
@@ -77,15 +79,13 @@ def plot_raw_data(csv_path, output_dir, suffix="1"):
         ax.grid(True, alpha=0.4, linestyle='--')
 
     plt.tight_layout()
-    raw_yaw_path = os.path.join(output_dir, f'raw_yaw_curve_{suffix}.png') # 动态拼接
-    fig2.savefig(raw_yaw_path)
+    observation_yaw_path = os.path.join(output_dir, f'raw_observation_yaw_{suffix}.png') # 动态拼接
+    fig2.savefig(observation_yaw_path)
     plt.close(fig2)
-    print(f"已生成偏航角观测曲线: {raw_yaw_path}")
-
+    print(f"已生成偏航角观测曲线: {observation_yaw_path}")
 
 def main():
-    from ._cli import parse_paths
-    args = parse_paths(__doc__ or 'Plot raw observations')
+    args = parse_paths('Plot raw observations')
     plot_raw_data(args.data_dir / f'pose_raw_{args.suffix}.csv', args.output_dir, args.suffix)
 
 if __name__ == '__main__':

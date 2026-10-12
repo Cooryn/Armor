@@ -1,57 +1,34 @@
 #pragma once
 #include <Eigen/Dense>
-#include <vector>
 #include "serial.hpp"
 #include "solver.hpp"
 
-
 struct CameraCalibration
 {
+    // 安装位移单位为米；未标定时的零偏移、单位旋转只是临时近似。
     Eigen::Vector3d yaw_to_pitch = Eigen::Vector3d::Zero();
     Eigen::Vector3d camera_in_pitch = Eigen::Vector3d::Zero();
     Eigen::Quaterniond camera_to_pitch = Eigen::Quaterniond::Identity();
     Eigen::Vector3d angle_zero_rad = Eigen::Vector3d::Zero();
     Eigen::Vector3d angle_direction = Eigen::Vector3d::Ones();
 };
-struct CameraSample
-{
-    double timestamp_ms, yaw_deg, pitch_deg, roll_deg;
-};
-struct BaseArmorPose
-{
-    Eigen::Vector3d position = Eigen::Vector3d::Zero();
-    Eigen::Vector3d rvec = Eigen::Vector3d::Zero();
-    Eigen::Vector4d measurement = Eigen::Vector4d::Zero();
-};
+
 class pose
 {
 public:
-    pose(const CameraCalibration &calibration = CameraCalibration{},
-             const std::vector<CameraSample> &samples = {}, double max_gap_ms = 100)
-    {
-        calibration_ = calibration;
-        samples_ = samples;
-        max_gap_ms_ = max_gap_ms;
-    }
-    void receive(::serial &serial);
-    void synchronize(::serial &serial, double timestamp_ms);
-    bool covered(double timestamp_ms) const;
-    SolvedFrame convert(const SolvedFrame &camera_poses, double timestamp_ms) const;
+    pose(const CameraCalibration &calibration = CameraCalibration{}) : calibration_(calibration) {}
+    void update(const GimbalState &gimbal_state);
+    SolvedFrame convert(const SolvedFrame &camera_poses) const;
     Eigen::Isometry3d at_angles(const Eigen::Vector3d &raw_angles) const;
-    void push(const GimbalState &gimbal_state);
-    Eigen::Isometry3d at(double timestamp_ms) const;
-    BaseArmorPose to_base(const Eigen::Vector3d &camera_position, const Eigen::Vector3d &camera_rvec,
-                          double image_timestamp_ms) const;
-    Eigen::Isometry3d reset_origin(double timestamp_ms);
 
     CameraCalibration calibration_;
-    std::vector<CameraSample> samples_;
-    double max_gap_ms_ = 100;
-    Eigen::Vector3d origin_in_mechanical_ = Eigen::Vector3d::Zero();
-    double reference_time_ms_ = 0;
+    Eigen::Isometry3d base_from_camera_ = Eigen::Isometry3d::Identity();
     GimbalState latest_state_;
+    // 基座原点固定在 yaw 转轴中心，Y 向下，Z 沿初始视线的水平投影。
+    double reference_time_ms_ = 0;
+    double reference_yaw_rad_ = 0;
+    bool initialized_ = false;
 
 private:
-    Eigen::Isometry3d mechanical_at(double timestamp_ms) const;
-    Eigen::Isometry3d transform(const CameraSample &sample) const;
+    Eigen::Isometry3d transform(const Eigen::Vector3d &angles) const;
 };

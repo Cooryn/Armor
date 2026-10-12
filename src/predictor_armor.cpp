@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+const double predictor_armor::pi = 3.14159265358979323846;
+
 // 角度归一化
 double predictor_armor::wrap_to_pi(double angle)
 {
@@ -25,16 +27,16 @@ Eigen::Vector4d predictor_armor::angular_residual(const Eigen::Vector4d &observe
 void predictor_armor::transition(double dt, Eigen::Matrix<double, 11, 11> &transition_matrix, Eigen::Matrix<double, 11, 11> &Q) const
 {
     transition_matrix << 1, dt, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-         0, 1,  0, 0, 0, 0, 0, 0, 0, 0, 0,
-         0, 0,  1, dt,0, 0, 0, 0, 0, 0, 0,
-         0, 0,  0, 1, 0, 0, 0, 0, 0, 0, 0,
-         0, 0,  0, 0, 1, dt,0, 0, 0, 0, 0,
-         0, 0,  0, 0, 0, 1, 0, 0, 0, 0, 0,
-         0, 0,  0, 0, 0, 0, 1, dt,0, 0, 0,
-         0, 0,  0, 0, 0, 0, 0, 1, 0, 0, 0,
-         0, 0,  0, 0, 0, 0, 0, 0, 1, 0, 0,
-         0, 0,  0, 0, 0, 0, 0, 0, 0, 1, 0,
-         0, 0,  0, 0, 0, 0, 0, 0, 0, 0, 1;
+        0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 1, dt, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 1, dt, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 1, dt, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1;
 
     const double p00 = dt * dt * dt / 3 * q_pos;
     const double p01 = dt * dt / 2 * q_pos;
@@ -42,17 +44,17 @@ void predictor_armor::transition(double dt, Eigen::Matrix<double, 11, 11> &trans
     const double y00 = dt * dt * dt / 3 * q_yaw;
     const double y01 = dt * dt / 2 * q_yaw;
     const double y11 = dt * q_yaw;
-    Q << p00, p01, 0,   0,   0,   0,   0,   0,   0,        0,         0,
-         p01, p11, 0,   0,   0,   0,   0,   0,   0,        0,         0,
-         0,   0,   p00, p01, 0,   0,   0,   0,   0,        0,         0,
-         0,   0,   p01, p11, 0,   0,   0,   0,   0,        0,         0,
-         0,   0,   0,   0,   p00, p01, 0,   0,   0,        0,         0,
-         0,   0,   0,   0,   p01, p11, 0,   0,   0,        0,         0,
-         0,   0,   0,   0,   0,   0,   y00, y01, 0,        0,         0,
-         0,   0,   0,   0,   0,   0,   y01, y11, 0,        0,         0,
-         0,   0,   0,   0,   0,   0,   0,   0,   q_r * dt, 0,         0,
-         0,   0,   0,   0,   0,   0,   0,   0,   0,        q_dl * dt, 0,
-         0,   0,   0,   0,   0,   0,   0,   0,   0,        0,         q_dh * dt;
+    Q << p00, p01, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        p01, p11, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, p00, p01, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, p01, p11, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, p00, p01, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, p01, p11, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, y00, y01, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, y01, y11, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, q_r * dt, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, q_dl * dt, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, q_dh * dt;
 }
 
 void predictor_armor::predict(double dt)
@@ -62,19 +64,6 @@ void predictor_armor::predict(double dt)
     X = F * X;
     X(6) = predictor_armor::wrap_to_pi(X(6));
     P = F * P * F.transpose() + Q; // 更新状态估计的协方差
-}
-
-// 预测未来状态
-Forecast predictor_armor::forecast(double horizon_s) const
-{
-    Eigen::Matrix<double, 11, 11> transition_matrix, Q;
-    transition(horizon_s, transition_matrix, Q);
-    Eigen::Matrix<double, 11, 1> future_state = transition_matrix * X;
-    future_state(6) = predictor_armor::wrap_to_pi(future_state(6));
-    Eigen::Matrix4d plates;
-    for (int armor_id = 0; armor_id < 4; ++armor_id)
-        plates.row(armor_id) = predictor_armor::plate_pose(future_state, armor_id).transpose();
-    return {future_state, transition_matrix * P * transition_matrix.transpose() + Q, plates};
 }
 
 // 计算每块装甲板的位姿
@@ -99,7 +88,7 @@ Eigen::Vector4d predictor_armor::h(const Eigen::Matrix<double, 11, 1> &state, in
 }
 
 // 计算雅可比矩阵
-Eigen::Matrix<double, 4, 11> predictor_armor::get_jacobian(const Eigen::Matrix<double, 11, 1> &state, int armor_id)
+Eigen::Matrix<double, 4, 11> predictor_armor::jacobian(const Eigen::Matrix<double, 11, 1> &state, int armor_id)
 {
     Eigen::Matrix<double, 4, 11> H = Eigen::Matrix<double, 4, 11>::Zero();
     const Eigen::Vector4d predicted_observation = predictor_armor::h(state, armor_id);
@@ -148,13 +137,12 @@ std::vector<Match> predictor_armor::associate(const std::vector<Eigen::Vector4d>
 
     // 对候选匹配进行排序，优先选择距离较近的匹配
     std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b)
-    {
+              {
         if (a.distance != b.distance)
             return a.distance < b.distance;
         if (a.index != b.index)
             return a.index < b.index;
-        return a.armor_id < b.armor_id;
-    });
+        return a.armor_id < b.armor_id; });
 
     // 选择不冲突的匹配
     for (const auto &candidate : candidates)
@@ -178,14 +166,14 @@ std::vector<Match> predictor_armor::associate(const std::vector<Eigen::Vector4d>
 }
 
 // 联合多板更新EKF
-std::vector<Match> predictor_armor::update_multi(const std::vector<Eigen::Vector4d> &observations)
+std::vector<Match> predictor_armor::update(const std::vector<Eigen::Vector4d> &observations)
 {
     auto matches = associate(observations);
     if (matches.empty())
         return matches;
     int n = static_cast<int>(matches.size()) * 4;
-    Eigen::Matrix<double, Eigen::Dynamic, 11, 0, 16, 11> H(n, 11); // 创建联合雅可比矩阵
-    Eigen::Matrix<double, Eigen::Dynamic, 1, 0, 16, 1> residual(n); // 创建联合残差列向量
+    Eigen::Matrix<double, Eigen::Dynamic, 11, 0, 16, 11> H(n, 11);                // 创建联合雅可比矩阵
+    Eigen::Matrix<double, Eigen::Dynamic, 1, 0, 16, 1> residual(n);               // 创建联合残差列向量
     Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, 0, 16, 16> noise(n, n); // 创建联合观测噪声协方差矩阵
     noise.setZero();
 
@@ -193,31 +181,31 @@ std::vector<Match> predictor_armor::update_multi(const std::vector<Eigen::Vector
     {
         const auto offset = static_cast<Eigen::Index>(4 * k);
         residual.segment<4>(offset) = matches[k].residual; // 将当前匹配的四维残差填入联合残差向量
-        H.middleRows<4>(offset) = predictor_armor::get_jacobian(X, matches[k].armor_id);
+        H.middleRows<4>(offset) = predictor_armor::jacobian(X, matches[k].armor_id);
         noise.block<4, 4>(offset, offset) = R;
     }
 
     // 开始联合更新
     const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, 0, 16, 16> S = H * P * H.transpose() + noise; // 计算联合残差协方差
-    const auto decomposition = S.ldlt(); // 使用LDLT分解
-    const Eigen::Matrix<double, 11, Eigen::Dynamic, 0, 11, 16> K = decomposition.solve(H * P).transpose(); // 计算卡尔曼增益
-    X = X + K * residual; // 修正状态
+    const auto decomposition = S.ldlt();                                                                      // 使用LDLT分解
+    const Eigen::Matrix<double, 11, Eigen::Dynamic, 0, 11, 16> K = decomposition.solve(H * P).transpose();    // 计算卡尔曼增益
+    X = X + K * residual;                                                                                     // 修正状态
     X(6) = predictor_armor::wrap_to_pi(X(6));
     X(8) = std::clamp(X(8), .20, .30);
     X(9) = std::clamp(X(8) + X(9), .20, .30) - X(8);
     const Eigen::Matrix<double, 11, 11> A = Eigen::Matrix<double, 11, 11>::Identity() - K * H;
     P = A * P * A.transpose() + K * noise * K.transpose(); // 更新协方差
-    P = ((P + P.transpose()) * .5).eval(); // 消除不对称误差
+    P = ((P + P.transpose()) * .5).eval();                 // 消除不对称误差
     return matches;
 }
 
 // 更新帧
 PredictionResult predictor_armor::update_frame(double timestamp_ms,
-                                      const std::vector<Eigen::Vector4d> &observations, double horizon_ms)
+                                               const std::vector<Eigen::Vector4d> &observations, double horizon_ms)
 {
-    const double dt = (timestamp_ms - last_timestamp_ms) / 1000; // 计算时间间隔
-    last_timestamp_ms = timestamp_ms; // 记录时间戳
-    const double missing = std::numeric_limits<double>::quiet_NaN();
+    const double dt = (timestamp_ms - last_timestamp_ms) / 1000;     // 计算时间间隔
+    last_timestamp_ms = timestamp_ms;                                // 记录时间戳
+    const double missing = std::numeric_limits<double>::quiet_NaN(); // 定义缺失值
     PredictionResult prediction;
     const Eigen::Vector4d *selected_observation = nullptr;
 
@@ -240,14 +228,15 @@ PredictionResult predictor_armor::update_frame(double timestamp_ms,
     }
     else
     {
-        predict(dt);
+        predict(dt);                                        // 把状态和协方差推进到当前帧时间
         const Eigen::Matrix<double, 11, 1> prior_state = X; // 保存状态
-        const auto matches = update_multi(observations); // 联合更新
+        const auto matches = update(observations);          // 联合更新
         if (!matches.empty())
         {
             // 找到观测距离最小的记录误差
             const auto &match = *std::min_element(matches.begin(), matches.end(),
-                [&observations](const auto &a, const auto &b) { return observations[a.index](2) < observations[b.index](2); });
+                                                  [&observations](const auto &a, const auto &b)
+                                                  { return observations[a.index](2) < observations[b.index](2); });
             plate = predictor_armor::plate_pose(prior_state, match.armor_id);
             prediction.errors = -match.residual;
             observed_yaw = observations[match.index](3);
@@ -255,19 +244,26 @@ PredictionResult predictor_armor::update_frame(double timestamp_ms,
         prediction.status = matches.empty() ? "prediction_only" : "updated";
     }
 
+    // 生成几何结果
     if (is_initialized)
     {
-        const auto future = forecast(horizon_ms / 1000);
+        // 计算未来状态和四板位姿
+        auto future = X;
+        for (int i : {0, 2, 4, 6})
+            future(i) += horizon_ms / 1000 * future(i + 1); // 预测未来位置
+        future(6) = predictor_armor::wrap_to_pi(future(6));
         prediction.current.center = Eigen::Vector3d(X(0), X(2), X(4));
-        prediction.future.center = Eigen::Vector3d(future.state(0), future.state(2), future.state(4));
+        prediction.future.center = Eigen::Vector3d(future(0), future(2), future(4));
         for (int i = 0; i < 4; ++i)
         {
+            // 保存当前和未来的四板位姿
             prediction.current.plates.push_back(predictor_armor::plate_pose(X, i));
-            prediction.future.plates.push_back(future.plates.row(i).transpose());
+            prediction.future.plates.push_back(predictor_armor::plate_pose(future, i));
         }
         if (prediction.status != "initialized")
         {
-            prediction.values = {future.state(6), plate(0), plate(2), X(6), plate(3), observed_yaw,
+            // 填写输出值
+            prediction.values = {future(6), plate(0), plate(2), X(6), plate(3), observed_yaw,
                                  X(8), X(9), X(10)};
         }
     }

@@ -15,7 +15,6 @@
 enum PredictorType
 {
     PREDICTOR_SINGLE_PLATE,
-    PREDICTOR_POLAR,
     PREDICTOR_ARMOR
 };
 
@@ -30,7 +29,6 @@ struct PredictionResult
     std::string status = "waiting";
     // Model-specific log values; shared geometry, errors and frame metadata are written separately.
     // Single plate: prior/observed x, z, yaw, distance (8 values).
-    // Polar: vx, vy, vz, body_yaw, w, r, observed_yaw (7 values).
     // Armor: future_body_yaw, prior x/z, body_yaw, prior/observed armor_yaw, r, dl, dh (9 values).
     std::array<double, 9> values{};
     Eigen::Vector4d errors = Eigen::Vector4d::Constant(std::numeric_limits<double>::quiet_NaN());
@@ -39,24 +37,29 @@ struct PredictionResult
 class output
 {
 public:
+    static std::filesystem::path result_directory(const std::filesystem::path &root,
+                                                  const ::camera &camera, PredictorType model, bool base_frame);
     output() = default;
     output(PredictorType model, const std::filesystem::path &directory,
            const std::string &suffix, double horizon_ms, bool base_frame = false);
     void open_predictions(PredictorType model, const std::filesystem::path &directory,
                           const std::string &suffix, double horizon_ms, bool base_frame = false);
-    void open(const std::filesystem::path &root, const ::camera &camera, PredictorType model, bool preview, double horizon_ms);
+    void open(const std::filesystem::path &root, const ::camera &camera, PredictorType model,
+              bool preview, double horizon_ms, bool base_frame = true);
     void write(std::int64_t frame_id, double timestamp_ms, const PredictionResult &prediction);
     bool write(const ::camera &camera, const ::solver &solver, const SolvedFrame &camera_poses,
-               const SolvedFrame &base_poses, const ::pose &pose_base,
                const PredictionResult &prediction, const ControlTarget &control,
-               std::chrono::steady_clock::time_point frame_start);
+               std::chrono::steady_clock::time_point frame_start,
+               const SolvedFrame *base_poses = nullptr, const ::pose *pose_base = nullptr);
     void finish();
+
 private:
-    void finish_predictions();
+    bool write_canvas(const ::camera &camera, const cv::Mat &canvas,
+                      std::chrono::steady_clock::time_point frame_start);
     static void draw_prediction(cv::Mat &image, const PredictionGeometry &geometry,
                                 const Eigen::Isometry3d &camera_from_base, const ::solver &solver,
-                                bool future, PredictorType type);
-    static constexpr const char *window = "Armor - current / future prediction - Esc to stop";
+                                bool future);
+    static const char *const window;
     PredictorType type_ = PREDICTOR_ARMOR;
     double horizon_ms_ = 0;
     bool preview_ = false, finished_ = true, predictions_finished_ = true;
@@ -66,5 +69,8 @@ private:
     std::ofstream raw_, base_, transforms_, controls_, results, futures;
     std::array<double, 4> squared_errors{};
     std::array<std::size_t, 4> error_counts{};
-    std::int64_t processed_ = 0;
+    std::int64_t processed_ = 0, video_frames_ = 0;
+    double video_fps_ = 0, first_timestamp_ms_ = 0, last_timestamp_ms_ = 0;
+    double measured_start_ms_ = 0, read_total_ms_ = 0;
+    cv::Mat previous_canvas_;
 };

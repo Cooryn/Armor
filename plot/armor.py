@@ -1,4 +1,3 @@
-"""Export armor EKF plots from saved CSV files without rerunning the filter."""
 import os
 import numpy as np
 import pandas as pd
@@ -44,21 +43,21 @@ def plot_armor(prediction_csv, raw_csv, output_dir, suffix='1'):
     # 4. 输出统一车体 yaw 曲线
     fig_byaw, ax_byaw = plt.subplots(figsize=(10, 4), dpi=150)
     ax_byaw.plot(res_df['frame_id'], res_df['body_yaw'], color='#2ca02c')
-    ax_byaw.set_title('Body Yaw Curve')
+    ax_byaw.set_title('Estimated Body Yaw')
     ax_byaw.set_xlabel('Frame ID'); ax_byaw.set_ylabel('Body Yaw (rad)')
     ax_byaw.grid(True, linestyle='--')
-    fig_byaw.savefig(os.path.join(output_dir, f'body_yaw_curve_{suffix}.png'))
+    fig_byaw.savefig(os.path.join(output_dir, f'body_yaw_estimate_{suffix}.png'))
     plt.close(fig_byaw)
 
-    # 5. 输出 Folded Armor Yaw (观测板向 vs 预测板向)
-    fig_folded, ax_folded = plt.subplots(figsize=(10, 4), dpi=150)
-    ax_folded.scatter(res_df['frame_id'], res_df['obs_armor_yaw'], color='red', s=5, alpha=0.5, label='Observed')
-    ax_folded.plot(res_df['frame_id'], res_df['pred_armor_yaw'], color='blue', linewidth=1.5, label='Predicted (Folded)')
-    ax_folded.set_title('Folded Armor Yaw Tracking')
-    ax_folded.set_xlabel('Frame ID'); ax_folded.set_ylabel('Armor Yaw (rad)')
-    ax_folded.legend(); ax_folded.grid(True, linestyle='--')
-    fig_folded.savefig(os.path.join(output_dir, f'folded_armor_yaw_curve_{suffix}.png'))
-    plt.close(fig_folded)
+    # 5. 输出 Armor Yaw Comparison (观测板向 vs 预测板向)
+    fig_comparison, ax_comparison = plt.subplots(figsize=(10, 4), dpi=150)
+    ax_comparison.scatter(res_df['frame_id'], res_df['obs_armor_yaw'], color='red', s=5, alpha=0.5, label='Observed')
+    ax_comparison.plot(res_df['frame_id'], res_df['pred_armor_yaw'], color='blue', linewidth=1.5, label='Prior prediction')
+    ax_comparison.set_title('Matched Armor Yaw: Observation vs Prior Prediction')
+    ax_comparison.set_xlabel('Frame ID'); ax_comparison.set_ylabel('Armor Yaw (rad)')
+    ax_comparison.legend(); ax_comparison.grid(True, linestyle='--')
+    fig_comparison.savefig(os.path.join(output_dir, f'armor_yaw_comparison_{suffix}.png'))
+    plt.close(fig_comparison)
 
     # 6. 输出残差误差四宫格
     fig_err, axs_err = plt.subplots(2, 2, figsize=(12, 8), sharex=True, dpi=150)
@@ -80,11 +79,12 @@ def plot_armor(prediction_csv, raw_csv, output_dir, suffix='1'):
 
     print("所有文件已保存至：", output_dir)
 
-
 def main():
-    args = parse_paths(__doc__, default_suffix='1')
+    args = parse_paths('Plot armor predictions', default_suffix='1', model='armor')
     prediction = args.results_dir / f'armor_prediction_result_{args.suffix}.csv'
-    plot_armor(prediction, args.data_dir / f'pose_base_{args.suffix}.csv', args.output_dir, args.suffix)
+    base_frame = 'coordinate_frame' in pd.read_csv(prediction, nrows=0).columns
+    observations = args.data_dir / f'pose_{"base" if base_frame else "raw"}_{args.suffix}.csv'
+    plot_armor(prediction, observations, args.output_dir, args.suffix)
 
 if __name__ == '__main__':
     main()

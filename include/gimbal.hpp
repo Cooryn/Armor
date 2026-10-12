@@ -19,6 +19,7 @@ struct ControlTarget
 class gimbal
 {
 public:
+    static ControlTarget simulate(const PredictionResult &prediction, const GimbalConfig &gimbal_config = GimbalConfig{});
     static ControlTarget solve(const PredictionResult &prediction, const ::pose &pose_base,
-                           double image_timestamp_ms, double now_ms, const GimbalConfig &gimbal_config = GimbalConfig{});
+                               double image_timestamp_ms, double now_ms, const GimbalConfig &gimbal_config = GimbalConfig{});
 };

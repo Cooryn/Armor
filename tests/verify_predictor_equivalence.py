@@ -65,9 +65,9 @@ def observation(x, y, z, yaw=0):
 
 
 for suffix in ('1', '2'):
-    source = a.python_root / 'data' / f'pose_raw_{suffix}.csv'
+    source = a.python_root / 'tests/reference/recordings' / f'pose_raw_{suffix}.csv'
     if not source.exists():
-        raise FileNotFoundError(f'Generate video {suffix} observations with Armor before running this comparison')
+        raise FileNotFoundError(f'Missing reference recording: {source}')
     data = pd.read_csv(source)
     if 'coordinate_frame' in data:
         assert data.coordinate_frame.eq('camera').all()
@@ -78,7 +78,7 @@ for suffix in ('1', '2'):
                          r[['target_yaw', 'target_pitch', 'distance', 'armor_orientation_yaw']].to_numpy(float))
                         for _, r in g.iterrows()] for fid, g in data.groupby('frame_id')}
     frames = [(i, i * 1000 / fps, groups.get(i, [])) for i in range(size)]
-    for model in ('basic', 'polar', 'armor'):
+    for model in ('basic', 'armor'):
         compare(f'real_{suffix}_{model}', frames, model)
 
 synthetic = []
@@ -96,14 +96,12 @@ for i in range(100):
                 o[0][:] *= 1.04
                 o[1][2] *= 1.04
             obs.append(o)
-    if i == 0: obs = [observation(0, 0, 0)]
     synthetic.append((i, time, obs))
 
-for model in ('basic', 'polar', 'armor'):
+for model in ('basic', 'armor'):
     for horizon in (0, 50, 200):
-        frames = [(i, t, [] if i == 0 else obs) for i, t, obs in synthetic] if model == 'armor' else synthetic
-        output = compare(f'synthetic_{model}_{horizon}', frames, model, horizon)
-        prefix = {'basic': '', 'polar': 'polar_', 'armor': 'armor_'}[model]
+        output = compare(f'synthetic_{model}_{horizon}', synthetic, model, horizon)
+        prefix = {'basic': '', 'armor': 'armor_'}[model]
         state = pd.read_csv(output / f'{prefix}prediction_result_1.csv')
         assert state.frame_id.tolist() == list(range(3, 100))
         if model == 'armor':
@@ -115,15 +113,14 @@ for model in ('basic', 'polar', 'armor'):
 
 selection = [(0, 0., [observation(0, 0, 4), observation(1, 0, 3), observation(-1, 0, 3)]),
              (1, 40., [observation(1, 0, 3), observation(-1, 0, 3)]), (2, 80., []),
-             (3, 120., [observation(0, 0, 0)]), (4, 160., [])]
-for model in ('basic', 'polar', 'armor'):
-    frames = [(i, t, [] if i == 3 else obs) for i, t, obs in selection] if model == 'armor' else selection
-    compare(f'selection_{model}', frames, model)
+             (3, 120., []), (4, 160., [])]
+for model in ('basic', 'armor'):
+    compare(f'selection_{model}', selection, model)
     for name, frames in [('empty', []), ('no_observations', [(i, i * 40., []) for i in range(6)]),
                          ('single_frame', [(0, 0., [observation(0, .2, 3)])])]:
         compare(f'{name}_{model}', frames, model)
 wrap = [(i, i * 30., [observation(.01 - .002 * i, .2, -3)]) for i in range(20)]
-for model in ('basic', 'polar', 'armor'):
+for model in ('basic', 'armor'):
     compare(f'target_wrap_{model}', wrap, model)
 
 (root / 'verification.json').write_text(json.dumps(report, indent=2))

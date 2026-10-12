@@ -1,65 +1,80 @@
 #include "camera.hpp"
 #include "serial.hpp"
 #include <stdexcept>
+#include <chrono>
+#include <cmath>
+#include <iostream>
 
-constexpr int camera_width = 1280;
-constexpr int camera_height = 720;
-constexpr double camera_capture_fps = 60;
+const int camera_width = 1280;
+const int camera_height = 720;
+const double camera_capture_fps = 60;
 
-bool camera::live() const
+void camera::open(CameraSource input_source, const std::filesystem::path &video_path, int camera_device, double recording_fps)
 {
-    return source_ == CAMERA;
-}
-
-void camera::open(CameraSource source, const std::filesystem::path &video_path, int camera_device, double recording_fps)
-{
-    stream_.release();
-    source_ = source;
-    path_ = video_path;
-    frame_id_ = -1;
-    frame_count_ = 0;
-    if (source_ == VIDEO)
+    stream.release();
+    frame_id = -1;
+    frame_count = 0;
+    read_duration_ms = 0;
+    source = input_source;
+    this->path = video_path;
+    if (source == VIDEO)
     {
-        stream_.open(path_.string());
-        stem_ = path_.stem().string();
-        frame_count_ = stream_.get(cv::CAP_PROP_FRAME_COUNT);
-        fps_ = stream_.get(cv::CAP_PROP_FPS);
+        stream.open(path.string());
+        stem = path.stem().string();
+        frame_count = stream.get(cv::CAP_PROP_FRAME_COUNT);
+        fps = stream.get(cv::CAP_PROP_FPS);
     }
     else
     {
 #ifdef _WIN32
-        stream_.open(camera_device, cv::CAP_DSHOW);
+        stream.open(camera_device, cv::CAP_DSHOW);
 #else
-        stream_.open(camera_device);
+        stream.open(camera_device);
 #endif
-        stem_ = "camera_live";
-        fps_ = recording_fps;
+        stem = "camera_live";
+        fps = recording_fps;
     }
-    if (!stream_.isOpened())
-        throw std::runtime_error("Cannot open image source: " + stem_);
-    if (live())
+    if (!stream.isOpened())
+        throw std::runtime_error("Cannot open image source: " + stem);
+    if (source == CAMERA)
     {
-        if (!stream_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G')) ||
-            !stream_.set(cv::CAP_PROP_FRAME_WIDTH, camera_width) ||
-            !stream_.set(cv::CAP_PROP_FRAME_HEIGHT, camera_height) ||
-            !stream_.set(cv::CAP_PROP_FPS, camera_capture_fps))
-            throw std::runtime_error("Cannot configure USB camera: MJPG 1280x720 at 60 FPS");
+        const int mjpg = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+        if (!stream.set(cv::CAP_PROP_FRAME_WIDTH, camera_width) ||
+            !stream.set(cv::CAP_PROP_FRAME_HEIGHT, camera_height) ||
+            !stream.set(cv::CAP_PROP_FPS, camera_capture_fps) ||
+            !stream.set(cv::CAP_PROP_FOURCC, mjpg))
+            throw std::runtime_error("Cannot configure USB camera: width/height/FPS/MJPG");
+        const int width = static_cast<int>(stream.get(cv::CAP_PROP_FRAME_WIDTH));
+        const int height = static_cast<int>(stream.get(cv::CAP_PROP_FRAME_HEIGHT));
+        const int format = static_cast<int>(stream.get(cv::CAP_PROP_FOURCC));
+        if (width != camera_width || height != camera_height || format != mjpg)
+            throw std::runtime_error(cv::format("Unexpected camera format: %dx%d FOURCC=%d; expected 1280x720 MJPG",
+                                                width, height, format));
+        std::cout << "Camera backend=" << stream.getBackendName() << " format=MJPG " << width << 'x' << height
+                  << " requested_fps=" << camera_capture_fps << " reported_fps=" << stream.get(cv::CAP_PROP_FPS)
+                  << " (not measured), recording_fps=" << fps << '\n';
     }
-    const auto separator = stem_.find_last_of('_');
-    suffix_ = separator == std::string::npos ? stem_ : stem_.substr(separator + 1);
+    if (!std::isfinite(fps) || fps <= 0)
+        throw std::runtime_error("Video/recording FPS must be finite and positive");
+    const auto separator = stem.find_last_of('_');
+    suffix = separator == std::string::npos ? stem : stem.substr(separator + 1);
     if (!next())
-        throw std::runtime_error("Cannot read the first image: " + stem_);
+        throw std::runtime_error("Cannot read the first image: " + stem);
 }
 
 bool camera::next()
 {
-    if (!stream_.read(image_))
+    const auto read_start = std::chrono::steady_clock::now();
+    if (!stream.read(image))
     {
-        if (live() || frame_id_ < 0 || double(frame_id_ + 1) < frame_count_)
+        if (source == CAMERA || frame_id < 0 || double(frame_id + 1) < frame_count)
             throw std::runtime_error("Image acquisition failed before the end of the source");
         return false;
     }
-    ++frame_id_;
-    timestamp_ms = live() ? serial::monotonic_time_ms() : double(frame_id_) * 1000 / fps_;
+    read_duration_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - read_start).count();
+    if (source == CAMERA && image.size() != cv::Size(camera_width, camera_height))
+        throw std::runtime_error("Camera image size is not 1280x720");
+    ++frame_id;
+    timestamp_ms = source == CAMERA ? serial::monotonic_time_ms() : double(frame_id) * 1000 / fps;
     return true;
 }

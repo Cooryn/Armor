@@ -41,8 +41,8 @@ class PlotSeparationTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 plot_armor(results / 'armor_prediction_result_1.csv', raw, images)
             self.assertEqual({p.name for p in images.iterdir()}, {
-                'top_down_trajectory_1.png', 'body_yaw_curve_1.png',
-                'folded_armor_yaw_curve_1.png', 'armor_prediction_error_curve_1.png'})
+                'top_down_trajectory_1.png', 'body_yaw_estimate_1.png',
+                'armor_yaw_comparison_1.png', 'armor_prediction_error_curve_1.png'})
             for image in images.iterdir():
                 self.assertIsNotNone(cv2.imread(str(image)))
             self.assertEqual(snapshot, {p.name: p.read_bytes() for p in results.iterdir()})

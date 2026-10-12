@@ -4,6 +4,7 @@ These are consistency diagnostics, not annotated precision/recall or true pose e
 Run from any directory with the repository Python environment.
 """
 from pathlib import Path
+import argparse
 import cv2
 import numpy as np
 import pandas as pd
@@ -30,11 +31,15 @@ def metrics(path, total_frames):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--after-root', type=Path, default=ROOT/'results/video/armor',
+                        help='Parent of the current video_1 and video_2 result directories')
+    args = parser.parse_args()
     OUTPUT.mkdir(parents=True, exist_ok=True)
     rows = []
     for video, frames in [(1, 815), (2, 351)]:
         for version, folder in [('before', ROOT/'tests/outputs/detector_baseline'),
-                                ('after', ROOT/'data')]:
+                                ('after', args.after_root/f'video_{video}')]:
             rows.append(dict(video=video, version=version,
                              **metrics(folder/f'pose_raw_{video}.csv', frames)))
     summary = pd.DataFrame(rows)
@@ -43,7 +48,7 @@ def main():
 
     crops = []
     for version, path in [('Before', ROOT/'tests/outputs/detector_baseline/video_1.mp4'),
-                          ('After', ROOT/'results/video_1.mp4')]:
+                          ('After', args.after_root/'video_1/video_1.avi')]:
         cap = cv2.VideoCapture(str(path))
         cap.set(cv2.CAP_PROP_POS_FRAMES, 753)
         ok, frame = cap.read()
@@ -74,20 +79,16 @@ def main():
     ekf_rows = []
     for video, lo, hi in [(1, 2, 25), (2, 2, 10)]:
         for version, folder in [('before', ROOT/'tests/outputs/detector_baseline'),
-                                ('after', ROOT/'results')]:
+                                ('after', args.after_root/f'video_{video}')]:
             path = folder/f'armor_prediction_result_{video}.csv'
             if not path.exists():
                 continue
             result = pd.read_csv(path)
             segment = result[result.timestamp.between(lo*1000, hi*1000)]
-            diagnostics = pd.read_csv(folder/f'armor_observation_diagnostics_{video}.csv')
             center = segment[['xc', 'yc', 'zc']].to_numpy()
             deviation = np.linalg.norm(center-np.median(center, axis=0), axis=1)
             ekf_rows.append(dict(video=video, version=version,
                 center_p95_m=np.quantile(deviation, .95), angular_speed_std=segment.w.std(),
-                accepted=int((diagnostics.reason == 'accepted').sum()),
-                rejected=int(diagnostics.reason.isin(
-                    ['innovation_gate', 'association_conflict', 'invalid']).sum()),
                 distance_prior_rmse_m=np.sqrt((segment.err_distance**2).mean()),
                 yaw_prior_rmse_rad=np.sqrt((segment.err_armor_yaw**2).mean())))
     if ekf_rows:

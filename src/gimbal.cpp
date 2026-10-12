@@ -4,8 +4,15 @@
 #include <cmath>
 #include <stdexcept>
 
+ControlTarget gimbal::simulate(const PredictionResult &prediction, const GimbalConfig &gimbal_config)
+{
+    ::pose pose_base;
+    pose_base.update(GimbalState{});
+    return solve(prediction, pose_base, 0, 0, gimbal_config);
+}
+
 ControlTarget gimbal::solve(const PredictionResult &prediction, const ::pose &pose_base,
-                                 double image_timestamp_ms, double now_ms, const GimbalConfig &gimbal_config)
+                            double image_timestamp_ms, double now_ms, const GimbalConfig &gimbal_config)
 {
     const auto &gimbal_state = pose_base.latest_state_;
     ControlTarget control;
@@ -16,9 +23,10 @@ ControlTarget gimbal::solve(const PredictionResult &prediction, const ::pose &po
         control.status = "stale_pose";
         return control;
     }
-    if (prediction.status != "updated" && prediction.status != "initialized")
+    if (prediction.status != "updated" && prediction.status != "initialized" &&
+        prediction.status != "prediction_only")
         return control;
-    const auto camera_from_base = pose_base.at(image_timestamp_ms).inverse();
+    const auto camera_from_base = pose_base.base_from_camera_.inverse();
     const Eigen::Vector4d *selected_plate = nullptr;
     double nearest = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < prediction.future.plates.size(); ++i)
@@ -50,7 +58,7 @@ ControlTarget gimbal::solve(const PredictionResult &prediction, const ::pose &po
             break;
         }
         Eigen::Matrix2d jacobian;
-        constexpr double step = 1e-5;
+        const double step = 1e-5;
         for (int axis = 0; axis < 2; ++axis)
         {
             auto plus = angles, minus = angles;

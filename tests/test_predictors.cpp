@@ -1,5 +1,4 @@
 #include "predictor_single.hpp"
-#include "predictor_polar.hpp"
 #include "predictor_armor.hpp"
 #include <Eigen/Dense>
 #include <algorithm>
@@ -7,8 +6,9 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <stdexcept>
-static_assert(Eigen::Matrix<double, 6, 1>::RowsAtCompileTime == 6);
+static_assert(Eigen::Matrix<double, 8, 1>::RowsAtCompileTime == 8);
 static_assert(Eigen::Matrix<double, 9, 1>::RowsAtCompileTime == 9);
 static_assert(Eigen::Matrix<double, 11, 1>::RowsAtCompileTime == 11);
 static_assert(Eigen::Matrix<double, 4, 11>::RowsAtCompileTime == 4 && Eigen::Matrix<double, 4, 11>::ColsAtCompileTime == 11);
@@ -42,15 +42,15 @@ static void single_plate_regressions() {
     for (const Eigen::Vector3d &position : std::array<Eigen::Vector3d, 5>{
              Eigen::Vector3d(.2, .1, 3), Eigen::Vector3d(-.4, -.6, 5), Eigen::Vector3d(.05, 3, .02),
              Eigen::Vector3d(1e-8, .2, -3), Eigen::Vector3d(-1e-8, -.2, -3)}) {
-        Eigen::Matrix<double, 6, 1> truth;
-        truth << position(0), .4, position(1), -.2, position(2), .3;
-        Eigen::Matrix<double, 3, 6> numerical;
-        for (int column = 0; column < 6; ++column) {
-            Eigen::Matrix<double, 6, 1> plus = truth, minus = truth;
+        Eigen::Matrix<double, 8, 1> truth;
+        truth << position(0), .4, position(1), -.2, position(2), .3, .4, 0;
+        Eigen::Matrix<double, 4, 8> numerical;
+        for (int column = 0; column < 8; ++column) {
+            Eigen::Matrix<double, 8, 1> plus = truth, minus = truth;
             plus(column) += 1e-6;
             minus(column) -= 1e-6;
-            Eigen::Vector3d difference = predictor_single::h(plus) - predictor_single::h(minus);
-            for (int angle = 0; angle < 2; ++angle)
+            Eigen::Vector4d difference = predictor_single::h(plus) - predictor_single::h(minus);
+            for (int angle : {0, 1, 3})
                 difference(angle) = predictor_single::wrap_to_pi(difference(angle));
             numerical.col(column) = difference / 2e-6;
         }
@@ -65,10 +65,11 @@ static void single_plate_regressions() {
         near(filter.X, state, 1e-12);
     }
 
-    filter.initialize({0, 0, 3});
-    check(filter.update({0, 0, 3.1}), "single-plate range update");
-    check(std::abs(filter.X(4) - (3 + .1 * 10 / 10.16)) < 1e-12, "single-plate range gain");
-    check(std::abs(filter.P(4, 4) - 10 * .16 / 10.16) < 1e-12, "single-plate range variance");
+    filter.initialize({0, 0, 3, 0});
+    check(filter.update({0, 0, 3.1, 0}), "single-plate range update");
+    const double range_noise = predictor_single{}.R(2, 2);
+    check(std::abs(filter.X(4) - (3 + .1 * 10 / (10 + range_noise))) < 1e-12, "single-plate range gain");
+    check(std::abs(filter.P(4, 4) - 10 * range_noise / (10 + range_noise)) < 1e-12, "single-plate range variance");
     const auto state = filter.X;
     const auto covariance = filter.P;
     filter.predict(0);
@@ -76,8 +77,8 @@ static void single_plate_regressions() {
     near(filter.P, covariance, 0);
 
     for (bool moving : {false, true}) {
-        Eigen::Matrix<double, 6, 1> truth;
-        truth << -.4, moving ? .3 : 0, .2, moving ? -.06 : 0, 3, moving ? .12 : 0;
+        Eigen::Matrix<double, 8, 1> truth;
+        truth << -.4, moving ? .3 : 0, .2, moving ? -.06 : 0, 3, moving ? .12 : 0, .4, 0;
         filter.initialize(predictor_single::h(truth));
         for (int frame = 0; frame < 400; ++frame) {
             const double dt = std::array<double, 4>{.015, .033, .075, .2}[frame % 4];
@@ -87,22 +88,42 @@ static void single_plate_regressions() {
             if (frame < 110 || frame >= 140)
                 check(filter.update(predictor_single::h(truth)), "single-plate trajectory update");
             near(filter.P, filter.P.transpose(), 1e-12);
-            Eigen::LLT<Eigen::Matrix<double, 6, 6>> cholesky(filter.P);
+            Eigen::LLT<Eigen::Matrix<double, 8, 8>> cholesky(filter.P);
             check(cholesky.info() == Eigen::Success, "single-plate covariance positive definite");
         }
         near(filter.X, truth, 1e-4);
     }
-    filter.initialize({predictor_single::pi - .001, .01, 3});
-    check(filter.update({-predictor_single::pi + .001, .01, 3}), "single-plate yaw wrap update");
+    filter.initialize({predictor_single::pi - .001, .01, 3, 0});
+    check(filter.update({-predictor_single::pi + .001, .01, 3, 0}), "single-plate yaw wrap update");
     check(std::abs(filter.X(0)) < .01, "single-plate yaw wrap uses short residual");
 
-    filter.initialize({predictor_single::pi / 2, 0, 1});
+    filter.initialize({0, 0, 3, predictor_single::pi - .01});
+    filter.X(7) = .6;
+    filter.predict(.05);
+    check(filter.update({0, 0, 3, -predictor_single::pi + .02}), "armor yaw boundary update");
+    check(std::abs(filter.X(7) - .6) < 1e-10, "yaw boundary preserves angular velocity");
+    for (int frame = 0; frame < 200; ++frame) {
+        filter.predict(.03);
+        const double yaw = predictor_single::wrap_to_pi(-predictor_single::pi + .02 + .6 * (frame + 1) * .03);
+        check(filter.update({0, 0, 3, yaw}), "constant angular velocity update");
+    }
+    check(std::abs(filter.X(7) - .6) < 1e-6, "angular velocity convergence");
+    predictor_single rotating;
+    rotating.update_frame(0, {{0, 0, 3, .2}}, 50);
+    rotating.X(7) = .6;
+    const auto missed = rotating.update_frame(100, {}, 50);
+    check(std::abs(missed.current.plates[0](3) - .26) < 1e-12 &&
+          std::abs(missed.future.plates[0](3) - .29) < 1e-12,
+          "missed frame advances current and future yaw");
+    check(std::abs(rotating.X(6) - .26) < 1e-12, "future yaw does not mutate state");
+
+    filter.initialize({predictor_single::pi / 2, 0, 1, 0});
     filter.predict(.1);
-    check(filter.update({predictor_single::pi / 2, 0, .9}), "single-plate approach to origin");
+    check(filter.update({predictor_single::pi / 2, 0, .9, 0}), "single-plate approach to origin");
     filter.predict(-filter.X(0) / filter.X(1));
     const auto singular_state = filter.X;
     const auto singular_covariance = filter.P;
-    check(!filter.update({predictor_single::pi / 2, 0, .9}), "singular single-plate prior skips update");
+    check(!filter.update({predictor_single::pi / 2, 0, .9, 0}), "singular single-plate prior skips update");
     near(filter.X, singular_state, 0);
     near(filter.P, singular_covariance, 0);
 }
@@ -121,7 +142,7 @@ static void eigen_filter_regressions() {
         const int n = count * 4;
         Eigen::MatrixXd H(n, 11), residual(n, 1), R = Eigen::MatrixXd::Zero(n, n);
         for (int k = 0; k < count; ++k) {
-            H.middleRows(4 * k, 4) = predictor_armor::get_jacobian(filter.X, matches[k].armor_id);
+            H.middleRows(4 * k, 4) = predictor_armor::jacobian(filter.X, matches[k].armor_id);
             residual.middleRows(4 * k, 4) = matches[k].residual;
             R.block(4 * k, 4 * k, 4, 4) = filter.R;
 
@@ -131,7 +152,7 @@ static void eigen_filter_regressions() {
         const Eigen::Matrix<double, 11, 1> expected_state = filter.X + K * residual;
         const Eigen::Matrix<double, 11, 11> A = Eigen::Matrix<double, 11, 11>::Identity() - K * H;
         const Eigen::Matrix<double, 11, 11> expected_covariance = A * filter.P * A.transpose() + K * R * K.transpose();
-        check(filter.update_multi(observations).size() == static_cast<size_t>(count), "joint update count");
+        check(filter.update(observations).size() == static_cast<size_t>(count), "joint update count");
         near(filter.X, expected_state);
         near(filter.P, expected_covariance);
         near(filter.P, filter.P.transpose(), 1e-12);
@@ -139,33 +160,50 @@ static void eigen_filter_regressions() {
               "joint covariance positive definite");
     }
 
-    ::predictor_polar polar{};
-    polar.X << .1, .2, .3, -.1, 3., .4, predictor_polar::pi - .01, 1., .26;
-    polar.predict(.023);
-    auto z = predictor_polar::h(polar.X, 1);
-    z(0) += .01;
-    z(2) += .03;
-    const auto H = predictor_polar::get_jacobian(polar.X, 1);
-    const auto residual = predictor_polar::angular_residual(z, predictor_polar::h(polar.X, 1));
-    const Eigen::Matrix4d S = H * polar.P * H.transpose() + polar.R;
-    const Eigen::Matrix<double, 9, 4> K = (polar.P * H.transpose()) * S.partialPivLu().solve(Eigen::Matrix4d::Identity());
-    Eigen::Matrix<double, 9, 1> expected_state = polar.X + K * residual;
-    expected_state(6) = predictor_polar::wrap_to_pi(expected_state(6));
-    const Eigen::Matrix<double, 9, 9> expected_covariance = (Eigen::Matrix<double, 9, 9>::Identity() - K * H) * polar.P;
-    polar.update(z);
-    near(polar.X, expected_state);
-    near(polar.P, expected_covariance);
-
 
 }
+static void single_plate_response() {
+    // One physical plate: sustained acceleration/reversal at camera frame rates.
+    // These bounds reject a smooth but lagging filter, and limit static jitter.
+    for (const int fps : {30, 60}) for (const bool moving : {false, true}) {
+        predictor_single filter;
+        std::mt19937 random(20261010 + fps + moving);
+        std::normal_distribution<double> noise(0, 1);
+        const auto position = [moving](double t) -> Eigen::Vector3d {
+            if (!moving) return {.2, .1, 3};
+            const double pi = predictor_single::pi;
+            return {.35 * std::sin(2*pi*.65*t) + .12 * std::sin(2*pi*1.1*t),
+                    .1 + .08 * std::sin(2*pi*.4*t), 3 + .2 * std::sin(2*pi*.35*t)};
+        };
+        double current_error = 0, future_error = 0;
+        int count = 0;
+        for (int frame = 0; frame < fps * 12; ++frame) {
+            const double t = double(frame) / fps;
+            Eigen::Matrix<double, 8, 1> truth = Eigen::Matrix<double, 8, 1>::Zero();
+            const auto p = position(t);
+            truth(0) = p(0); truth(2) = p(1); truth(4) = p(2);
+            Eigen::Vector4d z;
+            z = predictor_single::h(truth);
+            z(0) += .003 * noise(random); z(1) += .001 * noise(random); z(2) += .035 * noise(random);
+            z(3) = 0;
+            const auto result = filter.update_frame(t * 1000, {z}, 50);
+            if (t >= 1) {
+                current_error += (result.current.plates[0].head<3>() - p).squaredNorm();
+                future_error += (result.future.plates[0].head<3>() - position(t + .05)).squaredNorm();
+                ++count;
+            }
+        }
+        check(std::sqrt(current_error / count) < .035, "single plate motion response/static jitter");
+        check(std::sqrt(future_error / count) < .06, "single plate 50ms forecast response");
+    }
+}
+
 int main() {
     try {
         single_plate_regressions();
+        single_plate_response();
         eigen_filter_regressions();
         check(predictor_armor::wrap_to_pi(predictor_armor::pi) == -predictor_armor::pi, "predictor_armor::pi boundary");
-        check(predictor_polar::round_even(.5) == 0 && predictor_polar::round_even(1.5) == 2 && predictor_polar::round_even(-.5) == 0 &&
-                  predictor_polar::round_even(-1.5) == -2,
-              "Python rounding");
         auto b = tracker();
         ::predictor_armor base_tracker{};
         const Eigen::Vector4d rear_observation(2.2, .1, 3., .3);
@@ -177,7 +215,7 @@ int main() {
         auto p = b.P;
         auto outlier = measurement(0);
         outlier(2) += 2;
-        check(b.update_multi({outlier}).empty(), "range gate");
+        check(b.update({outlier}).empty(), "range gate");
         near(b.X, x, 0);
         near(b.P, p, 0);
         const auto automatic = b.associate({measurement(0, 1)});
@@ -189,7 +227,7 @@ int main() {
         check(matches.size() == 2, "stacked reference association");
         Eigen::MatrixXd stacked_h(8, 11), stacked_residual(8, 1), stacked_r = Eigen::MatrixXd::Zero(8, 8);
         for (int k = 0; k < 2; ++k) {
-            stacked_h.middleRows(4*k, 4) = predictor_armor::get_jacobian(a.X, matches[k].armor_id);
+            stacked_h.middleRows(4*k, 4) = predictor_armor::jacobian(a.X, matches[k].armor_id);
             stacked_residual.middleRows(4*k, 4) = matches[k].residual;
             stacked_r.block(4*k, 4*k, 4, 4) = a.R;
         }
@@ -197,15 +235,15 @@ int main() {
         Eigen::MatrixXd expected_state = a.X + gain*stacked_residual;
         Eigen::MatrixXd identity_minus_kh = Eigen::MatrixXd::Identity(11, 11) - gain*stacked_h;
         Eigen::MatrixXd expected_covariance = identity_minus_kh*a.P*identity_minus_kh.transpose() + gain*stacked_r*gain.transpose();
-        check(a.update_multi(observations).size() == 2, "two plate update");
+        check(a.update(observations).size() == 2, "two plate update");
         near(a.X, expected_state);
         near(a.P, expected_covariance);
         std::reverse(observations.begin(), observations.end());
-        b.update_multi(observations);
+        b.update(observations);
         near(a.X, b.X);
         near(a.P, b.P);
         b = tracker();
-        auto result = b.update_multi({measurement(0), measurement(0),
+        auto result = b.update({measurement(0), measurement(0),
                                       measurement(0, 1)});
         check(result.size() == 2, "unique ids");
         b = tracker();
@@ -251,31 +289,20 @@ int main() {
         b.X(10) = .04;
         x = b.X;
         p = b.P;
-        auto forecast = b.forecast(.05);
-        check(std::abs(forecast.state(0) - (x(0) + .05)) < 1e-12 &&
-                  std::abs(forecast.state(2) - (x(2) - .01)) < 1e-12 &&
-                  std::abs(forecast.state(4) - (x(4) + .015)) < 1e-12 &&
-                  std::abs(forecast.state(6) - (-predictor_armor::pi + .3)) < 1e-12,
-              "forecast translation and yaw wrap");
-        near(b.X, x, 0);
-        near(b.P, p, 0);
+        a = b;
+        a.update_frame(-1, {}, 0);
+        const auto prediction = b.update_frame(-1, {}, 50);
+        near(b.X, a.X, 0);
+        near(b.P, a.P, 0);
         a = b;
         a.predict(.05);
-        near(a.X, forecast.state);
-        near(a.P, forecast.covariance);
-        near(b.forecast(0).state, b.X, 1e-12);
+        near(*prediction.future.center, Eigen::Vector3d(x(0) + .05, x(2) - .01, x(4) + .015));
+        check(std::abs(prediction.future.plates[0](3) - (-predictor_armor::pi + .3)) < 1e-12,
+              "future yaw wrap");
+        const auto zero = b.update_frame(-1, {}, 0);
         for (int id = 0; id < 4; ++id) {
-            double yaw = forecast.state(6) + id * predictor_armor::pi / 2;
-            check(std::abs(
-                      forecast.plates(id, 0) -
-                      (forecast.state(0) + (forecast.state(8) + (id % 2 ? forecast.state(9) : 0)) *
-                                               std::sin(yaw))) < 1e-12,
-                  "forecast plate");
-            check(std::abs(forecast.plates(id, 1) -
-                           (forecast.state(2) + (id % 2 ? .04 : 0))) < 1e-12 &&
-                      std::abs(forecast.plates(id, 2) -
-                           (forecast.state(4) - (.26 + (id % 2 ? .02 : 0)) * std::cos(yaw))) < 1e-12,
-                  "forecast alternating heights and radii");
+            near(prediction.future.plates[id], predictor_armor::plate_pose(a.X, id));
+            near(zero.future.plates[id], predictor_armor::plate_pose(b.X, id));
         }
         b = tracker();
         b.X(7) = 2;
@@ -288,10 +315,10 @@ int main() {
                     if (std::abs(predictor_armor::wrap_to_pi(theta + i * predictor_armor::pi / 2)) <
                         std::abs(predictor_armor::wrap_to_pi(theta + aid * predictor_armor::pi / 2)))
                         aid = i;
-                const auto associated = b.update_multi({measurement(theta, aid)});
+                const auto associated = b.update({measurement(theta, aid)});
                 check(associated.size() == 1 && associated[0].armor_id == aid, "rotation id");
             } else
-                b.update_multi({});
+                b.update({});
             near(b.P, b.P.transpose(), 1e-12);
             Eigen::LLT<Eigen::Matrix<double, 11, 11>> cholesky(b.P);
             check(cholesky.info() == Eigen::Success, "covariance positive definite");
@@ -299,17 +326,6 @@ int main() {
         check(std::abs(b.X(0) - .1) < 1e-5 && std::abs(b.X(2) - .2) < 1e-5 &&
                   std::abs(b.X(4) - 3) < 1e-5 && std::abs(b.X(7) - 2) < 1e-5,
               "rotation convergence");
-        ::predictor_polar polar{};
-        polar.X << .1, .2, .3, -.1, 3., .4, predictor_armor::pi - .01, 1., .26;
-        polar.predict(.02);
-        check(std::abs(polar.X(0) - .104) < 1e-12 &&
-                  std::abs(polar.X(2) - .298) < 1e-12 &&
-                  std::abs(polar.X(4) - 3.008) < 1e-12 &&
-                  std::abs(polar.X(6) - (-predictor_armor::pi + .01)) < 1e-12,
-              "polar constant velocity and yaw wrap");
-        const Eigen::Matrix<double, 9, 1> polar_state = polar.X;
-        polar.update(predictor_polar::h(polar.X, 1));
-        near(polar.X, polar_state);
         std::cout << "All C++ API regression checks passed\n";
         return 0;
     } catch (const std::exception &e) {

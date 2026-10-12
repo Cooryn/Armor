@@ -10,7 +10,6 @@ enum EnemyColor
     ENEMY_BLUE
 };
 
-
 struct armor
 {
     cv::RotatedRect left_light;

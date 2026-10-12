@@ -3,13 +3,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from .predictor import SinglePlateEKF, wrap_to_pi
-from .predictor_polar import PolarEKF
 from .predictor_armor import ArmorEKF
 
 BASIC_COLUMNS = ('frame_id predicted_x observed_x error_x predicted_z observed_z error_z '
                  'predicted_yaw observed_yaw error_yaw predicted_distance observed_distance error_distance').split()
-POLAR_COLUMNS = ('frame_id xc vxc yc vyc zc vzc body_yaw w r err_target_yaw err_target_pitch '
-                 'err_distance err_armor_yaw obs_armor_yaw').split()
 ARMOR_COLUMNS = ('frame_id timestamp prediction_horizon_ms prediction_timestamp future_xc future_yc future_zc '
                  'future_body_yaw xc yc zc xa za body_yaw pred_armor_yaw obs_armor_yaw '
                  'err_target_yaw err_target_pitch err_distance err_armor_yaw r dl dh status').split()
@@ -25,22 +22,15 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
     """frames = [(integer ID, timestamp ms, [(xyz array, spherical/yaw array)])]."""
     if not np.isfinite(horizon_ms) or horizon_ms < 0:
         raise ValueError('Invalid prediction horizon')
-    ekf = {'basic': SinglePlateEKF, 'polar': PolarEKF, 'armor': ArmorEKF}[model]()
+    ekf = {'basic': SinglePlateEKF, 'armor': ArmorEKF}[model]()
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     results, futures, geometry, errors = [], [], [], []
     last_id, last_time = -1, -1
 
-    def valid(o):
-        p, z = o
-        if model == 'armor':
-            return True
-        return (np.isfinite(p).all() and SinglePlateEKF.valid_observation(z[:3])
-                and (model == 'basic' or np.isfinite(z).all()))
-
     def plate_poses(state):
         if model == 'basic':
-            return None, [np.r_[state[::2], 0]]
+            return None, [np.r_[state[:6:2], state[6]]]
         center, poses = state[[0, 2, 4]], []
         for aid in range(4):
             yaw = wrap_to_pi(state[6] + aid * np.pi / 2)
@@ -58,7 +48,7 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
             raise ValueError('Invalid frame clock')
         dt = (timestamp - last_time) / 1000
         last_id, last_time = fid, timestamp
-        selected = min((i for i, o in enumerate(obs) if valid(o)),
+        selected = min(range(len(obs)),
                        key=lambda i: obs[i][1][2], default=None)
         observation = obs[selected] if selected is not None else None
         all_obs = [dict(Z_obs=z.reshape(4, 1)) for _, z in obs]
@@ -67,11 +57,7 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
             if observation is not None:
                 p, z = observation
                 if model == 'basic':
-                    ekf.initialize(z[:3])
-                elif model == 'polar':
-                    ekf.X[:, 0] = [p[0] - .26 * np.sin(z[3]), 0, p[1], 0,
-                                   p[2] + .26 * np.cos(z[3]), 0, z[3], 0, .26]
-                    ekf.is_initialized = True
+                    ekf.initialize(z)
                 else:
                     ekf.initialize(z.reshape(4, 1))
                 status = 'initialized'
@@ -86,16 +72,7 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
                     e = np.array([s[0] - p[0], s[4] - p[2], wrap_to_pi(predicted[0] - z[0]), predicted[2] - z[2]])
                 results.append([fid, s[0], p[0], e[0], s[4], p[2], e[1], predicted[0], z[0], e[2], predicted[2], z[2], e[3]])
                 if observation is not None:
-                    updated = ekf.update(z[:3])
-            elif model == 'polar':
-                z = observation[1] if observation is not None else np.full(4, np.nan)
-                if observation is not None:
-                    aid = round(wrap_to_pi(z[3] - ekf.X[6, 0]) / (np.pi / 2))
-                    e = ekf.h(ekf.X, aid)[:, 0] - z
-                    e[[0, 1, 3]] = wrap_to_pi(e[[0, 1, 3]])
-                    ekf.update(z.reshape(4, 1))
-                    updated = True
-                results.append([fid, *ekf.X[:, 0], *e, z[3]])
+                    updated = ekf.update(z)
             else:
                 prior = ekf.X.copy()
                 matches, _ = ekf.update_multi(all_obs)
@@ -120,10 +97,9 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
         if ekf.is_initialized:
             state = ekf.state.copy() if model == 'basic' else ekf.X[:, 0].copy()
             future = state.copy()
-            for i in ([0, 2, 4] if model == 'basic' else [0, 2, 4, 6]):
+            for i in [0, 2, 4, 6]:
                 future[i] += future[i + 1] * horizon_ms / 1000
-            if model != 'basic':
-                future[6] = wrap_to_pi(future[6])
+            future[6] = wrap_to_pi(future[6])
             for s in (state, future):
                 center, poses = plate_poses(s)
                 g.extend(center if center is not None else [np.nan] * 3)
@@ -132,8 +108,8 @@ def run_video_predictor(frames, model, directory, horizon_ms=50):
         else:
             g.extend([np.nan] * (len(GEOMETRY_COLUMNS) - 4))
         geometry.append(g)
-    prefix = {'basic': '', 'polar': 'polar_', 'armor': 'armor_'}[model]
-    columns = {'basic': BASIC_COLUMNS, 'polar': POLAR_COLUMNS, 'armor': ARMOR_COLUMNS}[model]
+    prefix = {'basic': '', 'armor': 'armor_'}[model]
+    columns = {'basic': BASIC_COLUMNS, 'armor': ARMOR_COLUMNS}[model]
     pd.DataFrame(results, columns=columns).to_csv(directory / f'{prefix}prediction_result_1.csv', index=False)
     pd.DataFrame(geometry, columns=GEOMETRY_COLUMNS).to_csv(directory / 'geometry.csv', index=False)
     if model == 'armor':

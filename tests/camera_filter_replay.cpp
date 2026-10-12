@@ -27,20 +27,15 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("Incomplete fixture");
             if (time <= previous_time)
                 throw std::runtime_error("Invalid observation or clock");
-            if (!filter.is_initialized) {
-                filter.initialize(z);
-                previous_time = time;
-                continue;
-            }
-            filter.predict((time - previous_time) / 1000);
+            const auto prediction = filter.update_frame(time, {z}, 50);
             previous_time = time;
-            const auto matches = filter.update_multi({z});
+            if (prediction.status == "initialized")
+                continue;
             states << frame << ',' << time;
             for (int i : {0, 2, 4, 1, 3, 5, 7}) states << ',' << filter.X(i);
-            states << ',' << matches.size() << ',' << (matches.empty() ? "prediction_only" : "updated") << '\n';
-            const auto future = filter.forecast(.05);
+            states << ',' << (prediction.status == "updated" ? 1 : 0) << ',' << prediction.status << '\n';
             for (int i = 0; i < 4; ++i) {
-                const auto p = future.plates.row(i);
+                const auto &p = prediction.future.plates[i];
                 futures << frame << ',' << time << ',' << i << ',' << p(0) << ',' << p(1) << ',' << p(2)
                         << ',' << std::cos(p(3) / 2) << ",0," << -std::sin(p(3) / 2) << ",0\n";
             }

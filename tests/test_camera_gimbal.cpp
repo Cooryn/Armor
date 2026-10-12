@@ -1,87 +1,144 @@
 #include "pose_base.hpp"
 #include "predictor_armor.hpp"
-#include "serial.hpp"
-#include "solver.hpp"
+#include <cmath>
 #include <iostream>
+#include <stdexcept>
 
-static void check(bool ok, const char *message) {
+static void check(bool ok, const char *message)
+{
     if (!ok) throw std::runtime_error(message);
 }
-int main() {
-    try {
+
+static SolvedFrame camera_frame(const Eigen::Vector3d &position, const Eigen::Vector3d &rvec)
+{
+    ::armor armor;
+    armor.tvec = (cv::Mat_<double>(3, 1) << position.x(), position.y(), position.z());
+    armor.rvec = (cv::Mat_<double>(3, 1) << rvec.x(), rvec.y(), rvec.z());
+    SolvedFrame frame;
+    frame.armors.push_back(std::move(armor));
+    return frame;
+}
+
+static Eigen::Vector3d position_of(const ::armor &armor)
+{
+    return {armor.tvec.at<double>(0), armor.tvec.at<double>(1), armor.tvec.at<double>(2)};
+}
+
+static Eigen::Matrix3d rotation_of(const ::armor &armor)
+{
+    cv::Mat rotation;
+    cv::Rodrigues(armor.rvec, rotation);
+    return Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>(rotation.ptr<double>());
+}
+
+int main()
+{
+    try
+    {
         CameraCalibration mount;
-        mount.yaw_to_pitch = {0.1, 0, 0};
-        mount.camera_in_pitch = {0, 0, 0.2};
-        ::pose frames{mount, {{0, 0, 0, 0}, {100, 90, 0, 0}, {200, 90, 90, 0}}};
-        frames.reset_origin(0);
-        auto T = frames.at(0);
-        check((T * Eigen::Vector3d(0, 0, 1) - Eigen::Vector3d(0, 0, 1)).norm() < 1e-12, "lever arm");
-        T = frames.at(100);
-        check((T * Eigen::Vector3d(0, 0, 1) - Eigen::Vector3d(1.1, 0, -.3)).norm() < 1e-12, "base yaw rotation");
-        T = frames.at(200);
-        check((T * Eigen::Vector3d(0, 0, 1) - Eigen::Vector3d(-.1, -1.2, -.3)).norm() < 1e-12, "yaw-pitch order");
+        mount.yaw_to_pitch = {.1, 0, 0};
+        mount.camera_in_pitch = {0, 0, .2};
+        ::pose frames(mount);
+        frames.update({0, 0, 0, 0, HOST_IDLE, 0});
+        check((frames.base_from_camera_ * Eigen::Vector3d::UnitZ() - Eigen::Vector3d(.1, 0, 1.2)).norm() < 1e-12,
+              "lever arm relative to yaw-axis origin");
+        check((frames.base_from_camera_.translation() - Eigen::Vector3d(.1, 0, .2)).norm() < 1e-12,
+              "camera mounting offset is retained at startup");
+        frames.update({100, static_cast<float>(CV_PI / 2), 0, 0, HOST_IDLE, 0});
+        check((frames.base_from_camera_ * Eigen::Vector3d::UnitZ() - Eigen::Vector3d(1.2, 0, -.1)).norm() < 1e-6,
+              "base yaw rotation");
+        frames.update({200, static_cast<float>(CV_PI / 2), static_cast<float>(CV_PI / 2), 0, HOST_IDLE, 0});
+        const auto &T = frames.base_from_camera_;
+        check((T * Eigen::Vector3d::UnitZ() - Eigen::Vector3d(0, -1.2, -.1)).norm() < 1e-6, "yaw-pitch order");
         const Eigen::Vector3d point(.4, -.3, 2);
         check((T.inverse() * (T * point) - point).norm() < 1e-12, "round trip");
-        check(frames.at(0).translation().norm() < 1e-12, "reference optical center is origin");
-        const auto new_from_old = frames.reset_origin(100);
-        check(frames.at(100).translation().norm() < 1e-12, "reset optical center is origin");
-        check((frames.at(200).matrix() - (new_from_old * T).matrix()).norm() < 1e-12, "reset maps old frame to new");
-        check((frames.at(200).linear() - T.linear()).norm() < 1e-12, "reset preserves base axes");
-        check((frames.reset_origin(100).matrix() - Eigen::Matrix4d::Identity()).norm() < 1e-12, "repeated reset identity");
-        check(!frames.covered(300), "origin reset requires covered timestamp");
-        ::pose interpolated{mount, {{0, 0, 0, 0}, {100, 90, 0, 0}}, 100};
-        interpolated.reset_origin(50);
-        check(interpolated.at(50).translation().norm() < 1e-12, "interpolated reference origin");
-        ::pose crossing{{}, {{0, 179, 0, 0}, {100, -179, 0, 0}}};
-        check((crossing.at(50).linear() * Eigen::Vector3d::UnitZ() + Eigen::Vector3d::UnitZ()).norm() < 1e-12,
-              "shortest interpolation across wrap");
-        check(!crossing.covered(101), "no telemetry extrapolation");
-        ::pose sparse{{}, {{0, 0, 0, 0}, {500, 0, 0, 0}}};
-        check(!sparse.covered(250), "telemetry gap is unavailable");
 
-        ::pose live{mount, {}};
-        live.push({10, 0, 0, 0, HOST_IDLE, 0});
-        live.push({110, static_cast<float>(CV_PI / 2), 0, 0, HOST_IDLE, 0});
-        const Eigen::Vector3d halfway(1.3 / std::sqrt(2.) - .1, 0, 1.1 / std::sqrt(2.) - .2);
-        check((live.at(60) * Eigen::Vector3d::UnitZ() - halfway).norm() < 1e-6,
-              "serial radians converted/interpolated with lever arms");
-        check(live.reference_time_ms_ == 10 && (live.origin_in_mechanical_ - Eigen::Vector3d(.1, 0, .2)).norm() < 1e-12,
-              "first serial sample fixes the optical-center origin");
-        check(!live.covered(111), "live attitude requires received coverage");
-        ::pose serial_crossing{};
-        serial_crossing.push({0, static_cast<float>(179 * CV_PI / 180), 0, 0, HOST_IDLE, 0});
-        serial_crossing.push({20, static_cast<float>(-179 * CV_PI / 180), 0, 0, HOST_IDLE, 0});
-        check((serial_crossing.at(10).linear() * Eigen::Vector3d::UnitZ() + Eigen::Vector3d::UnitZ()).norm() < 1e-6,
-              "serial angle wrap interpolates through pi");
-        ::pose dropped{};
-        dropped.push({0, 0, 0, 0, HOST_IDLE, 0});
-        dropped.push({200, .2f, 0, 0, HOST_IDLE, 0});
-        check(!dropped.covered(100), "missing serial coverage");
+        ::pose tilted(mount);
+        tilted.update({0, static_cast<float>(CV_PI / 3), static_cast<float>(CV_PI / 6), 0, HOST_IDLE, 0});
+        const Eigen::Vector3d initial_forward = tilted.base_from_camera_.linear().col(2);
+        check((initial_forward - Eigen::Vector3d(0, -.5, std::sqrt(3.) / 2)).norm() < 1e-6,
+              "startup heading is removed while pitch remains relative to the ground");
+        check((tilted.base_from_camera_.translation() - Eigen::Vector3d(.1, -.1, .1 * std::sqrt(3.))).norm() < 1e-6,
+              "initial pitch rotates the mounting offset without moving the base origin");
+        tilted.update({100, static_cast<float>(CV_PI / 2), static_cast<float>(CV_PI / 6), 0, HOST_IDLE, 0});
+        const Eigen::Vector3d turned_forward = tilted.base_from_camera_.linear().col(2);
+        check(turned_forward.x() > 0 && std::abs(turned_forward.y() + .5) < 1e-6,
+              "positive yaw turns right and positive pitch points up");
+
+        CameraCalibration yaw_mount;
+        yaw_mount.camera_to_pitch = Eigen::AngleAxisd(.25, Eigen::Vector3d::UnitY());
+        ::pose mounted(yaw_mount);
+        mounted.update({0, static_cast<float>(40 * CV_PI / 180), static_cast<float>(20 * CV_PI / 180), 0, HOST_IDLE, 0});
+        const Eigen::Vector3d mounted_forward = mounted.base_from_camera_.linear().col(2);
+        check(std::abs(mounted_forward.x()) < 1e-12 && mounted_forward.z() > 0 && mounted_forward.y() < 0,
+              "initial heading follows the camera optical axis including mounting rotation");
+        bool vertical_rejected = false;
+        try
+        {
+            ::pose vertical;
+            vertical.update({0, 0, static_cast<float>(CV_PI / 2), 0, HOST_IDLE, 0});
+        }
+        catch (const std::invalid_argument &) { vertical_rejected = true; }
+        check(vertical_rejected, "vertical initial view cannot define a horizontal forward axis");
+
+        ::pose empty;
+        bool empty_rejected = false;
+        try { empty.convert({}); }
+        catch (const std::logic_error &) { empty_rejected = true; }
+        check(empty_rejected, "conversion requires an initial attitude");
+        empty_rejected = false;
+        try { empty.at_angles(Eigen::Vector3d::Zero()); }
+        catch (const std::logic_error &) { empty_rejected = true; }
+        check(empty_rejected, "absolute-angle control requires an initial heading");
+        empty.update({0, 0, 0, 0, HOST_IDLE, 0});
+        const auto empty_frame = empty.convert({});
+        check(empty_frame.armors.empty() && empty_frame.observations.empty(), "empty detections stay empty");
+
+        ::pose crossing;
+        crossing.update({0, static_cast<float>(179 * CV_PI / 180), 0, 0, HOST_IDLE, 0});
+        crossing.update({100, static_cast<float>(-179 * CV_PI / 180), 0, 0, HOST_IDLE, 0});
+        const Eigen::Vector3d crossing_forward(std::sin(2 * CV_PI / 180), 0, std::cos(2 * CV_PI / 180));
+        check((crossing.base_from_camera_.linear().col(2) - crossing_forward).norm() < 1e-6,
+              "latest yaw across pi produces a two-degree relative turn");
+
         CameraCalibration corrected_mount;
         corrected_mount.angle_zero_rad = {.25, .5, 0};
         corrected_mount.angle_direction = {-1, 1, 1};
         corrected_mount.camera_to_pitch = Eigen::AngleAxisd(.2, Eigen::Vector3d::UnitZ());
-        ::pose corrected{corrected_mount, {}};
-        corrected.push({0, 1, .5f, 0, HOST_IDLE, 0});
+        ::pose corrected(corrected_mount);
+        corrected.update({0, 1, .5f, 0, HOST_IDLE, 0});
+        corrected.update({20, 1.25f, .6f, 0, HOST_IDLE, 0});
         const Eigen::Matrix3d corrected_rotation =
-            (Eigen::AngleAxisd(-.75, Eigen::Vector3d::UnitY()) * Eigen::AngleAxisd(.2, Eigen::Vector3d::UnitZ())).toRotationMatrix();
-        check((corrected.at(0).linear() - corrected_rotation).norm() < 1e-12, "explicit zero, direction and camera mounting rotation");
+            (Eigen::AngleAxisd(-.25, Eigen::Vector3d::UnitY()) * Eigen::AngleAxisd(.1, Eigen::Vector3d::UnitX()) *
+             Eigen::AngleAxisd(.2, Eigen::Vector3d::UnitZ())).toRotationMatrix();
+        check((corrected.base_from_camera_.linear() - corrected_rotation).norm() < 1e-7,
+              "explicit zero, direction and camera mounting rotation");
+
+        ::pose nonzero_heading;
+        nonzero_heading.update({10, .8f, .3f, 0, HOST_IDLE, 0});
         for (int i = 0; i < 300; ++i)
-            live.push({130 + i * 20., 0, 0, 0, HOST_IDLE, 0});
-        check(live.samples_.size() == 256 && live.reference_time_ms_ == 10 &&
-              (live.origin_in_mechanical_ - Eigen::Vector3d(.1, 0, .2)).norm() < 1e-12,
-              "bounded live cache preserves the fixed origin when old samples are removed");
+            nonzero_heading.update({30 + i * 20., 1.f, .3f, 0, HOST_IDLE, 0});
+        check(nonzero_heading.reference_time_ms_ == 10 && std::abs(nonzero_heading.reference_yaw_rad_ - .8) < 1e-6,
+              "repeated updates preserve the initial heading");
+        check(nonzero_heading.latest_state_.receive_timestamp_ms == 6010, "only the latest feedback is retained");
+        const Eigen::Vector3d latest_forward = nonzero_heading.base_from_camera_.linear().col(2);
+        check(std::abs(std::atan2(latest_forward.x(), latest_forward.z()) - .2) < 1e-6,
+              "later yaw is measured from the original startup heading");
+        check((nonzero_heading.base_from_camera_.matrix() - nonzero_heading.at_angles({1, .3f, 0}).matrix()).norm() < 1e-12,
+              "absolute-angle control and conversion share the same heading reference");
+        const Eigen::Matrix4d unchanged = nonzero_heading.base_from_camera_.matrix();
+        nonzero_heading.at_angles({.5, -.2, .1});
+        check((nonzero_heading.base_from_camera_.matrix() - unchanged).norm() == 0 &&
+              nonzero_heading.latest_state_.yaw_rad == 1.f, "candidate control angles do not mutate current attitude");
 
         const GimbalState received{serial::monotonic_time_ms(), 1, -.5f, 0, HOST_AUTO_AIM, 0};
-        ::pose received_frames{};
-        received_frames.push(received);
-        const auto received_pose = received_frames.to_base({0, 0, 2}, Eigen::Vector3d::Zero(), received.receive_timestamp_ms);
-        const Eigen::Vector3d received_position(2 * std::sin(1.) * std::cos(.5), 2 * std::sin(.5), 2 * std::cos(1.) * std::cos(.5));
-        check((received_pose.position - received_position).norm() < 1e-12 &&
-              std::abs(received_pose.measurement(0) - 1) < 1e-12 &&
-              std::abs(received_pose.measurement(1) - .5) < 1e-12 &&
-              std::abs(received_pose.measurement(2) - 2) < 1e-12 &&
-              std::abs(received_pose.measurement(3) + 1) < 1e-12,
+        ::pose received_frames;
+        received_frames.update(received);
+        const auto received_pose = received_frames.convert(camera_frame({0, 0, 2}, Eigen::Vector3d::Zero()));
+        const Eigen::Vector3d received_position(0, 2 * std::sin(.5), 2 * std::cos(.5));
+        const Eigen::Vector4d received_measurement(0, .5, 2, 0);
+        check((position_of(received_pose.armors[0]) - received_position).norm() < 1e-12 &&
+              (received_pose.observations[0] - received_measurement).norm() < 1e-12,
               "wire STATE flags=0 produces base position and all four EKF observations");
 
         CameraCalibration moving_mount;
@@ -89,9 +146,7 @@ int main() {
         moving_mount.camera_in_pitch = {.03, -.015, .15};
         moving_mount.camera_to_pitch = Eigen::AngleAxisd(.08, Eigen::Vector3d::UnitX()) *
                                         Eigen::AngleAxisd(-.12, Eigen::Vector3d::UnitZ());
-        ::pose moving{moving_mount, {}};
-        for (int i = 0; i < 5; ++i)
-            moving.push({i * 20., i * .05f, i * -.025f, i * .01f, HOST_IDLE, 0});
+        ::pose moving(moving_mount);
         const Eigen::Vector3d fixed_position(.2, -.1, 3);
         const Eigen::Matrix3d fixed_rotation = (Eigen::AngleAxisd(.2, Eigen::Vector3d::UnitY()) *
             Eigen::AngleAxisd(.12, Eigen::Vector3d::UnitX()) * Eigen::AngleAxisd(-.15, Eigen::Vector3d::UnitZ())).toRotationMatrix();
@@ -100,40 +155,56 @@ int main() {
         ::solver solver(camera, distortion);
         const std::vector<cv::Point3f> object_points = {{-.0675f, -.028f, 0}, {-.0675f, .028f, 0},
                                                        {.0675f, .028f, 0}, {.0675f, -.028f, 0}};
-        for (double timestamp : {0., 10., 30., 50., 80.})
+        for (int i = 0; i < 5; ++i)
         {
-            const auto camera_from_base = moving.at(timestamp).inverse();
+            moving.update({i * 20., i * .05f, i * -.025f, i * .01f, HOST_IDLE, 0});
+            const auto camera_from_base = moving.base_from_camera_.inverse();
             const Eigen::Vector3d camera_position = camera_from_base * fixed_position;
             const Eigen::Matrix3d camera_rotation = camera_from_base.linear() * fixed_rotation;
             const Eigen::AngleAxisd camera_angle_axis(camera_rotation);
             const Eigen::Vector3d camera_rvec = camera_angle_axis.axis() * camera_angle_axis.angle();
-            const auto exact = moving.to_base(camera_position, camera_rvec, timestamp);
-            const Eigen::Matrix3d restored_rotation = Eigen::AngleAxisd(exact.rvec.norm(), exact.rvec.normalized()).toRotationMatrix();
-            check((exact.position - fixed_position).norm() < 1e-12 && (restored_rotation - fixed_rotation).norm() < 1e-12,
+            const auto exact = moving.convert(camera_frame(camera_position, camera_rvec));
+            check((position_of(exact.armors[0]) - fixed_position).norm() < 1e-12 &&
+                  (rotation_of(exact.armors[0]) - fixed_rotation).norm() < 1e-12,
                   "full position and rotation remain fixed under yaw/pitch/roll camera motion");
-            cv::Mat rvec = (cv::Mat_<double>(3, 1) << camera_rvec.x(), camera_rvec.y(), camera_rvec.z());
-            cv::Mat tvec = (cv::Mat_<double>(3, 1) << camera_position.x(), camera_position.y(), camera_position.z());
+            const auto projected_frame = camera_frame(camera_position, camera_rvec);
             std::vector<cv::Point2f> pixels;
-            cv::projectPoints(object_points, rvec, tvec, camera, distortion, pixels);
+            cv::projectPoints(object_points, projected_frame.armors[0].rvec, projected_frame.armors[0].tvec,
+                              camera, distortion, pixels);
             ::armor detected;
-            for (int i = 0; i < 4; ++i) detected.vertices[i] = pixels[i];
+            for (int j = 0; j < 4; ++j) detected.vertices[j] = pixels[j];
             check(solver.solve(detected), "moving-camera synthetic armor PnP solved");
-            const auto solved = moving.to_base({detected.tvec.at<double>(0), detected.tvec.at<double>(1), detected.tvec.at<double>(2)},
-                {detected.rvec.at<double>(0), detected.rvec.at<double>(1), detected.rvec.at<double>(2)}, timestamp);
-            const Eigen::Matrix3d solved_rotation = Eigen::AngleAxisd(solved.rvec.norm(), solved.rvec.normalized()).toRotationMatrix();
-            check((solved.position - fixed_position).norm() < .003 && (solved_rotation - fixed_rotation).norm() < .01,
+            SolvedFrame solved_frame;
+            solved_frame.armors.push_back(detected);
+            const auto solved = moving.convert(solved_frame);
+            check((position_of(solved.armors[0]) - fixed_position).norm() < .003 &&
+                  (rotation_of(solved.armors[0]) - fixed_rotation).norm() < .01,
                   "PnP and lower-controller attitude recover a stationary armor pose");
         }
-        check(moving.covered(10) && !moving.covered(100) && !dropped.covered(100), "synchronization availability");
+
         ::pose turned;
-        turned.push({0, 2, 0, 0, HOST_IDLE, 0});
-        const auto back_pose = turned.to_base({0, 0, 3}, Eigen::Vector3d::Zero(), 0);
+        turned.update({0, 0, 0, 0, HOST_IDLE, 0});
+        turned.update({20, 2, 0, 0, HOST_IDLE, 0});
+        const auto back_pose = turned.convert(camera_frame({0, 0, 3}, Eigen::Vector3d::Zero()));
         ::predictor_armor fixed;
-        check(fixed.update_frame(0, {back_pose.measurement}).status == "initialized",
+        check(fixed.update_frame(0, back_pose.observations).status == "initialized",
               "fixed-frame Armor accepts a target behind the base Z axis");
+        PredictionResult simulated;
+        check(!gimbal::simulate(simulated).valid(), "simulation without target");
+        simulated.status = "updated";
+        simulated.future.plates.emplace_back(.3, -.2, 3, 0);
+        const auto command = gimbal::simulate(simulated);
+        check(command.valid() && command.armor_id == 0, "simulation target selection");
+        check(std::abs(command.yaw_rad - std::atan2(.3, 3)) < 1e-6 &&
+              std::abs(command.pitch_rad - std::atan2(.2, std::hypot(.3, 3))) < 1e-6,
+              "simulation camera angles");
+        simulated.future.plates[0](0) = 10;
+        check(gimbal::simulate(simulated).status == "out_of_limits", "simulation angle limits");
         std::cout << "PoseBase checks passed\n";
         return 0;
-    } catch (const std::exception &error) {
+    }
+    catch (const std::exception &error)
+    {
         std::cerr << error.what() << '\n';
         return 1;
     }

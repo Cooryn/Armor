@@ -130,7 +130,7 @@ std::vector<cv::RotatedRect> detector::get_valid_light_rects(
             rect = cv::RotatedRect(center, cv::Size2f(length, width), fitted_angle);  // 重构旋转矩形
             fit_quality = 1.f;
         }
-        const float fill = static_cast<float>(area) / rect.size.area(); // 计算填充率
+        const float fill = static_cast<float>(area) / rect.size.area();                // 计算填充率
         quality.push_back(std::sqrt(fit_quality * std::clamp(fill / .75f, .5f, 1.f))); // 计算灯条质量
         rects.push_back(rect);
     }
@@ -154,13 +154,13 @@ struct Candidate
 
 // 灯条匹配装甲板
 std::vector<::armor> detector::match_armors(const std::vector<cv::RotatedRect> &light_bars,
-                               const std::vector<float> &light_quality,
-                               float max_angle_diff,
-                               float max_length_ratio,
-                               float min_aspect_ratio,
-                               float max_y_diff_ratio,
-                               float max_aspect_ratio,
-                               float min_detection_score)
+                                            const std::vector<float> &light_quality,
+                                            float max_angle_diff,
+                                            float max_length_ratio,
+                                            float min_aspect_ratio,
+                                            float max_y_diff_ratio,
+                                            float max_aspect_ratio,
+                                            float min_detection_score)
 {
     std::vector<::armor> armors;
 
@@ -210,9 +210,9 @@ std::vector<::armor> detector::match_armors(const std::vector<cv::RotatedRect> &
             const float length_ratio = std::max(l.length, r.length) / std::min(l.length, r.length);
             cv::Point2f vertical = l.axis + r.axis;
             const float axis_norm = static_cast<float>(cv::norm(vertical)); // 求vertical的模
-            vertical *= 1.f / axis_norm;                               // 将vertical单位化
-            const cv::Point2f horizontal(vertical.y, -vertical.x);     // 装甲板水平向量
-            const cv::Point2f delta = bars[j].center - bars[i].center; // 灯条中心的位移
+            vertical *= 1.f / axis_norm;                                    // 将vertical单位化
+            const cv::Point2f horizontal(vertical.y, -vertical.x);          // 装甲板水平向量
+            const cv::Point2f delta = bars[j].center - bars[i].center;      // 灯条中心的位移
             // 均在装甲板的局部坐标系中测量
             const float width = std::abs(delta.dot(horizontal)) / avg_length;
             const float y_offset = std::abs(delta.dot(vertical)) / avg_length;
@@ -296,8 +296,10 @@ void detector::draw_video_info(cv::Mat &image, const std::vector<::armor> &armor
     {
         const auto &armor = armors[i];
         const auto label = "#" + std::to_string(i + 1);
-        lines.push_back(cv::format("%s  X=%.3f  Y=%.3f  Z=%.3f", label.c_str(),
-            armor.tvec.at<double>(0), armor.tvec.at<double>(1), armor.tvec.at<double>(2)));
+        lines.push_back(cv::format("%s tvec (m): [%.3f, %.3f, %.3f]", label.c_str(),
+                                   armor.tvec.at<double>(0), armor.tvec.at<double>(1), armor.tvec.at<double>(2)));
+        lines.push_back(cv::format("%s rvec (rad): [%.3f, %.3f, %.3f]", label.c_str(),
+                                   armor.rvec.at<double>(0), armor.rvec.at<double>(1), armor.rvec.at<double>(2)));
         cv::putText(image, label, armor.center, cv::FONT_HERSHEY_SIMPLEX, .6, {0, 0, 0}, 4, cv::LINE_AA);
         cv::putText(image, label, armor.center, cv::FONT_HERSHEY_SIMPLEX, .6, {0, 255, 255}, 2, cv::LINE_AA);
     }

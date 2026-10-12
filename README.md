@@ -3,15 +3,15 @@
 跟踪入口为 `src/Armor.cpp` / `Armor.exe`。它通过模块接口完成：
 
 ```text
-camera → lightbar_detector → solver/PnP → pose → EKF → gimbal → serial
-  图像                         ↑                                控制目标 ↓
-                               └──── MC02 STATE 姿态反馈 ───────────────┘
-                                 output：CSV、RMSE、叠加视频及窗口
+视频 / 摄像头不连接下位机：camera → detector → solver/PnP → EKF → output
+摄像头连接下位机：        camera → detector → solver/PnP → pose → EKF → output
+                                                          ↑       ↓ 自瞄开启
+                                                serial STATE    gimbal → serial TARGET
 ```
 
-支持 OpenCV 摄像头和视频回放。实时图像使用下位机姿态转换到固定坐标系后进入 EKF；视频回放使用明确的零角度虚拟相机，不接现场串口。默认使用 USB OV2710 摄像头（MJPG、1280×720、60 FPS）、红色检测、四板 Armor EKF、50 ms 提前预测和预览，实时镜头参数暂用视频 2 标定。三种 EKF 的状态模型、噪声参数和四板联合更新保持不变。
+支持 OpenCV 摄像头和视频回放。`run_video()` 和 `run_camera()` 分别实现各自的处理循环。视频及不连接下位机的摄像头直接将 PnP 相机系观测送入 EKF，不创建串口或云台姿态对象。摄像头连接下位机时，使用反馈姿态将观测转换到固定基座系后进入 EKF，可独立开启或关闭自瞄。默认使用 USB OV2710 摄像头（MJPG、1280×720、请求 60 FPS）、不连接下位机、红色检测、单板 EKF、200 ms 提前预测和预览，实时镜头参数暂用视频 2 标定。
 
-只检测入口为 `src/Armor_detect.cpp` / `Armor_detect.exe`：camera → detector::detect → solver/PnP → 检测框与坐标窗口，不运行 EKF、固定系转换或云台控制，不打开串口。
+只检测入口为 `src/Armor_detect.cpp` / `Armor_detect.exe`：`main()` 按输入来源调用独立的 `run_video()` 或 `run_camera()`，两个函数分别实现 camera → detector::detect → solver/PnP → 检测框与坐标窗口的处理循环。视频使用视频标定并按源 FPS 播放，摄像头使用实时相机内参并实时显示；不运行 EKF、固定系转换或云台控制，不打开串口。
 
 生产代码按正确输入契约执行：图像、时间戳、观测、标定、枚举和参数由调用方正确提供，不做重复的有限值/格式/范围校验，不补默认数据，不兼容旧 CSV，也不自动换算法或求解器。检测几何筛选、PnP 候选选择、EKF 创新门控、漏检时只预测及控制时效/限位属于算法行为，继续保留。设备、文件和窗口 I/O 失败直接报错。
 
@@ -22,8 +22,8 @@ camera → lightbar_detector → solver/PnP → pose → EKF → gimbal → seri
 | `camera.hpp/.cpp` | `camera::open/next`：OpenCV 摄像头或视频，输出图像、帧号和图像时间 |
 | `lightbar_detector.hpp/.cpp` | `detector::detect`：灯条轮廓、筛选与配对；`detector::draw_armors` 绘制检测框 |
 | `solver.hpp/.cpp` | `solver::solve_frame`：PnP、候选筛选、短时姿态关联，输出相机系 tvec/rvec 与观测 |
-| `pose_base.hpp/.cpp` | `pose::receive/synchronize/convert`：缓存 STATE、同步姿态、转换完整装甲板位姿 |
-| `predictor*.hpp/.cpp` | 三种 EKF 各自提供 `update_frame`：选板、逐帧滤波、误差和未来几何；Armor.cpp 直接选择调用 |
+| `pose_base.hpp/.cpp` | `pose::update/convert/at_angles`：用最新 STATE 生成变换矩阵、转换完整装甲板位姿；串口由 Armor 接收 |
+| `predictor*.hpp/.cpp` | 两种 EKF 各自提供 `update_frame`：选板、逐帧滤波、误差和未来几何；Armor.cpp 直接选择调用 |
 | `gimbal.hpp/.cpp` | `gimbal::solve`：选未来目标板，计算绝对关节角并判断有效性 |
 | `serial.hpp/.cpp` | `serial::receive/send_target/send_mode`：MC02 基础通信和独立心跳 |
 | `output.hpp/.cpp` | `output::open/write/finish`：观测、预测、控制文件和 RMSE，逆变换绘制、视频和窗口 |
@@ -53,19 +53,30 @@ const double camera_recording_fps = 60;
 const int video_camera_profile = 2; // 显式选择视频 1 或视频 2 的标定
 const char *const video_file = "assets/video/video_2.avi";
 const EnemyColor target_color = ENEMY_RED; // 或 ENEMY_BLUE
-PredictorType predictor_type = PREDICTOR_ARMOR;
+PredictorType predictor_type = PREDICTOR_SINGLE_PLATE;
 bool preview = true;
-const double prediction_horizon_ms = 50;
+const bool connect_mcu = false; // 仅摄像头模式：通信与坐标转换同时开启/关闭
+const bool auto_aim_enabled = false; // 仅摄像头连接下位机时生效
+const double prediction_horizon_ms = 200;
 const char *const serial_port = "COM3";
 ```
 
-视频路径相对编译时的项目根目录解析。预览模式按源 FPS 播放视频；关闭预览时不限速。摄像头按实际取帧时刻处理，录制帧率显式使用 `camera_recording_fps`，不参与实时滤波时钟。
+| 输入 | `connect_mcu` | `auto_aim_enabled` | 工作流程 |
+| --- | --- | --- | --- |
+| VIDEO | 任意 | 任意 | 相机系检测、预测与输出，不通信、不转换坐标 |
+| CAMERA | false | 任意 | 独立的摄像头处理循环，使用相机系检测、预测与输出 |
+| CAMERA | true | false | 通信、接收姿态、转换到基座系并预测；发送 IDLE 和无效目标 |
+| CAMERA | true | true | 通信、坐标转换、预测及自瞄控制 |
 
-摄像头采集分辨率和帧率在 `src/camera.cpp` 顶部配置为 1280×720、60 FPS，格式为 MJPG；Windows 使用 DirectShow。驱动拒绝采集设置时直接报错。当前电脑的设备 0 是内置 `ASUS FHD webcam`，设备 1 是外接 `AX USB2.0`（OV2710），两个入口均选择设备 1。若设备顺序变化，应按实际 DirectShow 设备列表修改设备号。
+开关在启动前修改并重新编译，不是运行中的按键切换。视频模式忽略两个通信/自瞄开关；摄像头未连接下位机时忽略自瞄开关。
+
+视频路径相对编译时的项目根目录解析。预览模式按源 FPS 播放视频；关闭预览时不限速。摄像头按实际取帧时刻处理，`camera_recording_fps` 只定义录像的固定时间轴：低于该帧率时重复上一帧，高于该帧率时丢弃未占用录像时间点的画面。检测、EKF 和 CSV 仍每个输入帧处理一次。录像从第一张已处理画面到最后一张画面的采集时间戳，最后一帧占一个录像帧周期；时长量化误差不超过两个录像帧周期。
+
+摄像头请求 1280×720、60 FPS，格式为 MJPG；Windows 使用 DirectShow，其他平台使用默认后端。配置顺序为宽度、高度、请求 FPS、最后 MJPG，随后检查最终分辨率、FOURCC 和实际图像尺寸。请求值和设备报告值不代表实测速率；启动日志会明确区分，退出时报告跳过前 5 帧后的完整流程采样帧率和平均取帧耗时，以及录像时长。平均取帧耗时不等同于独立纯取帧速度。设备 1 的纯取帧速度和有效装甲板场景的完整帧率仍需实机验收，不能据请求值宣称达到 60 FPS。当前电脑的设备 0 是内置 `ASUS FHD webcam`，设备 1 是外接 `AX USB2.0`（OV2710）；若设备顺序变化，应修改设备号。
 
 实时模式在顶部直接配置 `live_camera_matrix`、`live_distortion`、`camera_calibration` 和 `gimbal_config`。实时内参传入 solver；视频调用 `use_video_profile(video_camera_profile)`，不再根据文件名或空矩阵自动选择标定。视频 1 为 1440×1080，视频 2 为 1280×1024。两个入口的实时内参和畸变系数暂时原样使用视频 2 标定；该标定不对应 OV2710 镜头和 1280×720 采集模式，测距及位姿仅用于调试，实际标定完成后应同时替换两个入口的矩阵。
 
-Esc 或关闭窗口结束处理并完成已处理帧的输出。输入、窗口、串口或写入失败返回非零退出码。正常退出实时模式会发送无效目标及 IDLE；异常退出停止通信，下位机原有目标/链路超时保持生效。
+Esc 或关闭窗口结束处理并完成已处理帧的输出。输入、窗口、串口或写入失败返回非零退出码。连接下位机时，正常退出会发送无效目标及 IDLE；异常退出停止通信，下位机原有目标/链路超时保持生效。
 
 ### 只检测运行
 
@@ -80,22 +91,25 @@ cmake --build build --config Release --target Armor_detect
 
 ## 3. 每帧行为
 
-先取图像、检测灯条与装甲板、解算相机系位姿，再用图像时刻的姿态转换完整 tvec/rvec、重算四维观测并调用所选 EKF。随后控制解算选择未来目标板，Armor 直接调用 `send_target`。output 同时保留相机系原始观测和固定系观测。
+主流程保留视频和摄像头两个入口。视频及不连接下位机的摄像头，在检测与 PnP 后直接使用相机系四维观测进行预测和绘制，并计算模拟控制目标。两个函数分别实现处理循环，分别使用视频标定与实时相机标定，窗口分别显示 REPLAY 和 LIVE。
+
+摄像头连接下位机时，每帧先尝试接收最新 STATE 并更新变换矩阵，检测与 PnP 后转换完整 tvec/rvec、重算基座系四维观测并调用所选 EKF。自瞄开启时解算并发送控制目标；关闭时保留姿态接收、坐标转换和预测，控制状态为 disabled，发送无效目标。此分支同时保留相机系原始观测和固定系观测。
 
 实时图像和 STATE 共用 `serial::monotonic_time_ms()` 的 PC steady clock。STATE 在完整包校验后打接收时间，图像在取帧成功后打时间；这些仍是接收/取帧近似时刻，未校准曝光与传输延迟。视频使用 `frame_id × 1000 / FPS`，不会混用实时反馈时间。
 
-姿态需包围图像时刻，相邻样本间隔不超过 100 ms，不外推。启动时先接收 STATE，再取第一帧；每帧 `synchronize` 等待右侧反馈，单次等待超过 100 ms 或反馈无法覆盖图像时刻即报错。同步成功后直接转换、滤波、控制和输出，不再用空观测替代缺失姿态。
+只有摄像头连接下位机时，Armor 启动才等待第一条 STATE，超过 100 ms 未收到即报错，再开始取帧。每帧直接尝试接收最新反馈，收到后调用 `pose_base.update(state)`；没有新反馈时沿用上一份矩阵，不等待额外反馈。图像转换、绘图和控制共用这份矩阵，不缓存历史姿态、不插值或按图像时间同步。最新反馈近似代表图像时刻的姿态，控制层仍按实际反馈时间判断是否过期。
 
-每帧只推进一次滤波。首次有效观测初始化，从后续帧持续记录状态至结束，包括漏检帧；误差使用更新前预测，画面使用更新后状态。单板/Polar 选择最近有效观测，距离并列保留第一条；Armor 保留四板关联与联合更新。漏检或被拒绝时继续预测，但控制层立即发送 valid=false。
+每帧只推进一次滤波。预测器假设输入观测正确，不再重复检查观测距离和俯仰角范围。首次观测初始化，从后续帧持续记录状态至结束，包括漏检帧；误差使用更新前预测，画面使用更新后状态。单板选择最近观测，距离并列保留第一条；Armor 保留四板关联与联合更新。漏检或被拒绝时继续预测，控制层继续根据预测位置跟踪。单板保留预测状态接近竖直轴时跳过更新的除零保护。
+
+视频和未连接下位机的摄像头也逐帧输出 `control_target_*.csv`，不受 `auto_aim_enabled` 影响。模拟假设云台零位、无安装偏移，使用未来板位置和现有角度限位求解 yaw/pitch；角度单位为弧度，右转 yaw、抬头 pitch 为正。该结果相对当前相机方向，不发送串口，也不模拟电机运动。`valid` 仅表示解算目标有效，不表示已经发送；真实连接模式仍按下位机姿态解算。
 
 ## 4. 坐标、标定和控制
 
-相机系 C 为 OpenCV 坐标：X 右、Y 下、Z 前。固定系 B 的轴沿零位定义，原点为第一条有效反馈时的相机光心。机械系 M 以 yaw 转轴为原点，固定原点在 M 中记为 `o_ref`：
+只使用相机系 C 和基座系 B。相机系为 OpenCV 坐标：X 右、Y 下、Z 前。基座和底盘固定，B 的原点在云台 yaw 转轴中心；Y 竖直向下，Z 沿启动时相机视线在地面上的投影，X 向右。首条姿态反馈确定参考水平朝向 `yaw_ref`，初始 pitch 保留相对地面的倾角：
 
 ```text
-R_BC = Ry(yaw) Rx(pitch) Rz(roll) R_mount
-p_MC = Ry(yaw) [yaw_to_pitch + Rx(pitch) Rz(roll) camera_in_pitch]
-p_BC = p_MC - o_ref
+R_BC = Ry(yaw - yaw_ref) Rx(pitch) Rz(roll) R_mount
+p_BC = Ry(yaw - yaw_ref) [yaw_to_pitch + Rx(pitch) Rz(roll) camera_in_pitch]
 p_BA = R_BC p_CA + p_BC
 R_BA = R_BC R_CA
 ```
@@ -108,17 +122,17 @@ R_BA = R_BC R_CA
 | `camera_in_pitch` | pitch 转轴到相机光心，m |
 | `camera_to_pitch` | 相机到安装轴的单位四元数 |
 
-yaw 绕 +Y 为正，pitch 绕 +X 为正，roll 绕 +Z 为正。原固件 yaw 是相对关节角、pitch 是 IMU 姿态角、roll=0；需要实物确认 pitch 与转轴定义的一致性。默认零偏、零安装偏移和单位旋转仅表示理想模型。
+yaw 向右转为正，pitch 抬头为正且水平时为 0；分别对应绕 +Y、+X 的正旋转。roll 沿用绕 +Z 的约定，当前串口将其设为 0。初始相机倾斜时，基座仍保持水平；参考朝向使用安装旋转修正后的实际光轴水平投影。相机安装位移和朝向尚未标定，当前零安装偏移、单位旋转只是临时近似，真实参数需填入 `camera_calibration`。
 
-`pose::push` 保留最近 256 条已消费反馈，首次原点保持不动。`at(t)` 要求调用前已覆盖该时刻；`to_base` 同时转换位置与完整旋转；`convert` 处理整帧且不修改原始相机观测。装甲板水平朝向直接由变换后的法向计算 `atan2(-normal_x, normal_z)`。
+`pose::update(state)` 用下位机的弧度角更新 `base_from_camera_`，首次反馈固定水平参考朝向，原点始终在 yaw 转轴中心；私有 `transform` 计算旋转和平移。`convert(camera_poses)` 使用当前矩阵转换整帧的位置与完整旋转，不修改原始相机观测。`at_angles(raw_angles)` 供控制器计算候选关节角对应的矩阵，不修改当前姿态。装甲板水平朝向直接由变换后的法向计算 `atan2(-normal_x, normal_z)`。初始视线竖直时无法确定水平投影，初始化会报错。
 
 观测为 `[atan2(x,z), atan2(y,hypot(x,z)), norm(position), armor_yaw]`，位置单位 m、角度 rad。`target_pitch` 随 Y 向下为正；它与控制 pitch 的符号不同。固定系 distance 表示固定原点到板的距离，不再表示当前相机距离。
 
-gimbal 选择当前相机可见范围内最近的未来板，并用相同的安装外参、偏移、零位及方向求解光轴对准所需的绝对原始 yaw/pitch。它保持测得的 roll，使用二维 Newton 求解。无有效更新、数据年龄超过 100 ms、位置方差过大、无前方目标或超出绝对限位时发送 valid=false；数值求解不收敛直接报错。
+gimbal tracks the nearest visible future plate using calibrated absolute yaw/pitch. Both observed updates and `prediction_only` frames can produce valid tracking commands. Uninitialized or empty predictions, stale image/pose data (100 ms), no forward target, or joint-limit violations remain invalid; nonconvergence raises an error.
 
 `GimbalConfig` 默认角度范围 yaw ±45°、pitch ±30°，最大位置方差 1 m²，是待实物配置的初值；填写为实际下位机关节范围。它只决定控制有效性，不改变 EKF 参数或下位机闭环。MC02 原有目标 100 ms、链路 200 ms 超时继续由固件执行。
 
-PnP 与绘制板尺寸为 135×56 mm。尺寸在 `solver.cpp` 顶部配置，绘制尺寸位于 `output.cpp` 和 `plot/video.py`；换板型时需同步。灯条使用完整像素轮廓拟合，配对按检测得分贪心选择，单根灯条最多用于一块板。
+PnP 与绘制板尺寸为 135×56 mm。尺寸在 `solver.cpp` 顶部配置，绘制尺寸位于 `output.cpp`；换板型时需同步。灯条使用完整像素轮廓拟合，配对按检测得分贪心选择，单根灯条最多用于一块板。
 
 ## 5. EKF 模型与多板处理
 
@@ -168,32 +182,30 @@ PnP 与绘制板尺寸为 135×56 mm。尺寸在 `solver.cpp` 顶部配置，绘
 
 过程噪声、固定观测协方差和初始化设置位于 `src/predictor_armor.cpp`，构造参数的默认值在 `include/predictor_armor.hpp` 的接口声明中。调参时应同时检查残差、中心漂移、接受率和运动变化时的响应。
 
-漏检或所有观测被拒绝时，EKF 只预测。Armor 按源视频时间逐帧调用，初始化后一直导出到视频结束，不插值时间或观测，也不在漏检期间隐藏其预测几何。控制层在漏检时发送 valid=false，滤波仍持续预测。
+漏检或所有观测被拒绝时，EKF 只预测。Armor 按源视频时间逐帧调用，初始化后一直导出到视频结束，不插值时间或观测，也不在漏检期间隐藏其预测几何。控制层在漏检时继续根据预测位置跟踪，滤波仍持续预测。
 
 ### 5.4 C++ 调用
 
 四板模型直接接收 `std::vector<Eigen::Vector4d>` 观测，板号由关联算法自动确定。时间戳使用普通 `double`，调用方提供同一时钟上的递增时间。pose 只接收类型化反馈，不再解析离线标定/遥测 CSV；安装参数由构造函数传入。投影和预测中心通过 `optional` 表达不可见目标与未初始化状态。
 
-滤波参数保存在各 EKF 类中。Armor.cpp 使用顶部的 `predictor_type`，通过 `if` 直接调用 `predictor_single::update_frame`、`predictor_polar::update_frame` 或 `predictor_armor::update_frame`。每个逐帧接口实现在对应 cpp 中，不经过通用模型选择器。`predictor_single.cpp` 只实现基础单板 EKF；固定列导出与 RMSE 位于 `output.cpp` 的 `output`。PnP 标定在进入循环前显式设置。
+滤波参数保存在各 EKF 类中。Armor.cpp 使用顶部的 `predictor_type`，通过 `if` 直接调用 `predictor_single::update_frame` 或 `predictor_armor::update_frame`。每个逐帧接口实现在对应 cpp 中，不经过通用模型选择器。`predictor_single.cpp` 只实现基础单板 EKF；固定列导出与 RMSE 位于 `output.cpp` 的 `output`。PnP 标定在进入循环前显式设置。
 
-三个预测器保持声明与实现分离，算法和各自的逐帧接口放在对应 `.cpp`。所有模块均无自定义 namespace 和 using 类型别名。`predictor_single.hpp` 只保留单板模型声明；公共 `PredictorType`、`PredictionGeometry` 和 `PredictionResult` 定义在 `output.hpp`。三个模型统一接收 `std::vector<Eigen::Vector4d>`，每条观测为 `[target_yaw, target_pitch, distance, armor_yaw]`，需要三维位置时由观测逆变换得到。四板和极坐标模型不再包含单板头文件。
+两个预测器保持声明与实现分离，算法和各自的逐帧接口放在对应 `.cpp`。所有模块均无自定义 namespace 和 using 类型别名。`predictor_single.hpp` 只保留单板模型声明；公共 `PredictorType`、`PredictionGeometry` 和 `PredictionResult` 定义在 `output.hpp`。两个模型统一接收 `std::vector<Eigen::Vector4d>`，每条观测为 `[target_yaw, target_pitch, distance, armor_yaw]`，需要三维位置时由观测逆变换得到。四板模型不再包含单板头文件。
 
-Each module has one functional class: `camera.hpp` -> `camera`, `lightbar_detector.hpp` -> `detector`, `solver.hpp` -> `solver`, `pose_base.hpp` -> `pose`, `predictor_single.hpp` -> `predictor_single`, `predictor_polar.hpp` -> `predictor_polar`, `predictor_armor.hpp` -> `predictor_armor`, `gimbal.hpp` -> `gimbal`, `serial.hpp` -> `serial`, and `output.hpp` -> `output`. Necessary data structs remain separate; detected plates use `armor`. Stateless operations are static class methods (for example, `detector::detect`, `predictor_armor::h`, and `gimbal::solve`). `output` owns both prediction CSV/RMSE and pipeline video/control output.
+Each module has one functional class: `camera.hpp` -> `camera`, `lightbar_detector.hpp` -> `detector`, `solver.hpp` -> `solver`, `pose_base.hpp` -> `pose`, `predictor_single.hpp` -> `predictor_single`, `predictor_armor.hpp` -> `predictor_armor`, `gimbal.hpp` -> `gimbal`, `serial.hpp` -> `serial`, and `output.hpp` -> `output`. Necessary data structs remain separate; detected plates use `armor`. Stateless operations are static class methods (for example, `detector::detect`, `predictor_armor::h`, and `gimbal::solve`). `output` owns both prediction CSV/RMSE and pipeline video/control output.
 
 The frame API is `update_frame(timestamp_ms, observations, horizon_ms)`. `PredictionResult::values` holds at most 9 model-specific log values; the output module writes frame metadata, centers and errors directly from their existing sources. Armor result CSV omits `vxc/vyc/vzc/w`, matched `armor_id`, and observation/accepted/rejected counts. The future-plate CSV retains `armor_id` to identify its four plates. Plotting and video replay columns are retained.
 
-三个模型的状态、协方差、观测和雅可比均使用固定尺寸 Eigen 类型：基础单板为 6 维状态 / 3 维观测，极坐标为 9 维状态 / 4 维观测，装甲板为 11 维状态 / 4 维单板观测。四板联合更新按实际关联数量组合 4–16 维观测，矩阵存储上限固定为 16；卡尔曼增益 直接通过 Eigen LDLT 求解，不构造逆矩阵，也不切换备用求解器。向量初始化使用 Eigen 构造函数或 `<<`，对角矩阵使用 `asDiagonal()`。
+两个模型的状态、协方差、观测和雅可比均使用固定尺寸 Eigen 类型：基础单板为 8 维状态 / 4 维观测，装甲板为 11 维状态 / 4 维单板观测。四板联合更新按实际关联数量组合 4–16 维观测，矩阵存储上限固定为 16；卡尔曼增益直接通过 Eigen LDLT 求解，不构造逆矩阵，也不切换备用求解器。两个模型统一使用 `angular_residual` 处理角度残差、Joseph 形式更新协方差，并对协方差做对称化。单板保留解析雅可比，四板保留数值雅可比。向量初始化使用 Eigen 构造函数或 `<<`，对角矩阵使用 `asDiagonal()`。
 
 ```cpp
 #include "predictor_armor.hpp"
 
 predictor_armor ekf; // 默认使用固定观测噪声
 Eigen::Vector4d z(0, 0, 3, 0); // yaw, pitch, distance, plate yaw
-ekf.initialize(z);
-ekf.predict(.03);
-ekf.update_multi({z});
-const auto future = ekf.forecast(.05); // 不推进当前状态
-// 在线预测：predictor.update(frame_id, timestamp_ms, observations)。
+ekf.update_frame(0, {z}, 50);
+const auto prediction = ekf.update_frame(30, {z}, 50);
+const auto &future = prediction.future;
 // 导出：output.write(...)、output.finish()。
 ```
 
@@ -202,58 +214,73 @@ const auto future = ekf.forecast(.05); // 不推进当前状态
 
 ### 5.5 未来位姿预测
 
-`ekf.forecast(0.05)` 从当前滤波状态推算 0.05 秒后的车体状态、协方差和四块板位姿，
-返回 `Forecast` 结构体中的 `state`、`covariance`、`plates`。`plates` 为 4×4 数组，行对应 A0–A3，
-列为 x、y、z、yaw，单位为米和弧度。该操作不修改主 EKF 的状态、协方差或时间推进矩阵。
+两个模型都在 `update_frame()` 内使用状态副本计算未来位姿，通过返回值的 `future` 获取结果。
+四板的 `future.center` 为未来中心，`future.plates` 按 A0–A3 保存四块板的 `[x, y, z, yaw]`，单位为米和弧度。
+未来计算不修改当前滤波状态和协方差，也不计算未使用的未来协方差。
 
 主 EKF 仍按帧间时间更新；未来预测使用本帧更新后的状态，缺测时使用推进到本帧的状态。
 预测目标时间等于源图像时间加提前量，不按整数帧取整；30 FPS 下的 50 ms 仍精确使用 0.05 秒。
 预测可以超出视频末尾，这些时刻没有后续视频观测可供验证。
 
-Armor 的 EKF 观测、状态和未来预测统一使用固定基座坐标系，由 pose 在滤波前转换。EKF 仍采用水平旋转模型，不估计板面俯仰、横滚。
+摄像头连接下位机时，EKF 观测、状态和未来预测使用固定基座坐标系，由 pose 在滤波前转换；视频及不连接下位机的摄像头直接使用相机坐标系。Armor 仍采用水平旋转模型，不估计板面俯仰、横滚。
 未来预测误差应与目标时刻、同一板号和同一坐标系下的后续观测比较。
 
 
 ## 6. 输出与绘图
 
-视频 `video_1.avi` 的输出如下；实时输入使用 `live` 后缀和 `camera_live.avi`。
+所有正式输出按输入来源、模型和输入/摄像头模式分目录。同一次运行的观测、预测、RMSE、叠加视频和控制日志保存在同一目录，不再写入 `results/` 根目录。项目不再使用根目录下的 `data/`；测试参考样本保存在 `tests/reference/recordings/`。
+
+```text
+results/
+  video/
+    single/video_1/       # 单板模型处理 video_1.avi
+    armor/video_1/
+  camera/
+    single/offline/       # 摄像头不连接下位机，相机系
+    single/mcu/           # 摄像头连接下位机，基座系
+    armor/offline/
+```
+
+视频目录使用完整输入文件主干，CSV 后缀使用主干最后一个下划线后的内容；摄像头使用 `live` 后缀和 `camera_live.avi`。以下文件名均相对本次运行的目录：
 
 | 文件 | 内容 |
 | --- | --- |
-| `data/pose_raw_1.csv` | 相机系 PnP，coordinate_frame=camera |
-| `data/pose_base_1.csv` | 固定系位置、完整 rvec/四元数、四维观测和基座原点元数据 |
-| `data/camera_pose_1.csv` | 每帧同步标志与 T_BC 的旋转/平移及固定原点元数据，包括无观测帧 |
-| `results/video_1.avi` | 检测框、当前与未来几何，全部逆变换至当前相机后投影 |
-| `results/control_target_1.csv` | 绝对 yaw/pitch、valid、目标板号、状态和位置方差，每帧一行 |
-| `results/prediction_result_1.csv` | SinglePlate 原 13 列加 coordinate_frame |
-| `results/polar_prediction_result_1.csv` | Polar 原 15 列加 coordinate_frame |
-| `results/armor_prediction_result_1.csv` | Armor 原 32 列加 coordinate_frame |
-| `results/armor_future_prediction_1.csv` | 未来四板，原 10 列加 coordinate_frame |
-| `results/*rmse_result_1.txt` | 原六位小数 RMSE 格式；没有有效残差为 nan |
+| `pose_raw_1.csv` / `pose_raw_live.csv` | 相机系 PnP，coordinate_frame=camera |
+| `pose_base_live.csv` | 仅连接下位机：固定系位置、完整 rvec/四元数、四维观测和基座原点元数据 |
+| `camera_pose_live.csv` | 仅连接下位机：每帧图像时间、实际反馈时间 `pose_timestamp_ms`、使用的 T_BC 旋转/平移及固定原点元数据，包括无观测帧 |
+| `video_1.avi` / `camera_live.avi` | 检测框、当前与未来几何；相机系直接投影，基座系先逆变换再投影 |
+| `control_target_*.csv` | yaw/pitch、valid、目标板号和状态，每帧一行；未连接时为相机零位下的模拟控制目标 |
+| `prediction_result_*.csv` | SinglePlate 原 13 列，基座系另加 coordinate_frame |
+| `armor_prediction_result_*.csv` | Armor 原 32 列，基座系另加 coordinate_frame |
+| `armor_future_prediction_*.csv` | 未来四板，原 10 列，基座系另加 coordinate_frame |
+| `*rmse_result_*.txt` | 原六位小数 RMSE 格式；没有有效残差为 nan |
 
-同名输出会覆盖。AVI 使用完整输入主干，其他文件后缀为主干最后一个下划线后的内容。状态及未来文件的 coordinate_frame 均为 base，参考原点元数据在 pose_base/camera_pose 中，配套文件必须来自同一次运行。初始化帧不写状态行；全程无观测时状态文件只有表头，RMSE 为 nan。
+同一输入、模型和摄像头模式的同名输出会覆盖；不同模型、视频和摄像头模式互不覆盖。摄像头连接下位机时，状态及未来文件的 coordinate_frame 为 base；pose_base/camera_pose 记录 `base_reference_timestamp_ms` 和 `base_reference_yaw_rad`，原点元数据 `base_origin_x_m/y_m/z_m` 固定为 0，表示 yaw 转轴中心，配套文件必须来自同一次运行。视频及不连接下位机的摄像头使用相机系预测 CSV 格式，输出 pose_raw、预测/RMSE、control_target 和叠加视频，不生成 pose_base 或 camera_pose。初始化帧不写预测状态行；全程无观测时预测状态文件只有表头，RMSE 为 nan，control_target 仍逐帧记录无效目标。
+
+结果不按日期分目录，不创建 history；每次运行直接覆盖对应输入、模型和摄像头模式下的同名输出。集成测试和 NumPy 参考运行默认写入 `tests/outputs/`，不会修改正式结果。手动生成的曲线默认写入对应结果目录的 `plots/` 子目录，同名绘图也直接覆盖。
 
 当前板用实线/圆点，未来板用虚线/菱形。投影会逆变换所有三维角点，不会只改位置或 yaw。模型仍只估计固定系水平板朝向，四板均显示，不模拟遮挡。残差是先验预测相对观测的误差，不代表真实定位精度。
 
 ```powershell
 .\.venv\Scripts\python -B -m plot.raw --suffix 1
 .\.venv\Scripts\python -B -m plot.armor --suffix 1
-.\.venv\Scripts\python -B -m plot.video --suffix 1
-# SinglePlate / Polar 配置运行后：
+# SinglePlate 配置运行后：
 .\.venv\Scripts\python -B -m plot.basic --suffix 1
-.\.venv\Scripts\python -B -m plot.polar --suffix 1
+# 当前默认的摄像头离线单板结果：
+.\.venv\Scripts\python -B -m plot.basic --suffix live
+# 连接下位机的摄像头结果：
+.\.venv\Scripts\python -B -m plot.basic --suffix live --camera-mode mcu
 ```
 
-`plot.raw` 查看相机系原始观测；`plot.basic/armor` 按结果的坐标标签选择固定系观测。`plot.video` 读取 pose_base 和 camera_pose，将整块板的角点逆变换后投影；旧无坐标标签的相机系 CSV 仍可绘制。可通过 `--camera-poses` 指定变换文件。实际摄像头录制的视频已由 C++ 直接叠加；离线绘图的相机 profile 必须与实际内参一致。更多参数见 [plot/README.md](plot/README.md)。
+`plot.raw` 查看相机系原始观测，可用 `--model single|armor` 选择结果目录；`plot.armor` 按结果的坐标标签选择对应观测，`plot.basic` 只读取预测 CSV 并输出误差曲线。`--results-dir` 可指定完整结果目录，`--data-dir` 可单独指定观测目录，默认与结果目录相同。视频叠加统一由 C++ 输出，Python 只生成分析曲线。更多参数见 [plot/README.md](plot/README.md)。
 
-## 7. 三种预测模型
+## 7. 两种预测模型
 
 在 `src/Armor.cpp` 修改 `predictor_type` 选择模型，重新编译后运行同一个 Armor.exe。
 
 | 模型 | 状态与观测 | 每帧更新 |
 | --- | --- | --- |
-| SinglePlate | `[x,vx,y,vy,z,vz]`；方位、俯仰、距离 | 最近有效板，距离相同保留第一条 |
-| Polar | 9 维：中心/速度、yaw/w、等半径 | 最近有效板，距离相同保留第一条 |
+| SinglePlate | `[x,vx,y,vy,z,vz,armor_yaw,yaw_rate]`；方位、俯仰、距离、装甲板朝向 | 最近有效板，距离相同保留第一条 |
 | Armor | 11 维：中心/速度、yaw/w、r/dl/dh | 四板关联与联合更新 |
 
 SinglePlate 使用匀速状态转移和非线性球坐标观测：
@@ -262,21 +289,20 @@ SinglePlate 使用匀速状态转移和非线性球坐标观测：
 yaw      = atan2(x, z)
 pitch    = atan2(y, sqrt(x² + z²))
 distance = sqrt(x² + y² + z²)
+armor_yaw = state[6]
 ```
 
-其解析雅可比、LDLT 求增益、Joseph 协方差更新和完整 6×6 协方差保持不变。
-`R=diag(0.0016,0.0016,0.16)`，`q=0.01`，每轴过程噪声块为
+使用解析雅可比、LDLT 求增益、Joseph 协方差更新和完整 8×8 协方差。
+`R=diag(0.000025,0.000025,0.01,0.0576)`，位置和 yaw 的 `q` 初值均为 `100`，每轴过程噪声块为
 `q * [[dt⁴/4,dt³/2],[dt³/2,dt²]]`，初始协方差 `10I`。原点或竖直轴附近跳过观测更新。
-最近板选择可能切换实体板，不提供单板身份关联。
-
-Polar 的板位置统一采用 `x = xc + r*sin(yaw)`、`z = zc - r*cos(yaw)`，与 PnP 朝向及 Armor 模型一致；初始化中心使用相反位移。
+朝向按 `armor_yaw += yaw_rate * dt` 推进，角度残差归一化到 `[-π,π)`。当前框使用滤波后的 yaw，未来框使用预测 yaw；漏检时继续推进位置和朝向。按同一块板连续跟踪，不做换板判断或姿态重置。仅预测 yaw，不预测完整三维 rvec。原有位置误差 CSV 和 RMSE 列保持不变。
 
 
-Polar 保留原 9 维模型、数值雅可比与固定噪声 `R=diag(0.005,0.005,0.05,0.05)`；
-Armor 的固定参数见第 5 节。两种模型的既有几何定义也保留，不重新解释 yaw 或半径。
 
-三种模型都使用每帧的源时间间隔推进。无效观测不更新；非法或不递增的帧号/时间戳明确报错。
-SinglePlate 的 13 列记录更新前预测，Polar 的 15 列及 Armor 的中心状态记录更新后状态，
+Armor 的固定参数见第 5 节。保留既有几何定义，不重新解释 yaw 或半径。
+
+两种模型都使用每帧的源时间间隔推进，输入观测由上游保证正确；无观测时只预测。
+SinglePlate 的 13 列记录更新前预测，Armor 的中心状态记录更新后状态，
 所有误差均来自更新前预测。RMSE 只累计有限残差，Armor 只累计最近被接受板的残差。
 
 
@@ -287,7 +313,7 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1
 .\.venv\Scripts\python -B tests/verify_armor_video.py --max-source-frames 90
 ```
 
-原生测试覆盖协议拆包/CRC、检测/PnP、三种 EKF、完整姿态变换、跨界插值、固定原点、移动相机下固定目标、绝对光轴对准、漏检/限位/失效控制，以及帧号、CSV、视频输出。NumPy 对照验证全部结果列、未来几何和 RMSE。视频集成脚本临时修改配置并验证红/蓝及三种模型，最后恢复源码和默认程序。
+原生测试覆盖协议拆包/CRC、检测/PnP、两种 EKF、完整姿态变换、角度跨界、固定原点、最新反馈及无新反馈时沿用矩阵、移动相机下固定目标、绝对光轴对准、漏检/限位/失效控制，以及帧号、CSV、视频输出。NumPy 对照验证全部结果列、未来几何和 RMSE。视频集成脚本临时修改配置并验证红/蓝及两种模型，最后恢复源码和默认程序。
 
 此次软件验证日志集中于 `tests/outputs/armor-unified/`。尚未接入实际摄像头、USB-TTL 或 MC02 电机；软件几何验证不能代替实物标定、延迟测量和收发联调。测试接口与产物说明见 [tests/README.md](tests/README.md)。
 
@@ -317,10 +343,10 @@ powershell -ExecutionPolicy Bypass -File .\tests\run.ps1
 cmake --build build --config Release --target serial
 ```
 
-串口模块由 Armor 直接调用。视频回放不打开串口；实时模式发送 AUTO_AIM、每帧 TARGET，正常结束时发送无效目标与 IDLE 并完成待发写入。尚未连接 MC02 做实物收发或运动验证。
+串口模块由 Armor 直接调用。视频回放及不连接下位机的摄像头不打开串口；摄像头连接下位机时，根据自瞄开关发送 AUTO_AIM 或 IDLE，每帧发送 TARGET（关闭自瞄时 valid=0），正常结束时发送无效目标与 IDLE 并完成待发写入。尚未连接 MC02 做实物收发或运动验证。
 
 ### 统一视频界面
 
-SinglePlate、Polar、Armor、Armor_detect 和 Python 视频叠加统一使用左上角黄色文字、黑色描边及相同行距，显示模式、帧号、状态和各观测板的相机系 XYZ（m）。框旁序号对应当前帧观测。Polar/Armor 保留四板当前实线框和未来虚线框。Python 导出保持输入分辨率，不追加侧栏或放大图。
+SinglePlate、Armor 和 Armor_detect 统一使用左上角黄色文字、黑色描边及相同行距，显示模式、帧号、状态和各观测板的相机系 XYZ（m）。框旁序号对应当前帧观测。Armor 保留四板当前实线框和未来虚线框。
 
 串口内部的 TARGET/MODE 在发送接口直接打包，STATE 在后台 run() 直接解析，CRC 为 cpp 内共用函数。已删除独立协议类、发送转发函数及 flush；close 请求停止后，线程发完剩余 MODE/TARGET 再退出，无需发送完成条件变量。

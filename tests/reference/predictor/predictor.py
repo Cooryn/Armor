@@ -1,11 +1,11 @@
-"""Independent NumPy reference for the six-state single-plate EKF."""
+"""Independent NumPy reference for the eight-state single-plate EKF."""
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 FPS = 30.0
-INPUT_COLUMNS = ["frame_id", "timestamp", "x", "y", "z", "target_yaw", "target_pitch", "distance"]
+INPUT_COLUMNS = ["frame_id", "timestamp", "x", "y", "z", "target_yaw", "target_pitch", "distance", "armor_orientation_yaw"]
 ORIGIN_COLUMNS = ["base_reference_timestamp_ms", "base_origin_x_m", "base_origin_y_m", "base_origin_z_m"]
 
 
@@ -15,11 +15,12 @@ def wrap_to_pi(angle):
 
 class SinglePlateEKF:
     geometry_epsilon = 1e-6
+    process_noise = 100.0
 
     def __init__(self):
-        self.state = np.zeros(6)
-        self.P = np.eye(6) * 10.0
-        self.R = np.diag([0.0016, 0.0016, 0.16])
+        self.state = np.zeros(8)
+        self.P = np.eye(8) * 10.0
+        self.R = np.diag([0.000025, 0.000025, 0.01, .0576])
         self.is_initialized = False
 
     @classmethod
@@ -35,15 +36,15 @@ class SinglePlateEKF:
 
     @staticmethod
     def h(state):
-        x, y, z = state[::2]
+        x, y, z = state[:6:2]
         horizontal = np.hypot(x, z)
-        return np.array([np.arctan2(x, z), np.arctan2(y, horizontal), np.hypot(horizontal, y)])
+        return np.array([np.arctan2(x, z), np.arctan2(y, horizontal), np.hypot(horizontal, y), wrap_to_pi(state[6])])
 
     @classmethod
     def jacobian(cls, state):
         if not cls.valid_geometry(state):
             raise ValueError("Singular single-plate observation geometry")
-        x, y, z = state[::2]
+        x, y, z = state[:6:2]
         horizontal = np.hypot(x, z)
         distance = np.hypot(horizontal, y)
         position_jacobian = np.array([
@@ -52,40 +53,44 @@ class SinglePlateEKF:
              -y * z / (horizontal * distance**2)],
             [x / distance, y / distance, z / distance],
         ])
-        H = np.zeros((3, 6))
-        H[:, ::2] = position_jacobian
+        H = np.zeros((4, 8))
+        H[:3, :6:2] = position_jacobian
+        H[3, 6] = 1
         return H
 
     def initialize(self, observation):
-        if not self.valid_observation(observation):
+        if not self.valid_observation(observation[:3]):
             raise ValueError("Invalid single-plate initialization observation")
-        yaw, pitch, distance = observation
+        yaw, pitch, distance, armor_yaw = observation
         horizontal = distance * np.cos(pitch)
         self.state = np.array([horizontal * np.sin(yaw), 0.0, distance * np.sin(pitch), 0.0,
-                               horizontal * np.cos(yaw), 0.0])
-        self.P = np.eye(6) * 10.0
+                               horizontal * np.cos(yaw), 0.0, wrap_to_pi(armor_yaw), 0.0])
+        self.P = np.eye(8) * 10.0
         self.is_initialized = True
 
     def predict(self, dt):
         if not self.is_initialized or not np.isfinite(dt) or dt < 0:
             raise ValueError("Prediction requires initialization and finite nonnegative dt")
-        F = np.eye(6)
-        F[np.arange(0, 6, 2), np.arange(1, 6, 2)] = dt
+        F = np.eye(8)
+        F[np.arange(0, 8, 2), np.arange(1, 8, 2)] = dt
         dt2 = dt * dt
-        block = 0.01 * np.array([[dt2 * dt2 / 4, dt2 * dt / 2], [dt2 * dt / 2, dt2]])
+        block = self.process_noise * np.array([[dt2 * dt2 / 4, dt2 * dt / 2], [dt2 * dt / 2, dt2]])
         state = F @ self.state
-        covariance = F @ self.P @ F.T + np.kron(np.eye(3), block)
+        state[6] = wrap_to_pi(state[6])
+        Q = np.kron(np.eye(4), block)
+        Q[6:, 6:] = 100 * np.array([[dt2 * dt2 / 4, dt2 * dt / 2], [dt2 * dt / 2, dt2]])
+        covariance = F @ self.P @ F.T + Q
         if not np.isfinite(state).all() or not np.isfinite(covariance).all():
             raise ValueError("Non-finite single-plate prediction")
         self.state, self.P = state, covariance
 
     def update(self, observation):
-        if (not self.is_initialized or not self.valid_observation(observation)
+        if (not self.is_initialized or not self.valid_observation(observation[:3])
                 or not self.valid_geometry(self.state)):
             return False
         H = self.jacobian(self.state)
         residual = observation - self.h(self.state)
-        residual[:2] = wrap_to_pi(residual[:2])
+        residual[[0, 1, 3]] = wrap_to_pi(residual[[0, 1, 3]])
         S = H @ self.P @ H.T + self.R
         try:
             np.linalg.cholesky(S)
@@ -93,7 +98,8 @@ class SinglePlateEKF:
         except np.linalg.LinAlgError:
             return False
         state = self.state + K @ residual
-        A = np.eye(6) - K @ H
+        state[6] = wrap_to_pi(state[6])
+        A = np.eye(8) - K @ H
         covariance = A @ self.P @ A.T + K @ self.R @ K.T
         covariance = (covariance + covariance.T) / 2
         if not np.isfinite(state).all() or not np.isfinite(covariance).all():
@@ -139,7 +145,7 @@ def run_predict(csv_input_path, output_dir, suffix="1"):
         if valid.empty:
             continue
         row = valid.sort_values("distance", kind="stable").iloc[0]
-        observation = row[["target_yaw", "target_pitch", "distance"]].to_numpy(dtype=float)
+        observation = row[["target_yaw", "target_pitch", "distance", "armor_orientation_yaw"]].to_numpy(dtype=float)
         dt = (row.timestamp - last_timestamp) / 1000 if last_timestamp is not None else 1 / FPS
         if dt <= 0:
             dt = 1 / FPS

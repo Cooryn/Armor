@@ -1,5 +1,4 @@
 #include "predictor_single.hpp"
-#include "predictor_polar.hpp"
 #include "predictor_armor.hpp"
 #include "output.hpp"
 #include <array>
@@ -13,22 +12,19 @@ struct ReplayPredictor {
     PredictorType type;
     double horizon;
     ::predictor_single single_plate;
-    ::predictor_polar polar;
     ::predictor_armor armor;
     ::output output_;
     bool finished_ = false;
 };
 static ReplayPredictor make_replay_predictor(PredictorType type, const std::filesystem::path &directory,
                                             const std::string &suffix, double horizon = 50) {
-    return {type, horizon, ::predictor_single{}, ::predictor_polar{}, ::predictor_armor{}, ::output(type, directory, suffix, horizon), false};
+    return {type, horizon, ::predictor_single{}, ::predictor_armor{}, ::output(type, directory, suffix, horizon), false};
 }
 static PredictionResult replay_predictor_update(ReplayPredictor &self, std::int64_t frame, double timestamp, const std::vector<Eigen::Vector4d> &obs) {
     if (self.finished_) throw std::logic_error("Cannot update finished replay");
     PredictionResult result;
     if (self.type == PREDICTOR_SINGLE_PLATE)
         result = self.single_plate.update_frame(timestamp, obs, self.horizon);
-    else if (self.type == PREDICTOR_POLAR)
-        result = self.polar.update_frame(timestamp, obs, self.horizon);
     else
         result = self.armor.update_frame(timestamp, obs, self.horizon);
     self.output_.write(frame, timestamp, result);
@@ -66,25 +62,8 @@ static std::string contents(const std::filesystem::path &path) {
     std::ifstream input(path); return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 static void regressions(const std::filesystem::path &root) {
-    ReplayPredictor physical = make_replay_predictor(PREDICTOR_POLAR, root / "polar_physical", "1");
-    const double heading = predictor_polar::pi / 6;
-    const auto observation = sample(.13, 3 - .26 * std::cos(heading), heading);
-    for (int frame = 0; frame < 20; ++frame) {
-        const auto view = replay_predictor_update(physical, frame, frame * 1000. / 30, {observation});
-        check((view.current.center.value() - Eigen::Vector3d(0, .2, 3)).norm() < 1e-10,
-              "Polar center disagrees with PnP orientation");
-        for (int i = 0; i < 4; ++i) {
-            const double yaw = heading + i * predictor_polar::pi / 2;
-            const Eigen::Vector3d expected(.26 * std::sin(yaw), .2, 3 - .26 * std::cos(yaw));
-            check((view.current.plates[i].head<3>() - expected).norm() < 1e-10,
-                  "Polar plate geometry disagrees with physical radius");
-            check((view.future.plates[i].head<3>() - expected).norm() < 1e-10,
-                  "Stationary Polar forecast drifted");
-        }
-    }
-    replay_predictor_finish(physical);
-    const std::array<PredictorType, 3> models = {PREDICTOR_SINGLE_PLATE, PREDICTOR_POLAR, PREDICTOR_ARMOR};
-    const std::array<const char *, 3> prefixes = {"", "polar_", "armor_"};
+    const std::array<PredictorType, 2> models = {PREDICTOR_SINGLE_PLATE, PREDICTOR_ARMOR};
+    const std::array<const char *, 2> prefixes = {"", "armor_"};
     for (std::size_t m = 0; m < models.size(); ++m) {
         const auto folder = root / std::to_string(m);
         const auto result = std::string(prefixes[m]) + "prediction_result_1.csv";
@@ -133,14 +112,13 @@ static void regressions(const std::filesystem::path &root) {
         }
     }
     ReplayPredictor selection = make_replay_predictor(PREDICTOR_SINGLE_PLATE, root / "selection", "1");
-    auto invalid = sample(); invalid(2) = -1;
-    const auto seed = replay_predictor_update(selection, 0, 0, {sample(0, 4), sample(1), sample(-1), invalid});
-    check(std::abs(seed.current.plates[0](0) - 1) < 1e-12, "nearest valid tie did not select first");
-    const auto view = replay_predictor_update(selection, 1, 100, {sample(1, 4), sample(1), sample(-1), invalid});
-    replay_predictor_update(selection, 2, 200, {invalid}); replay_predictor_finish(selection);
+    const auto seed = replay_predictor_update(selection, 0, 0, {sample(0, 4), sample(1), sample(-1)});
+    check(std::abs(seed.current.plates[0](0) - 1) < 1e-12, "nearest tie did not select first");
+    const auto view = replay_predictor_update(selection, 1, 100, {sample(1, 4), sample(1), sample(-1)});
+    replay_predictor_update(selection, 2, 200, {}); replay_predictor_finish(selection);
     const auto rows = csv(root / "selection/prediction_result_1.csv");
     check(std::stod(rows[1][2]) == 1, "selected wrong observation");
-    check(rows[2][2].empty() && rows[2][3].empty() && rows[2][8].empty(), "invalid observation exported as measurement");
+    check(rows[2][2].empty() && rows[2][3].empty() && rows[2][8].empty(), "missing observation exported as measurement");
     check(view.status == "updated", "valid update status");
 
     ::predictor_armor truth{};
@@ -154,7 +132,7 @@ static void regressions(const std::filesystem::path &root) {
           "compact armor CSV schema or update status changed");
     truth.initialize(four[0]);
     truth.predict(.04);
-    check(truth.update_multi(four).size() == 4, "four-plate joint update removed");
+    check(truth.update(four).size() == 4, "four-plate joint update removed");
     check((joint.armor.X - truth.X).norm() < 1e-12 && (joint.armor.P - truth.P).norm() < 1e-12,
           "frame update must retain all four observations");
     check(csv(root / "joint/armor_future_prediction_1.csv").size() == 5, "four future poses missing");
@@ -170,7 +148,7 @@ static double number(std::istream &input) {
     check(end == token.size(), "invalid replay number"); return value;
 }
 static int replay(const std::string &model, const std::filesystem::path &fixture, const std::filesystem::path &output, double horizon) {
-    const auto type = model == "basic" ? PREDICTOR_SINGLE_PLATE : model == "polar" ? PREDICTOR_POLAR :
+    const auto type = model == "basic" ? PREDICTOR_SINGLE_PLATE :
                       model == "armor" ? PREDICTOR_ARMOR : throw std::invalid_argument("Unknown replay model");
     std::ifstream input(fixture); check(bool(input), "missing replay fixture");
     ReplayPredictor predictor = make_replay_predictor(type, output, "1", horizon);

@@ -24,13 +24,13 @@ def main():
     OUTPUT.mkdir(parents=True, exist_ok=True)
     rows = []
     for suffix, frames, end_seconds in [(1, 815, 25), (2, 351, 10)]:
+        current = ROOT/f'results/video/armor/video_{suffix}'
         for name, raw, result in [('before', BASELINE, BASELINE),
-                                  ('after', ROOT/'data', ROOT/'results')]:
+                                  ('after', current, current)]:
             prediction = pd.read_csv(result/f'armor_prediction_result_{suffix}.csv')
             segment = prediction[prediction.timestamp.between(2000, end_seconds*1000)]
             center = segment[['xc', 'yc', 'zc']].to_numpy()
             deviation = np.linalg.norm(center-np.median(center, axis=0), axis=1)
-            diagnostics = pd.read_csv(result/f'armor_observation_diagnostics_{suffix}.csv')
             rows.append(dict(video=suffix, version=name, segment_start_s=2,
                 segment_end_s=end_seconds,
                 **metrics(raw/f'pose_raw_{suffix}.csv', frames),
@@ -38,7 +38,8 @@ def main():
                 angular_speed_std=segment.w.std(),
                 nearest_accepted_distance_rmse_cm=100*np.sqrt(np.nanmean(segment.err_distance**2)),
                 nearest_accepted_yaw_rmse_deg=np.degrees(np.sqrt(np.nanmean(segment.err_armor_yaw**2))),
-                rejected_observations=int((~diagnostics.accepted).sum())))
+                rejected_observations=int(prediction.rejected_count.sum())
+                    if 'rejected_count' in prediction else np.nan))
     summary = pd.DataFrame(rows)
     summary.to_csv(OUTPUT/'summary.csv', index=False)
     print(summary.to_string(index=False))
@@ -68,8 +69,9 @@ def main():
     for suffix, frame_id, crop in [(1, 753, (430, 570, 850, 840)),
                                     (2, 41, (300, 500, 1000, 950))]:
         images = []
-        for name, folder in [('Before', BASELINE), ('After', ROOT/'results')]:
-            cap = cv2.VideoCapture(str(folder/f'video_{suffix}.mp4'))
+        for name, video in [('Before', BASELINE/f'video_{suffix}.mp4'),
+                            ('After', ROOT/f'results/video/armor/video_{suffix}/video_{suffix}.avi')]:
+            cap = cv2.VideoCapture(str(video))
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
             ok, frame = cap.read()
             cap.release()

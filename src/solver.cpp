@@ -4,8 +4,8 @@
 #include <algorithm>
 
 // 装甲板尺寸配置
-constexpr float armor_width_m = 0.135f;
-constexpr float armor_height_m = 0.056f;
+const float armor_width_m = 0.135f;
+const float armor_height_m = 0.056f;
 
 // PnP求解装甲板位姿
 bool solver::solve(::armor &armor, double yaw_hint)
@@ -119,7 +119,7 @@ bool solver::solve(::armor &armor, double yaw_hint)
 // 前后帧装甲板匹配
 std::vector<int> solver::temporal_matches(const std::vector<::armor> &armors, double timestamp_s) const
 {
-    std::vector<int> matches(armors.size(), -1); // 初始化全部为未匹配
+    std::vector<int> matches(armors.size(), -1);          // 初始化全部为未匹配
     const double dt = timestamp_s - previous_timestamp_s; // 计算当前帧和上一帧的时间差
     if (dt <= 0 || dt > .1 || previous.empty())
         return matches; // 判断上一帧信息是否可用
@@ -133,7 +133,8 @@ std::vector<int> solver::temporal_matches(const std::vector<::armor> &armors, do
             const auto &track = previous[j];
             const auto expected_center = track.center + track.velocity * static_cast<float>(dt);
             const double cost = (width > .5 * track.width && width < 2 * track.width)
-                ? cv::norm(armors[i].center - expected_center) / std::max(10., track.width) : 1e9;
+                                    ? cv::norm(armors[i].center - expected_center) / std::max(10., track.width)
+                                    : 1e9;
             if (cost < best)
             {
                 best = cost;

@@ -32,7 +32,7 @@ def geometry(state, aid):
 
 
 def recording(filename):
-    data = pd.read_csv(ROOT / 'data' / filename)
+    data = pd.read_csv(ROOT / 'tests/reference/recordings' / filename)
     groups = dict(tuple(data.groupby('frame_id')))
     ids = np.array(sorted(groups))
     timestamps = np.array([groups[i].timestamp.iloc[0] / 1000 for i in ids])

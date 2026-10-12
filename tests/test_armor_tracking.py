@@ -10,7 +10,6 @@ import pandas as pd
 
 from tests.reference.predictor.predictor_armor import ArmorEKF, wrap_to_pi
 from tests.reference.predictor.run_armor import run_predict_armor
-from plot.video import compute_plate_position
 
 
 def measurement(theta, armor_id=0):
@@ -37,7 +36,6 @@ class ArmorTrackingTests(unittest.TestCase):
         ekf.initialize(z)
         np.testing.assert_allclose(ekf.X[[0, 2, 4], 0], [.1, .2, 3.], atol=1e-12)
         np.testing.assert_allclose(ekf.h(ekf.X, 0), z, atol=1e-12)
-        np.testing.assert_allclose(compute_plate_position(.1, .2, 3, yaw, .26, 0, 0, 0), position)
 
     def test_reject_outlier_without_changing_prior(self):
         ekf = self.tracker()

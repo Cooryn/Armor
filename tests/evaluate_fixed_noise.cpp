@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
                     }
                     b.predict(f.time - last);
                     last = f.time;
-                    const auto result = b.update_multi(f.observations);
+                    const auto result = b.update(f.observations);
                     auto &m = stats[i < s.frames.size() * 7 / 10 ? 0 : 1];
                     m.observations += static_cast<int>(f.observations.size());
                     m.accepted += static_cast<int>(result.size());
@@ -80,12 +80,13 @@ int main(int argc, char **argv) {
                         while (future < s.frames.size() && s.frames[future].time < f.time + .05 - 1e-8) ++future;
                         if (future < s.frames.size()) {
                             const auto &target = s.frames[future];
-                            auto forecast = b.forecast(target.time - f.time);
+                            auto forecast = b;
+                            forecast.predict(target.time - f.time);
                             for (const auto &o : target.observations) {
                                 Eigen::Vector4d residual;
                                 double smallest = std::numeric_limits<double>::infinity();
                                 for (int id = 0; id < 4; ++id) {
-                                    auto r = predictor_armor::angular_residual(o, predictor_armor::h(forecast.state, id));
+                                    auto r = predictor_armor::angular_residual(o, predictor_armor::h(forecast.X, id));
                                     if (std::abs(r(3)) < smallest) { smallest = std::abs(r(3)); residual = r; }
                                 }
                                 for (int k = 0; k < 4; ++k) m.error[k] += residual(k) * residual(k);
@@ -97,15 +98,16 @@ int main(int argc, char **argv) {
                                 const auto &left = s.frames[future - 1];
                                 double fraction = (f.time + .05 - left.time) / (target.time - left.time);
                                 const Eigen::Matrix<double, 11, 1> truth = left.truth + fraction * (target.truth - left.truth);
-                                const auto lead = b.forecast(.05);
-                                for (int axis : {0, 2, 4}) m.center_truth += std::pow(lead.state(axis) - truth(axis), 2);
+                                auto lead = b;
+                                lead.predict(.05);
+                                for (int axis : {0, 2, 4}) m.center_truth += std::pow(lead.X(axis) - truth(axis), 2);
                                 double error = 0;
                                 for (int id = 0; id < 4; ++id) {
                                     auto z = predictor_armor::h(truth, id);
                                     double smallest = std::numeric_limits<double>::infinity();
                                     double matched_error = 0;
                                     for (int other = 0; other < 4; ++other) {
-                                        auto predicted = predictor_armor::h(lead.state, other);
+                                        auto predicted = predictor_armor::h(lead.X, other);
                                         auto r = predictor_armor::angular_residual(z, predicted);
                                         if (std::abs(r(3)) < smallest) {
                                             smallest = std::abs(r(3));
@@ -114,7 +116,7 @@ int main(int argc, char **argv) {
                                             Eigen::Vector3d p(truth(0) + r_true * std::sin(yaw),
                                                               truth(2) + (id % 2 ? truth(10) : 0),
                                                               truth(4) - r_true * std::cos(yaw));
-                                            matched_error = (lead.plates.row(other).head(3).transpose() - p).squaredNorm();
+                                            matched_error = (predictor_armor::plate_pose(lead.X, other).head<3>() - p).squaredNorm();
                                         }
                                     }
                                     error += matched_error / 4;

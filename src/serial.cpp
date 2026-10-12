@@ -33,7 +33,13 @@ std::uint8_t serial::crc8(const std::uint8_t *bytes, std::size_t size)
 
 serial::~serial()
 {
-    try { close(); } catch (...) {}
+    try
+    {
+        close();
+    }
+    catch (...)
+    {
+    }
 }
 
 void serial::open(const std::string &serial_port)
@@ -67,8 +73,15 @@ void serial::open(const std::string &serial_port)
     }
     handle = opened;
     running = true;
-    try { worker = std::thread(&serial::run, this); }
-    catch (...) { close(); throw; }
+    try
+    {
+        worker = std::thread(&serial::run, this);
+    }
+    catch (...)
+    {
+        close();
+        throw;
+    }
 #else
     throw std::runtime_error("Serial hardware transport requires Windows");
 #endif

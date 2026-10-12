@@ -39,7 +39,6 @@ htmlcov/
 
 # Generated observations, formal results and test artifacts
 # Keep the tracked input samples under assets/.
-/data/
 /results/
 /tests/outputs/
 
@@ -66,8 +65,6 @@ Desktop.ini
 
 /predictor
 /predictor.exe
-/predictor_polar
-/predictor_polar.exe
 /run_armor
 /run_armor.exe
 

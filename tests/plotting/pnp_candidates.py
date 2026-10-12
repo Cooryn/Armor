@@ -9,7 +9,7 @@ def main():
     comparison.TITLE = 'PnP candidate selection; unchanged detector and EKF'
     comparison.main()
     for suffix in (1, 2):
-        raw = pd.read_csv(comparison.ROOT/f'data/pose_raw_{suffix}.csv')
+        raw = pd.read_csv(comparison.ROOT/f'results/video/armor/video_{suffix}/pose_raw_{suffix}.csv')
         print(f'Video {suffix}: candidate counts = {raw.pnp_candidate_count.value_counts().to_dict()}, '
               f'temporal tie breaks = {raw.pnp_used_temporal.sum()}')
 

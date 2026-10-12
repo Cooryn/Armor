@@ -25,7 +25,6 @@ target_link_libraries(serial PUBLIC Threads::Threads)
 
 add_library(predictor_filters STATIC
     src/predictor_single.cpp
-    src/predictor_polar.cpp
     src/predictor_armor.cpp)
 configure_target(predictor_filters)
 target_include_directories(predictor_filters PUBLIC ${OpenCV_INCLUDE_DIRS}
@@ -73,6 +72,9 @@ if(BUILD_TESTING)
     add_executable(armor_noise_evaluation EXCLUDE_FROM_ALL tests/evaluate_fixed_noise.cpp)
     configure_target(armor_noise_evaluation)
     target_link_libraries(armor_noise_evaluation PRIVATE predictor_filters)
+    add_executable(single_video_evaluation EXCLUDE_FROM_ALL tests/evaluate_single_video.cpp)
+    configure_target(single_video_evaluation)
+    target_link_libraries(single_video_evaluation PRIVATE armor_pipeline)
     add_executable(pose_base_tests tests/test_camera_gimbal.cpp)
     configure_target(pose_base_tests)
     target_link_libraries(pose_base_tests PRIVATE armor_pipeline)
