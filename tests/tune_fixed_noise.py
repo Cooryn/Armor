@@ -14,7 +14,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = ['target_yaw', 'target_pitch', 'distance', 'armor_orientation_yaw']
-BASELINE = np.array([.005, .005, .05, .05])
+BASELINE = np.array([.0016, .0016, .16, .0576])
 
 
 def wrap(x):
@@ -44,8 +44,8 @@ def recording(filename):
     return filename.removesuffix('.csv'), False, frames
 
 
-def synthetic(kind, noise_factor=1):
-    rng = np.random.default_rng(20260930 + kind)
+def synthetic(kind, noise_factor=1, seed_offset=0):
+    rng = np.random.default_rng(20260930 + kind + seed_offset)
     frames = []
     for frame in range(420):
         t = frame / 30
@@ -89,6 +89,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evaluator', type=Path, default=ROOT/'tests/build/Release/armor_noise_evaluation.exe')
     parser.add_argument('--output-dir', type=Path, default=ROOT/'tests/outputs/fixed_noise_tuning')
+    parser.add_argument('--horizon-ms', type=float, default=50)
     args = parser.parse_args()
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
@@ -117,7 +118,7 @@ def main():
             f.write(name + ' ' + ' '.join(map(str, variances)) + '\n')
     with (out/'measurements.csv').open('w') as f:
         subprocess.run([str(args.evaluator.resolve()), str((out/'sequences.txt').resolve()),
-                        str((out/'candidates.txt').resolve())], stdout=f, check=True)
+                        str((out/'candidates.txt').resolve()), str(args.horizon_ms / 1000)], stdout=f, check=True)
     metrics = pd.read_csv(out/'measurements.csv')
     baseline = metrics[metrics.candidate == 'baseline'].set_index(['sequence', 'split'])
     results = []
@@ -153,6 +154,7 @@ def main():
                    & (ranking.validation_jitter_ratio <= 1.05)
                    & (ranking.training_acceptance_ratio >= .98) & (ranking.validation_acceptance_ratio >= .98)]
     chosen = safe.iloc[0].to_dict()
+    chosen['horizon_ms'] = args.horizon_ms
     chosen['standard_deviations'] = np.sqrt(configs[chosen['candidate']]).tolist()
     (out/'selected.json').write_text(json.dumps(chosen, indent=2), encoding='utf-8')
     print(safe.head(8).to_string(index=False))

@@ -25,7 +25,7 @@ class ArmorEKF:
         self.q_dh = 3e-3     # 高度偏移 dh
 
         # 观测量: [target_yaw, target_pitch, distance, armor_orientation_yaw]
-        self.R = np.diag([0.0016, 0.0016, 0.16, 0.0576])
+        self.R = np.diag([0.0016, 0.0004, 0.16, 0.0784])
 
         self.max_yaw_error = max_yaw_error
         self.max_distance_error = max_distance_error

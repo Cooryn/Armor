@@ -31,7 +31,7 @@ public:
 
     Eigen::Matrix<double, 11, 1> X = Eigen::Matrix<double, 11, 1>::Zero();
     Eigen::Matrix<double, 11, 11> P = (Eigen::Matrix<double, 11, 1>() << 10, 10, 10, 10, 10, 10, 10, 10, .01, .05, .05).finished().asDiagonal();
-    Eigen::Matrix4d R = Eigen::Vector4d(.0016, .0016, .16, .0576).asDiagonal();
+    Eigen::Matrix4d R = Eigen::Vector4d(.0016, .0004, .16, .0784).asDiagonal();
     double q_pos = 3, q_yaw = 15, q_r = 3e-4, q_dl = 3e-3, q_dh = 3e-3;
     bool is_initialized = false;
     double max_yaw_error = 45 * predictor_armor::pi / 180, max_distance_error = .5;

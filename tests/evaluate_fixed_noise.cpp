@@ -19,7 +19,8 @@ struct Stats {
 };
 int main(int argc, char **argv) {
     try {
-        if (argc != 3) throw std::invalid_argument("Expected sequence and candidate files");
+        if (argc != 3 && argc != 4) throw std::invalid_argument("Expected sequence, candidate files and optional horizon seconds");
+        const double horizon_s = argc == 4 ? std::stod(argv[3]) : .05;
         std::ifstream input(argv[1]), candidates(argv[2]);
         int count;
         input >> count;
@@ -77,7 +78,7 @@ int main(int argc, char **argv) {
                             ++m.steps;
                         }
                         size_t future = i + 1;
-                        while (future < s.frames.size() && s.frames[future].time < f.time + .05 - 1e-8) ++future;
+                        while (future < s.frames.size() && s.frames[future].time < f.time + horizon_s - 1e-8) ++future;
                         if (future < s.frames.size()) {
                             const auto &target = s.frames[future];
                             auto forecast = b;
@@ -96,10 +97,10 @@ int main(int argc, char **argv) {
                             if (s.synthetic) {
                                 ++m.truth_frames;
                                 const auto &left = s.frames[future - 1];
-                                double fraction = (f.time + .05 - left.time) / (target.time - left.time);
+                                double fraction = (f.time + horizon_s - left.time) / (target.time - left.time);
                                 const Eigen::Matrix<double, 11, 1> truth = left.truth + fraction * (target.truth - left.truth);
                                 auto lead = b;
-                                lead.predict(.05);
+                                lead.predict(horizon_s);
                                 for (int axis : {0, 2, 4}) m.center_truth += std::pow(lead.X(axis) - truth(axis), 2);
                                 double error = 0;
                                 for (int id = 0; id < 4; ++id) {

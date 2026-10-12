@@ -1,5 +1,20 @@
 # 单板噪声调试（2026-10-10）
 
+## 2026-10-12：real.mp4 检查，未应用新参数
+
+输入为用户提供的 `D:/DOWNLOADS/real.mp4`，手机拍摄且无对应内参和畸变标定。视频 720×1280、245 帧，容器 FPS 29.878，约 8.2 秒。没有使用现有摄像头或视频标定冒充手机标定，也没有据此修改正式单板 Q/R。
+
+使用生产 C++ 红色灯条检测器逐帧处理：245 帧均有候选，142 帧为单候选，103 帧为双候选。人工检查首帧，两个框分别落在真实装甲板和桌面灯条反光上；其余双候选帧未逐一人工标注。该统计是检测结果，不是 PnP 成功率或跟踪准确率。
+
+结果保存于 `tests/outputs/single-real/detections.csv` 和 `detection_preview.mp4`。评估工具新增不需要标定的 pixels 模式，并修复其对已删除 valid_observation 的调用：
+
+```powershell
+cmake --build tests/build --config Release --target single_video_evaluation
+tests/build/Release/single_video_evaluation.exe D:/DOWNLOADS/real.mp4 pixels tests/outputs/single-real/detections.csv
+```
+
+进一步确定米制 EKF 噪声需要对应拍摄设置的手机标定及确认板尺寸，或实际摄像头生成的 pose_raw CSV。手机反光候选问题也应与噪声调参区分。以下为此前已部署参数的历史记录。
+
 用户报告的是实时摄像头下、始终只有同一块装甲板的跟随滞后。本次只修改单板 EKF 的固定噪声，没有加入换板重置、修改关联规则或修改多板模型。入口的相机/视频、预测器选择保持原配置。
 
 | 参数 | 原值 | 新值 |
