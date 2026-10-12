@@ -12,6 +12,29 @@ void require(bool condition, const char *message) {
 
 int main(int argc, char **argv) {
     try {
+        // Dim and small single plates must survive; displaced/clipped light pairs must not.
+        for (const auto color : {ENEMY_RED, ENEMY_BLUE}) {
+            const auto paint = [color](int value) {
+                return color == ENEMY_RED ? cv::Scalar(10, 20, value) : cv::Scalar(value, 20, 10);
+            };
+            cv::Mat dim = cv::Mat::zeros(120, 160, CV_8UC3);
+            cv::rectangle(dim, {40,40}, {44,60}, paint(150), cv::FILLED);
+            cv::rectangle(dim, {88,40}, {92,60}, paint(150), cv::FILLED);
+            require(detector::detect(dim, color).size() == 1, "Dim plate missing");
+            require(detector::detect(dim, color == ENEMY_RED ? ENEMY_BLUE : ENEMY_RED).empty(), "Wrong-color plate accepted");
+            cv::Mat small = cv::Mat::zeros(120, 160, CV_8UC3);
+            cv::rectangle(small, {40,40}, {42,48}, paint(240), cv::FILLED);
+            cv::rectangle(small, {60,40}, {62,48}, paint(240), cv::FILLED);
+            require(detector::detect(small, color).size() == 1, "Small plate missing");
+            cv::Mat displaced = cv::Mat::zeros(120, 160, CV_8UC3);
+            cv::rectangle(displaced, {40,40}, {44,60}, paint(240), cv::FILLED);
+            cv::rectangle(displaced, {88,52}, {92,72}, paint(240), cv::FILLED);
+            require(detector::detect(displaced, color).empty(), "Displaced clutter paired");
+            cv::Mat clipped = cv::Mat::zeros(120, 160, CV_8UC3);
+            cv::rectangle(clipped, {40,0}, {44,20}, paint(240), cv::FILLED);
+            cv::rectangle(clipped, {88,0}, {92,20}, paint(240), cv::FILLED);
+            require(detector::detect(clipped, color).empty(), "Clipped light bars paired");
+        }
         std::vector<cv::RotatedRect> bars{
             {{513.8f,725.8f},{37.1f,6.3f},104.f},
             {{637.f,716.f},{32.f,10.f},90.f},
@@ -125,6 +148,11 @@ int main(int argc, char **argv) {
         require(!std::isfinite(hints[0]), "Missing frame failed to clear pose history");
 
         if (argc > 1) {
+            const auto blue_photo = cv::imread(std::string(argv[1]) + "/assets/image/image_1.jpg");
+            require(!blue_photo.empty(), "Cannot open background stripe regression image");
+            require(detector::detect(blue_photo, ENEMY_RED).empty(), "Red background stripes paired");
+            const auto clear_blue = cv::imread(std::string(argv[1]) + "/assets/image/image_2.jpg");
+            require(!clear_blue.empty() && !detector::detect(clear_blue, ENEMY_BLUE).empty(), "Blue plate lost");
             cv::VideoCapture cap(std::string(argv[1]) + "/assets/video/video_1.avi");
             require(cap.isOpened(), "Cannot open regression video");
             cap.set(cv::CAP_PROP_POS_FRAMES, 753);

@@ -49,6 +49,8 @@ Python 绘图测试使用当前固定系格式，验证完整板角点经 T_BC �
 
 ## 保留的诊断工具
 
+检测阈值、暗小灯条与背景误检调参见 [detector_parameter_tuning.md](detector_parameter_tuning.md)，包含原生候选扫描、完整视频及样本前后对比。
+
 单板响应与噪声调试见 [single_noise_tuning.md](single_noise_tuning.md)，包含完整视频观测、连续片段对比、30/60 FPS 单板运动与静态抖动验证。
 
 固定噪声调参说明见 [fixed_noise_tuning.md](fixed_noise_tuning.md)。构建 armor_noise_evaluation 后运行 tests.tune_fixed_noise。test_fixed_noise.py 检查固定联合协方差、门控、输入质量字段不改变权重及诊断导出。

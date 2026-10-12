@@ -313,10 +313,24 @@ void detector::draw_video_info(cv::Mat &image, const std::vector<::armor> &armor
 
 std::vector<::armor> detector::detect(const cv::Mat &image, EnemyColor color)
 {
-    const auto mask = detector::extract_color(image, color, 70, 170);
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE); // 提取灯条轮廓
-    std::vector<float> quality;
-    const auto lights = detector::get_valid_light_rects(contours, quality, 55, 1.5, 40);
-    return detector::match_armors(lights, quality, 20, 2.f, .8f, .8f, 3.1f, .35f);
+    // 先保留高亮灯条的紧致轮廓；无匹配时再降低阈值，避免光晕影响已有检测。
+    const int thresholds[][2] = {{high_color_threshold, high_gray_threshold},
+                                 {low_color_threshold, low_gray_threshold}};
+    for (const auto &threshold : thresholds)
+    {
+        const auto mask = detector::extract_color(image, color, threshold[0], threshold[1]);
+        std::vector<std::vector<cv::Point>> contours;
+        cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+        // 边缘截断的灯条缺少真实端点，既容易误配，也会使 PnP 长度失真。
+        contours.erase(std::remove_if(contours.begin(), contours.end(), [&](const auto &contour) {
+            const auto box = cv::boundingRect(contour);
+            return box.x <= 0 || box.y <= 0 || box.br().x >= image.cols || box.br().y >= image.rows;
+        }), contours.end());
+        std::vector<float> quality;
+        const auto lights = detector::get_valid_light_rects(contours, quality);
+        auto armors = detector::match_armors(lights, quality);
+        if (!armors.empty())
+            return armors;
+    }
+    return {};
 }
