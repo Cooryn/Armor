@@ -36,7 +36,7 @@ const cv::Mat live_camera_matrix = (cv::Mat_<double>(3, 3) << 724.1270087027805,
 const cv::Mat live_distortion = (cv::Mat_<double>(1, 5) << 0.19096982316205274, -0.5174000457589348,
                                 -0.0016604452786579244, -0.0009416271376343901, 0.5296904922932862);
 
-// 相机安装位移和朝向尚未标定，以下用于临时近似。
+// 相机安装位移和朝向尚未标定，以下用于临时近似
 const CameraCalibration camera_calibration = []
 {
     CameraCalibration calibration;

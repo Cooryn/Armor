@@ -31,19 +31,21 @@
 | `Armor.cpp` | 顶部配置及上述接口调用，不包含检测、PnP、EKF或坐标变换算法 |
 | `Armor_detect.cpp` | 相机/视频、检测、PnP、窗口与录像；左上角显示相机系 XYZ 坐标 |
 
-`camera_frames.hpp` 已合并为 `pose_base.hpp`，类名为 `pose`。`camera_tracking.hpp/.cpp`、其旧仿真控制与独立入口已移除。`pose_base.cpp` 只保留共享转换实现，不再包含独立 main 或离线命令行。CMake 生成 Armor 和 Armor_detect；测试程序仅在 `BUILD_TESTING=ON` 时构建。
+`camera_frames.hpp` 已合并为 `pose_base.hpp`，类名为 `pose`。`camera_tracking.hpp/.cpp`、其旧仿真控制与独立入口已移除。`pose_base.cpp` 只保留共享转换实现，不再包含独立 main 或离线命令行。CMake 生成 Visual Studio 工程，构建 Armor 和 Armor_detect。
 
 ## 2. 构建和运行
 
-依赖 C++17、Visual Studio 2022 C++ 工具、CMake、OpenCV 开发库、Eigen 和 Threads。Python 的 NumPy/pandas/Matplotlib/OpenCV 用于参考测试与绘图；Python OpenCV 包不能代替 C++ 开发库。
+依赖 C++17、Visual Studio 2022 C++ 工具、CMake、OpenCV 开发库、Eigen。Python 的 NumPy/pandas/Matplotlib/OpenCV 用于参考测试与绘图；Python OpenCV 包不能代替 C++ 开发库。
 
-激活安装了 OpenCV/Eigen 的 Conda 环境后，可运行 `setup.ps1` 配置 `.venv` 并构建。已有环境时：
+激活安装了 OpenCV/Eigen 的 Conda 环境后，可运行 `setup.ps1` 配置 `.venv` 并构建。已有环境时，在 PowerShell 中执行：
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=OFF -DOpenCV_DIR="$env:CONDA_PREFIX/Library/cmake" -DCMAKE_PREFIX_PATH="$env:CONDA_PREFIX/Library"
-cmake --build build --config Release --target Armor --parallel
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DOpenCV_DIR="$env:CONDA_PREFIX/Library/cmake" -DCMAKE_PREFIX_PATH="$env:CONDA_PREFIX/Library"
+cmake --build build --config Release --parallel
 .\Armor.exe
 ```
+
+配置完成后，修改源码只需执行 `cmake --build build --config Release --parallel`。
 
 程序不接受命令行参数，修改 `src/Armor.cpp` 顶部配置并重新编译：
 
