@@ -1,5 +1,5 @@
 #include "gimbal.hpp"
-#include "output.hpp"
+#include "log_output.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -29,7 +29,7 @@ ControlTarget gimbal::solve(const PredictionResult &prediction, const ::pose &po
     const auto camera_from_base = pose_base.base_from_camera_.inverse();
     const Eigen::Vector4d *selected_plate = nullptr;
     double nearest = std::numeric_limits<double>::infinity();
-    for (std::size_t i = 0; i < prediction.future.plates.size(); ++i)
+    for (int i = 0; i < static_cast<int>(prediction.future.plates.size()); ++i)
     {
         const auto &plate = prediction.future.plates[i];
         const Eigen::Vector3d camera_position = camera_from_base * plate.head<3>();

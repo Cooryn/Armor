@@ -33,7 +33,7 @@ class serial
 {
 public:
     static double monotonic_time_ms();
-    static std::uint8_t crc8(const std::uint8_t *bytes, std::size_t size);
+    static std::uint8_t crc8(const std::uint8_t *bytes, int size);
     ~serial();
     void open(const std::string &serial_port);
     void close();

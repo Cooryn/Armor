@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
                 std::array<Stats, 2> stats{};
                 std::optional<Eigen::Matrix<double, 11, 1>> previous;
                 double last = 0;
-                for (size_t i = 0; i < s.frames.size(); ++i) {
+                for (int i = 0; i < static_cast<int>(s.frames.size()); ++i) {
                     const auto &f = s.frames[i];
                     if (!b.is_initialized) {
                         for (const auto &o : f.observations)
@@ -65,7 +65,7 @@ int main(int argc, char **argv) {
                     b.predict(f.time - last);
                     last = f.time;
                     const auto result = b.update(f.observations);
-                    auto &m = stats[i < s.frames.size() * 7 / 10 ? 0 : 1];
+                    auto &m = stats[i < static_cast<int>(s.frames.size()) * 7 / 10 ? 0 : 1];
                     m.observations += static_cast<int>(f.observations.size());
                     m.accepted += static_cast<int>(result.size());
                     m.rejected += static_cast<int>(f.observations.size() - result.size());
@@ -77,9 +77,9 @@ int main(int argc, char **argv) {
                             m.w_step += std::pow(b.X(7) - (*previous)(7), 2);
                             ++m.steps;
                         }
-                        size_t future = i + 1;
-                        while (future < s.frames.size() && s.frames[future].time < f.time + horizon_s - 1e-8) ++future;
-                        if (future < s.frames.size()) {
+                        int future = i + 1;
+                        while (future < static_cast<int>(s.frames.size()) && s.frames[future].time < f.time + horizon_s - 1e-8) ++future;
+                        if (future < static_cast<int>(s.frames.size())) {
                             const auto &target = s.frames[future];
                             auto forecast = b;
                             forecast.predict(target.time - f.time);
@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
                                 Eigen::Vector4d residual;
                                 double smallest = std::numeric_limits<double>::infinity();
                                 for (int id = 0; id < 4; ++id) {
-                                    auto r = predictor_armor::angular_residual(o, predictor_armor::h(forecast.X, id));
+                                    auto r = predictor_armor::residual(o, predictor_armor::h(forecast.X, id));
                                     if (std::abs(r(3)) < smallest) { smallest = std::abs(r(3)); residual = r; }
                                 }
                                 for (int k = 0; k < 4; ++k) m.error[k] += residual(k) * residual(k);
@@ -109,7 +109,7 @@ int main(int argc, char **argv) {
                                     double matched_error = 0;
                                     for (int other = 0; other < 4; ++other) {
                                         auto predicted = predictor_armor::h(lead.X, other);
-                                        auto r = predictor_armor::angular_residual(z, predicted);
+                                        auto r = predictor_armor::residual(z, predicted);
                                         if (std::abs(r(3)) < smallest) {
                                             smallest = std::abs(r(3));
                                             const double r_true = truth(8) + (id % 2 ? truth(9) : 0);

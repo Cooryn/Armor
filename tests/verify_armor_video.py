@@ -1,6 +1,6 @@
 """Opt-in integration test: switch source constants, rebuild, run and restore.
 
-Run with --preview to also open a short OpenCV preview. Test videos/results are
+All video runs display the OpenCV window. Test videos/results are
 kept under tests/outputs; the original source and default executable are restored.
 """
 import argparse
@@ -24,8 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'tests/build')
     parser.add_argument('--work-dir', type=Path, default=ROOT / 'tests/outputs/armor-video')
-    parser.add_argument('--preview', action='store_true')
-    parser.add_argument('--guards-only', action='store_true', help='Only test preview, live-branch build and file I/O errors')
+    parser.add_argument('--guards-only', action='store_true', help='Only test live-branch build and file I/O errors')
     parser.add_argument('--max-source-frames', type=int, help='Use short source clips for routine integration checks')
     args = parser.parse_args()
     work = args.work_dir.resolve()
@@ -51,7 +50,7 @@ def main():
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
 
-    def configure(color, video, model, preview=False):
+    def configure(color, video, model):
         text = original.decode('utf-8')
         models = {'SinglePlate': 'PREDICTOR_SINGLE_PLATE', 'Armor': 'PREDICTOR_ARMOR'}
         # Video must ignore both MCU switches, even when they are enabled.
@@ -59,7 +58,7 @@ def main():
                   'prediction_horizon_ms': '50',
                   'target_color': f'ENEMY_{color.upper()}', 'video_file': json.dumps(video.as_posix()),
                   'video_camera_profile': '2' if 'video_2' in video.stem else '1',
-                  'predictor_type': models[model], 'preview': 'true' if preview else 'false'}
+                  'predictor_type': models[model]}
         for key, value in values.items():
             text, count = re.subn(rf'(?m)^((?:const |CameraSource |PredictorType |bool )[^\n]*\b{key}\s*=\s*)[^;]+;', lambda m: m[1] + value + ';', text)
             assert count == 1, key
@@ -68,17 +67,17 @@ def main():
         assert count == 1, 'isolated program output root'
         source.write_bytes(text.encode('utf-8'))
 
-    def run_case(model, color, suffix, video, preview=False, blue_fixture=False):
-        tag = model.lower() + color + suffix + ('preview' if preview else '') + ('fixture' if blue_fixture else '')
+    def run_case(model, color, suffix, video, blue_fixture=False):
+        tag = model.lower() + color + suffix + ('fixture' if blue_fixture else '')
         case = work / tag
         case.mkdir(parents=True, exist_ok=True)
         input_video = case / f'video_{suffix}_{tag}.avi'
-        if preview or blue_fixture or args.max_source_frames:
+        if blue_fixture or args.max_source_frames:
             cap = cv2.VideoCapture(str(video))
             writer = cv2.VideoWriter(str(input_video), cv2.VideoWriter_fourcc(*'MJPG'),
                                     cap.get(cv2.CAP_PROP_FPS), (int(cap.get(3)), int(cap.get(4))))
             assert writer.isOpened()
-            for _ in range(6 if preview else args.max_source_frames or 120):
+            for _ in range(args.max_source_frames or 120):
                 ok, frame = cap.read()
                 assert ok
                 writer.write(frame[:, :, ::-1] if blue_fixture else frame)
@@ -86,7 +85,7 @@ def main():
             cap.release()
         else:
             shutil.copyfile(video, input_video)
-        configure(color, input_video, model, preview)
+        configure(color, input_video, model)
         print(tag, 'building and processing video', flush=True)
         build(tag)
         result = subprocess.run([str(exe)], cwd=work, env=env, capture_output=True, text=True, encoding='utf-8', errors='replace')
@@ -101,8 +100,7 @@ def main():
         assert not (result_directory / f'camera_pose_{tag}.csv').exists()
         assert (result_directory / f'control_target_{tag}.csv').exists()
         assert raw.coordinate_frame.eq('camera').all()
-        if not preview:
-            assert len(raw) > 0, f'{color} produced no observations'
+        assert len(raw) > 0, f'{color} produced no observations'
         if blue_fixture:
             assert len(raw) > 10, 'blue fixture failed to produce a tracking sequence'
         cap = cv2.VideoCapture(str(input_video))
@@ -146,7 +144,7 @@ def main():
         overlay.release()
         shutil.move(str(overlay_path), str(case / 'overlay.avi'))
         shutil.move(str(raw_path), str(case / 'observations.csv'))
-        report.append(dict(model=model, color=color, frames=count, observations=len(raw), preview=preview,
+        report.append(dict(model=model, color=color, frames=count, observations=len(raw),
                            blue_fixture=blue_fixture, snapshot_frame=fid, max_absolute_difference=maximum))
         print(tag, 'PASS', count, 'frames,', len(raw), 'observations', flush=True)
 
@@ -157,8 +155,6 @@ def main():
                     run_case(model, color, suffix, ROOT / 'assets/video' / f'video_{suffix}.avi')
                 run_case(model, 'blue', '1', ROOT / 'assets/video/video_1.avi', blue_fixture=True)
             run_case('Armor', 'red', '2', ROOT / 'assets/video/video_2.avi')
-        if args.preview:
-            run_case('Armor', 'red', '1', ROOT / 'assets/video/video_1.avi', True)
         configure('red', work / 'unused.avi', 'Armor')
         source.write_text(source.read_text(encoding='utf-8').replace('camera_source = VIDEO;', 'camera_source = CAMERA;'), encoding='utf-8')
         build('live-compile-only')

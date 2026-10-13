@@ -40,13 +40,13 @@ int main(int argc, char **argv) {
         std::filesystem::create_directories(directory);
         std::ofstream out(directory / "detections.csv");
         out.exceptions(std::ios::badbit | std::ios::failbit);
-        out << "source,frame,variant,candidate,lights,count,index,cx,cy,score,x0,y0,x1,y1,x2,y2,x3,y3\n" << std::setprecision(9);
+        out << "source,frame,variant,candidate,lights,count,index,cx,cy,x0,y0,x1,y1,x2,y2,x3,y3\n" << std::setprecision(9);
         const auto process = [&](const cv::Mat &image, const std::string &source, int frame, EnemyColor color, const std::string &variant) {
-            for (size_t id = 0; id < candidates.size(); ++id) {
+            for (int id = 0; id < static_cast<int>(candidates.size()); ++id) {
                 if (finalists_only && id != 0 && id < 23) continue;
                 const auto &p = candidates[id];
                 std::vector<::armor> armors;
-                size_t light_count = 0;
+                int light_count = 0;
                 for (int pass = 0; pass < (p.high_threshold_first ? 2 : 1); ++pass) {
                     auto mask = detector::extract_color(image, color,
                         p.high_threshold_first && pass == 0 ? 70 : p.color,
@@ -61,23 +61,23 @@ int main(int argc, char **argv) {
                     std::vector<float> quality;
                     auto lights = detector::get_valid_light_rects(contours, quality, 55, p.shape, p.area);
                     armors = detector::match_armors(lights, quality, p.angle, p.length, .8f, p.offset, 3.1f, p.score);
-                    light_count = lights.size();
+                    light_count = static_cast<int>(lights.size());
                     if (!armors.empty()) break;
                 }
                 if (id == 25) {
                     const auto actual = detector::detect(image, color);
                     if (actual.size() != armors.size()) throw std::runtime_error("Production detector count differs from candidate 25");
-                    for (size_t j = 0; j < actual.size(); ++j)
+                    for (int j = 0; j < static_cast<int>(actual.size()); ++j)
                         for (int k = 0; k < 4; ++k)
                             if (cv::norm(actual[j].vertices[k] - armors[j].vertices[k]) > 1e-5)
                                 throw std::runtime_error("Production detector corners differ from candidate 25");
                 }
-                for (size_t j = 0; j < std::max(size_t(1), armors.size()); ++j) {
+                for (int j = 0; j < std::max(1, static_cast<int>(armors.size())); ++j) {
                     out << source << ',' << frame << ',' << variant << ',' << id << ',' << light_count << ',' << armors.size();
-                    if (armors.empty()) out << ",-1,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan\n";
+                    if (armors.empty()) out << ",-1,nan,nan,nan,nan,nan,nan,nan,nan,nan,nan\n";
                     else {
                         const auto &a = armors[j];
-                        out << ',' << j << ',' << a.center.x/image.cols << ',' << a.center.y/image.rows << ',' << a.detection_score;
+                        out << ',' << j << ',' << a.center.x/image.cols << ',' << a.center.y/image.rows;
                         for (const auto &v : a.vertices) out << ',' << v.x/image.cols << ',' << v.y/image.rows;
                         out << '\n';
                     }

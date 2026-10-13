@@ -15,12 +15,13 @@ def wrap_to_pi(angle):
 
 class SinglePlateEKF:
     geometry_epsilon = 1e-6
-    process_noise = 100.0
+    process_noise = 60.0
+    yaw_process_noise = 75.0
 
     def __init__(self):
         self.state = np.zeros(8)
         self.P = np.eye(8) * 10.0
-        self.R = np.diag([0.000025, 0.000025, 0.01, .0576])
+        self.R = np.diag([0.000036, 0.000025, 0.01, .0576])
         self.is_initialized = False
 
     @classmethod
@@ -78,7 +79,7 @@ class SinglePlateEKF:
         state = F @ self.state
         state[6] = wrap_to_pi(state[6])
         Q = np.kron(np.eye(4), block)
-        Q[6:, 6:] = 100 * np.array([[dt2 * dt2 / 4, dt2 * dt / 2], [dt2 * dt / 2, dt2]])
+        Q[6:, 6:] = self.yaw_process_noise * np.array([[dt2 * dt2 / 4, dt2 * dt / 2], [dt2 * dt / 2, dt2]])
         covariance = F @ self.P @ F.T + Q
         if not np.isfinite(state).all() or not np.isfinite(covariance).all():
             raise ValueError("Non-finite single-plate prediction")

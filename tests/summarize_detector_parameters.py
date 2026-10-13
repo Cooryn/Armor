@@ -35,7 +35,6 @@ def main():
                 for row in selected.itertuples():
                     corners = np.array([[getattr(row, f'x{k}')*480, getattr(row, f'y{k}')*320] for k in range(4)]).astype(np.int32)
                     cv2.polylines(canvas, [corners], True, (0,255,0), 2)
-                    cv2.putText(canvas, f'{row.score:.2f}', tuple(corners[0]), 0, .4, (0,255,255), 1)
                 cv2.rectangle(canvas, (0,0), (480,25), (0,0,0), -1)
                 cv2.putText(canvas, f'{name} {variant} | candidate {candidate} | count {len(selected)}', (5,18), 0, .45, (255,255,255), 1)
                 panels.append(canvas)

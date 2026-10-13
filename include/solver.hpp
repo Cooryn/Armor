@@ -7,7 +7,7 @@
 struct SolvedFrame
 {
     std::vector<::armor> armors;
-    std::vector<Eigen::Vector4d> observations;
+    std::vector<Eigen::Vector4d> observations; // [armor_yaw, pitch, distance, observed_yaw]
 };
 struct SolverTrack
 {
@@ -17,7 +17,6 @@ struct SolverTrack
 class solver
 {
 public:
-    // 初始化相机内参和畸变系数
     solver(const cv::Mat &camera = cv::Mat(), const cv::Mat &distortion_coefficients = cv::Mat())
     {
         camera_matrix = camera;

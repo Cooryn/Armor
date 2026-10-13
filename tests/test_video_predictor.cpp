@@ -1,6 +1,6 @@
 #include "predictor_single.hpp"
 #include "predictor_armor.hpp"
-#include "output.hpp"
+#include "log_output.hpp"
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -13,12 +13,12 @@ struct ReplayPredictor {
     double horizon;
     ::predictor_single single_plate;
     ::predictor_armor armor;
-    ::output output_;
+    ::log_output output_;
     bool finished_ = false;
 };
 static ReplayPredictor make_replay_predictor(PredictorType type, const std::filesystem::path &directory,
                                             const std::string &suffix, double horizon = 50) {
-    return {type, horizon, ::predictor_single{}, ::predictor_armor{}, ::output(type, directory, suffix, horizon), false};
+    return {type, horizon, ::predictor_single{}, ::predictor_armor{}, ::log_output(type, directory, suffix, horizon), false};
 }
 static PredictionResult replay_predictor_update(ReplayPredictor &self, std::int64_t frame, double timestamp, const std::vector<Eigen::Vector4d> &obs) {
     if (self.finished_) throw std::logic_error("Cannot update finished replay");
@@ -50,8 +50,11 @@ static std::vector<std::vector<std::string>> csv(const std::filesystem::path &pa
     std::string line;
     while (std::getline(input, line)) {
         std::vector<std::string> fields;
-        std::size_t start = 0, end;
-        while ((end = line.find(',', start)) != std::string::npos) {
+        int start = 0;
+        while (true) {
+            const auto found = line.find(',', start);
+            if (found == std::string::npos) break;
+            const int end = static_cast<int>(found);
             fields.push_back(line.substr(start, end - start)); start = end + 1;
         }
         fields.push_back(line.substr(start)); rows.push_back(fields);
@@ -64,7 +67,7 @@ static std::string contents(const std::filesystem::path &path) {
 static void regressions(const std::filesystem::path &root) {
     const std::array<PredictorType, 2> models = {PREDICTOR_SINGLE_PLATE, PREDICTOR_ARMOR};
     const std::array<const char *, 2> prefixes = {"", "armor_"};
-    for (std::size_t m = 0; m < models.size(); ++m) {
+    for (int m = 0; m < static_cast<int>(models.size()); ++m) {
         const auto folder = root / std::to_string(m);
         const auto result = std::string(prefixes[m]) + "prediction_result_1.csv";
         const auto metric = std::string(prefixes[m]) + "rmse_result_1.txt";
@@ -90,7 +93,7 @@ static void regressions(const std::filesystem::path &root) {
             const auto a = replay_predictor_update(zero, i, time, obs), b = replay_predictor_update(future, i, time, obs);
             check(a.status != "waiting" && b.status != "waiting", "lost during dropout");
             check(a.current.plates.size() == (m == 0 ? 1u : 4u), "plate count");
-            for (std::size_t j = 0; j < a.current.plates.size(); ++j)
+            for (int j = 0; j < static_cast<int>(a.current.plates.size()); ++j)
                 check((a.current.plates[j] - b.current.plates[j]).norm() < 1e-12, "forecast mutated current state");
             if (i > 5) check(a.status == "prediction_only", "dropout status");
             if (i == 14) check((b.current.plates[0].head<3>() - b.future.plates[0].head<3>()).norm() > 1e-5,
@@ -103,7 +106,7 @@ static void regressions(const std::filesystem::path &root) {
             for (const auto &entry : {std::pair<const char *, double>{"zero", 0}, {"future", 200}}) {
                 const auto forecasts = csv(folder / entry.first / "armor_future_prediction_1.csv");
                 check(forecasts.size() == 57, "future export row count");
-                for (std::size_t i = 1; i < forecasts.size(); ++i) {
+                for (int i = 1; i < static_cast<int>(forecasts.size()); ++i) {
                     check(std::stod(forecasts[i][3]) == entry.second &&
                           std::abs(std::stod(forecasts[i][2]) - std::stod(forecasts[i][1]) - entry.second) < 1e-10,
                           "future export must use configured horizon");
@@ -143,7 +146,7 @@ static void regressions(const std::filesystem::path &root) {
 static double number(std::istream &input) {
     std::string token;
     if (!(input >> token)) throw std::runtime_error("Incomplete replay fixture");
-    std::size_t end;
+    auto end = token.size();
     const double value = std::stod(token, &end);
     check(end == token.size(), "invalid replay number"); return value;
 }

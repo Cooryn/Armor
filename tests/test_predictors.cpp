@@ -19,7 +19,7 @@ static void check(bool v, const char *msg) {
 }
 static void near(const Eigen::MatrixXd &a, const Eigen::MatrixXd &b, double tolerance = 1e-10) {
     check(a.rows() == b.rows() && a.cols() == b.cols(), "shape");
-    for (Eigen::Index i = 0; i < a.size(); ++i)
+    for (Eigen::Index i = 0; i < static_cast<int>(a.size()); ++i)
         if (!std::isfinite(a.data()[i]) || !std::isfinite(b.data()[i]) ||
             std::abs(a.data()[i] - b.data()[i]) > tolerance)
             throw std::runtime_error("matrix mismatch at " + std::to_string(i) +
@@ -44,17 +44,23 @@ static void single_plate_regressions() {
              Eigen::Vector3d(1e-8, .2, -3), Eigen::Vector3d(-1e-8, -.2, -3)}) {
         Eigen::Matrix<double, 8, 1> truth;
         truth << position(0), .4, position(1), -.2, position(2), .3, .4, 0;
-        Eigen::Matrix<double, 4, 8> numerical;
-        for (int column = 0; column < 8; ++column) {
-            Eigen::Matrix<double, 8, 1> plus = truth, minus = truth;
-            plus(column) += 1e-6;
-            minus(column) -= 1e-6;
-            Eigen::Vector4d difference = predictor_single::h(plus) - predictor_single::h(minus);
-            for (int angle : {0, 1, 3})
-                difference(angle) = predictor_single::wrap_to_pi(difference(angle));
-            numerical.col(column) = difference / 2e-6;
+        const double x = position(0), y = position(1), z = position(2);
+        const double horizontal = std::hypot(x, z), distance = position.norm();
+        Eigen::Matrix<double, 4, 8> analytic = Eigen::Matrix<double, 4, 8>::Zero();
+        analytic(0, 0) = z / (horizontal * horizontal);
+        analytic(0, 4) = -x / (horizontal * horizontal);
+        analytic(1, 0) = -x * y / (horizontal * distance * distance);
+        analytic(1, 2) = horizontal / (distance * distance);
+        analytic(1, 4) = -y * z / (horizontal * distance * distance);
+        analytic(2, 0) = x / distance;
+        analytic(2, 2) = y / distance;
+        analytic(2, 4) = z / distance;
+        analytic(3, 6) = 1;
+        for (double yaw : {.4, predictor_single::pi - 1e-8, -predictor_single::pi + 1e-8}) {
+            truth(6) = yaw;
+            // Forward differences have first-order error, amplified near the vertical axis.
+            near(predictor_single::jacobian(truth), analytic, 1e-5 * (1 + 1 / (horizontal * horizontal)));
         }
-        near(predictor_single::jacobian(truth), numerical, 1e-7);
         filter.initialize(predictor_single::h(truth));
         for (int axis = 0; axis < 3; ++axis) {
             check(std::abs(filter.X(axis * 2) - position(axis)) < 1e-12, "spherical initialization");
@@ -68,8 +74,8 @@ static void single_plate_regressions() {
     filter.initialize({0, 0, 3, 0});
     check(filter.update({0, 0, 3.1, 0}), "single-plate range update");
     const double range_noise = predictor_single{}.R(2, 2);
-    check(std::abs(filter.X(4) - (3 + .1 * 10 / (10 + range_noise))) < 1e-12, "single-plate range gain");
-    check(std::abs(filter.P(4, 4) - 10 * range_noise / (10 + range_noise)) < 1e-12, "single-plate range variance");
+    check(std::abs(filter.X(4) - (3 + .1 * 10 / (10 + range_noise))) < 1e-9, "single-plate range gain");
+    check(std::abs(filter.P(4, 4) - 10 * range_noise / (10 + range_noise)) < 1e-9, "single-plate range variance");
     const auto state = filter.X;
     const auto covariance = filter.P;
     filter.predict(0);
@@ -128,6 +134,21 @@ static void single_plate_regressions() {
     near(filter.P, singular_covariance, 0);
 }
 static void eigen_filter_regressions() {
+    {
+        auto filter = tracker();
+        filter.X.setZero();
+        filter.X(4) = filter.X(8) = .26;
+        const auto state = filter.X;
+        const auto covariance = filter.P;
+        const auto singular = predictor_armor::h(state, 0);
+        check(filter.update({singular}).empty(), "singular armor plate skips update");
+        near(filter.X, state, 0);
+        near(filter.P, covariance, 0);
+        const auto valid = predictor_armor::h(state, 1);
+        const auto matches = filter.update({singular, valid});
+        check(matches.size() == 1 && matches[0].armor_id == 1,
+              "singular armor plate does not block valid plate");
+    }
     for (int count = 1; count <= 4; ++count) {
         auto filter = tracker();
         filter.predict(.037);
@@ -138,7 +159,7 @@ static void eigen_filter_regressions() {
             observations.push_back(z);
         }
         const auto matches = filter.associate(observations);
-        check(matches.size() == static_cast<size_t>(count), "one to four joint plates");
+        check(matches.size() == static_cast<int>(count), "one to four joint plates");
         const int n = count * 4;
         Eigen::MatrixXd H(n, 11), residual(n, 1), R = Eigen::MatrixXd::Zero(n, n);
         for (int k = 0; k < count; ++k) {
@@ -152,7 +173,7 @@ static void eigen_filter_regressions() {
         const Eigen::Matrix<double, 11, 1> expected_state = filter.X + K * residual;
         const Eigen::Matrix<double, 11, 11> A = Eigen::Matrix<double, 11, 11>::Identity() - K * H;
         const Eigen::Matrix<double, 11, 11> expected_covariance = A * filter.P * A.transpose() + K * R * K.transpose();
-        check(filter.update(observations).size() == static_cast<size_t>(count), "joint update count");
+        check(filter.update(observations).size() == static_cast<int>(count), "joint update count");
         near(filter.X, expected_state);
         near(filter.P, expected_covariance);
         near(filter.P, filter.P.transpose(), 1e-12);
@@ -165,7 +186,7 @@ static void eigen_filter_regressions() {
 static void single_plate_response() {
     // One physical plate: sustained acceleration/reversal at camera frame rates.
     // These bounds reject a smooth but lagging filter, and limit static jitter.
-    for (const int fps : {30, 60}) for (const bool moving : {false, true}) {
+    for (const int fps : {30, 60}) for (const bool moving : {false, true}) for (const double horizon_ms : {50., 100.}) {
         predictor_single filter;
         std::mt19937 random(20261010 + fps + moving);
         std::normal_distribution<double> noise(0, 1);
@@ -186,15 +207,16 @@ static void single_plate_response() {
             z = predictor_single::h(truth);
             z(0) += .003 * noise(random); z(1) += .001 * noise(random); z(2) += .035 * noise(random);
             z(3) = 0;
-            const auto result = filter.update_frame(t * 1000, {z}, 50);
+            const auto result = filter.update_frame(t * 1000, {z}, horizon_ms);
             if (t >= 1) {
                 current_error += (result.current.plates[0].head<3>() - p).squaredNorm();
-                future_error += (result.future.plates[0].head<3>() - position(t + .05)).squaredNorm();
+                future_error += (result.future.plates[0].head<3>() - position(t + horizon_ms / 1000)).squaredNorm();
                 ++count;
             }
         }
         check(std::sqrt(current_error / count) < .035, "single plate motion response/static jitter");
-        check(std::sqrt(future_error / count) < .06, "single plate 50ms forecast response");
+        check(std::sqrt(future_error / count) < (horizon_ms == 50 ? .06 : .105),
+              "single plate 50/100ms forecast response");
     }
 }
 

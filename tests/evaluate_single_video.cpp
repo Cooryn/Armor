@@ -15,15 +15,15 @@ int main(int argc, char **argv) {
         if (std::string(argv[2]) == "pixels") {
             std::ofstream out(argv[3]);
             out.exceptions(std::ios::failbit | std::ios::badbit);
-            out << "frame_id,timestamp,count,index,center_x,center_y,score,x0,y0,x1,y1,x2,y2,x3,y3\n" << std::setprecision(17);
+            out << "frame_id,timestamp,count,index,center_x,center_y,x0,y0,x1,y1,x2,y2,x3,y3\n" << std::setprecision(17);
             do {
                 const auto detections = detector::detect(input.image, ENEMY_RED);
                 if (detections.empty())
-                    out << input.frame_id << ',' << input.timestamp_ms << ",0,-1,,,,,,,,,,,\n";
-                for (std::size_t i = 0; i < detections.size(); ++i) {
+                    out << input.frame_id << ',' << input.timestamp_ms << ",0,-1,,,,,,,,,,\n";
+                for (int i = 0; i < static_cast<int>(detections.size()); ++i) {
                     const auto &plate = detections[i];
-                    out << input.frame_id << ',' << input.timestamp_ms << ',' << detections.size() << ',' << i
-                        << ',' << plate.center.x << ',' << plate.center.y << ',' << plate.detection_score;
+                    out << input.frame_id << ',' << input.timestamp_ms << ',' << static_cast<int>(detections.size()) << ',' << i
+                        << ',' << plate.center.x << ',' << plate.center.y;
                     for (const auto &point : plate.vertices) out << ',' << point.x << ',' << point.y;
                     out << '\n';
                 }

@@ -19,10 +19,10 @@ double serial::monotonic_time_ms()
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - origin).count();
 }
 
-std::uint8_t serial::crc8(const std::uint8_t *bytes, std::size_t size)
+std::uint8_t serial::crc8(const std::uint8_t *bytes, int size)
 {
     std::uint8_t crc = 0;
-    for (std::size_t i = 0; i < size; ++i)
+    for (int i = 0; i < size; ++i)
     {
         crc ^= bytes[i];
         for (int bit = 0; bit < 8; ++bit)
@@ -130,7 +130,7 @@ void serial::send_target(float yaw_rad, float pitch_rad, bool valid)
             packet.push_back(static_cast<std::uint8_t>(bits >> (byte * 8)));
     }
     packet.push_back(valid ? 1 : 0);
-    packet.push_back(serial::crc8(packet.data() + 1, packet.size() - 1));
+    packet.push_back(serial::crc8(packet.data() + 1, static_cast<int>(packet.size()) - 1));
     std::lock_guard<std::mutex> lock(mutex);
     if (!running)
         throw std::runtime_error(error.empty() ? "Serial port is not open" : error);
@@ -141,7 +141,7 @@ void serial::send_target(float yaw_rad, float pitch_rad, bool valid)
 void serial::send_mode(std::uint8_t mode)
 {
     std::vector<std::uint8_t> packet{0xA5, HOST_MODE, 1, mode};
-    packet.push_back(serial::crc8(packet.data() + 1, packet.size() - 1));
+    packet.push_back(serial::crc8(packet.data() + 1, static_cast<int>(packet.size()) - 1));
     std::lock_guard<std::mutex> lock(mutex);
     if (!running)
         throw std::runtime_error(error.empty() ? "Serial port is not open" : error);
@@ -195,8 +195,8 @@ void serial::run()
                         buffer.erase(buffer.begin());
                         continue;
                     }
-                    const std::size_t frame_size = length + 4;
-                    if (buffer.size() < frame_size)
+                    const int frame_size = length + 4;
+                    if (static_cast<int>(buffer.size()) < frame_size)
                         break;
                     if (serial::crc8(buffer.data() + 1, length + 2) != buffer[frame_size - 1])
                     {

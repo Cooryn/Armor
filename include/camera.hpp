@@ -12,7 +12,7 @@ enum CameraSource
 class camera
 {
 public:
-    void open(CameraSource input_source, const std::filesystem::path &video_path, int camera_device = 0, double recording_fps = 60);
+    void open(CameraSource input_source, const std::filesystem::path &video_path, int camera_device = 0, double recording_fps = 30);
     bool next();
 
     CameraSource source = VIDEO;

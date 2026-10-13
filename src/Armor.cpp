@@ -6,7 +6,8 @@
 #include "predictor_armor.hpp"
 #include "gimbal.hpp"
 #include "serial.hpp"
-#include "output.hpp"
+#include "log_output.hpp"
+#include "video_output.hpp"
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -15,24 +16,27 @@
 
 CameraSource camera_source = CAMERA;
 const int camera_device = 1;
-const double camera_recording_fps = 60; // 录像时间轴帧率，按采集时间戳补帧或丢帧，不代表实际供帧速度
+const double camera_recording_fps = 30;
 const int video_camera_profile = 1;
 const char *const video_file = "assets/video/video_1.avi";
+
 const EnemyColor target_color = ENEMY_RED;
+
 PredictorType predictor_type = PREDICTOR_SINGLE_PLATE;
-bool preview = true;
+
 const bool connect_mcu = false;      // 仅摄像头模式：true 使用下位机姿态和基座系，false 直接使用相机系
 const bool auto_aim_enabled = false; // 仅摄像头连接下位机时生效
 const double prediction_horizon_ms = 100;
 const char *const serial_port = "COM3";
 
-// 临时使用视频 2 的 1280×1024 标定，OV2710 标定完成后替换。
-const cv::Mat live_camera_matrix = (cv::Mat_<double>(3, 3) << 1711.311186, 0, 732.488057,
-                                    0, 1714.616882, 546.930868,
+// OV2710实测标定1280×720
+const cv::Mat live_camera_matrix = (cv::Mat_<double>(3, 3) << 724.1270087027805, 0, 634.8734753435976,
+                                    0, 724.7744702772803, 361.56645765182736,
                                     0, 0, 1);
-const cv::Mat live_distortion = (cv::Mat_<double>(1, 5) << -.119922, -.078593, .007511, -.028028, 0);
-// 相机安装位移和朝向尚未标定，以下零偏移、单位旋转用于临时近似。
-// 基座原点在 yaw 转轴中心，初始视线的水平投影定义 Z；右转 yaw、抬头 pitch 为正。
+const cv::Mat live_distortion = (cv::Mat_<double>(1, 5) << 0.19096982316205274, -0.5174000457589348,
+                                -0.0016604452786579244, -0.0009416271376343901, 0.5296904922932862);
+
+// 相机安装位移和朝向尚未标定，以下用于临时近似。
 const CameraCalibration camera_calibration = []
 {
     CameraCalibration calibration;
@@ -43,8 +47,10 @@ const CameraCalibration camera_calibration = []
     calibration.angle_direction = {1, 1, 1};                      // yaw、pitch、roll 的正负方向
     return calibration;
 }();
+
 const GimbalConfig gimbal_config;
 
+// 视频模式
 void run_video(const std::filesystem::path &root)
 {
     ::camera camera;
@@ -53,25 +59,33 @@ void run_video(const std::filesystem::path &root)
     solver.use_video_profile(video_camera_profile);
     ::predictor_single single_plate;
     ::predictor_armor armor;
-    ::output output;
-    output.open(root, camera, predictor_type, preview, prediction_horizon_ms, false);
+    ::log_output output;
+    output.open(root, camera, predictor_type, prediction_horizon_ms, false);
+    video_output recording(log_output::result_directory(root, camera, predictor_type, false), camera);
     do
     {
         const auto frame_start = std::chrono::steady_clock::now();
-        auto detections = detector::detect(camera.image, target_color);
-        const auto camera_poses = solver.solve_frame(std::move(detections), camera.timestamp_ms);
+        auto detections = detector::detect(camera.image, target_color); // 检测
+        const auto camera_poses = solver.solve_frame(std::move(detections), camera.timestamp_ms); // PnP
+
+        // EKF
         PredictionResult prediction;
         if (predictor_type == PREDICTOR_SINGLE_PLATE)
             prediction = single_plate.update_frame(camera.timestamp_ms, camera_poses.observations, prediction_horizon_ms);
         else
             prediction = armor.update_frame(camera.timestamp_ms, camera_poses.observations, prediction_horizon_ms);
-        const auto control = gimbal::simulate(prediction, gimbal_config);
-        if (!output.write(camera, solver, camera_poses, prediction, control, frame_start))
+        
+        const auto control = gimbal::simulate(prediction, gimbal_config); // 控制
+        output.write(camera, camera_poses, prediction, control);
+        const bool running = recording.write(camera, solver, camera_poses, frame_start, &prediction, predictor_type, &control);
+        if (!running)
             break;
     } while (camera.next());
+    recording.finish();
     output.finish();
 }
 
+// 摄像头模式
 void run_camera(const std::filesystem::path &root)
 {
     if (!connect_mcu)
@@ -81,22 +95,29 @@ void run_camera(const std::filesystem::path &root)
         ::solver solver(live_camera_matrix, live_distortion);
         ::predictor_single single_plate;
         ::predictor_armor armor;
-        ::output output;
-        output.open(root, camera, predictor_type, preview, prediction_horizon_ms, false);
+        ::log_output output;
+        output.open(root, camera, predictor_type, prediction_horizon_ms, false);
+        video_output recording(log_output::result_directory(root, camera, predictor_type, false), camera);
         do
         {
             const auto frame_start = std::chrono::steady_clock::now();
-            auto detections = detector::detect(camera.image, target_color);
-            const auto camera_poses = solver.solve_frame(std::move(detections), camera.timestamp_ms);
+            auto detections = detector::detect(camera.image, target_color);// 检测
+            const auto camera_poses = solver.solve_frame(std::move(detections), camera.timestamp_ms); // PnP
+
+            // EKF
             PredictionResult prediction;
             if (predictor_type == PREDICTOR_SINGLE_PLATE)
                 prediction = single_plate.update_frame(camera.timestamp_ms, camera_poses.observations, prediction_horizon_ms);
             else
                 prediction = armor.update_frame(camera.timestamp_ms, camera_poses.observations, prediction_horizon_ms);
-            const auto control = gimbal::simulate(prediction, gimbal_config);
-            if (!output.write(camera, solver, camera_poses, prediction, control, frame_start))
+
+            const auto control = gimbal::simulate(prediction, gimbal_config); // 控制
+            output.write(camera, camera_poses, prediction, control);
+            const bool running = recording.write(camera, solver, camera_poses, frame_start, &prediction, predictor_type, &control);
+            if (!running)
                 break;
         } while (camera.next());
+        recording.finish();
         output.finish();
         return;
     }
@@ -118,8 +139,9 @@ void run_camera(const std::filesystem::path &root)
     ::solver solver(live_camera_matrix, live_distortion);
     ::predictor_single single_plate;
     ::predictor_armor armor;
-    ::output output;
-    output.open(root, camera, predictor_type, preview, prediction_horizon_ms, true);
+    ::log_output output;
+    output.open(root, camera, predictor_type, prediction_horizon_ms, true);
+    video_output recording(log_output::result_directory(root, camera, predictor_type, true), camera);
     serial.send_mode(auto_aim_enabled ? HOST_AUTO_AIM : HOST_IDLE);
     do
     {
@@ -146,13 +168,16 @@ void run_camera(const std::filesystem::path &root)
             control.status = "disabled";
         }
         serial.send_target(control.yaw_rad, control.pitch_rad, control.valid());
-        if (!output.write(camera, solver, camera_poses, prediction, control, frame_start, &base_poses, &pose_base))
+        output.write(camera, camera_poses, prediction, control, &base_poses, &pose_base);
+        const bool running = recording.write(camera, solver, camera_poses, frame_start, &prediction, predictor_type, &control, &pose_base);
+        if (!running)
             break;
     } while (camera.next());
 
     serial.send_target(pose_base.latest_state_.yaw_rad, pose_base.latest_state_.pitch_rad, false);
     serial.send_mode(HOST_IDLE);
     serial.close();
+    recording.finish();
     output.finish();
 }
 

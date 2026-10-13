@@ -121,12 +121,12 @@ int main()
     try
     {
         const std::string text = "123456789";
-        check(serial::crc8(reinterpret_cast<const std::uint8_t *>(text.data()), text.size()) == 0xF4,
+        check(serial::crc8(reinterpret_cast<const std::uint8_t *>(text.data()), static_cast<int>(text.size())) == 0xF4,
               "CRC-8/ATM reference vector");
 #ifdef _WIN32
         const std::vector<std::uint8_t> packet{
             0xA5, 2, 14, 0, 0, 0x80, 0x3F, 0, 0, 0, 0xBF, 0, 0, 0, 0, 2, 0, 0xDA};
-        for (std::size_t split = 0; split < packet.size(); ++split)
+        for (int split = 0; split < static_cast<int>(packet.size()); ++split)
         {
             reset_transport();
             ::serial link;

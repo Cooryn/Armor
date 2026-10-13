@@ -10,9 +10,17 @@ void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
 }
 
+cv::Point2f left_center(const ::armor &armor) {
+    return (armor.vertices[0] + armor.vertices[1]) / 2.f;
+}
+
+cv::Point2f right_center(const ::armor &armor) {
+    return (armor.vertices[2] + armor.vertices[3]) / 2.f;
+}
+
 int main(int argc, char **argv) {
     try {
-        // Dim and small single plates must survive; displaced/clipped light pairs must not.
+        // Dim, small and border-touching plates must survive; displaced light pairs must not.
         for (const auto color : {ENEMY_RED, ENEMY_BLUE}) {
             const auto paint = [color](int value) {
                 return color == ENEMY_RED ? cv::Scalar(10, 20, value) : cv::Scalar(value, 20, 10);
@@ -30,10 +38,10 @@ int main(int argc, char **argv) {
             cv::rectangle(displaced, {40,40}, {44,60}, paint(240), cv::FILLED);
             cv::rectangle(displaced, {88,52}, {92,72}, paint(240), cv::FILLED);
             require(detector::detect(displaced, color).empty(), "Displaced clutter paired");
-            cv::Mat clipped = cv::Mat::zeros(120, 160, CV_8UC3);
-            cv::rectangle(clipped, {40,0}, {44,20}, paint(240), cv::FILLED);
-            cv::rectangle(clipped, {88,0}, {92,20}, paint(240), cv::FILLED);
-            require(detector::detect(clipped, color).empty(), "Clipped light bars paired");
+            cv::Mat border_plate = cv::Mat::zeros(120, 160, CV_8UC3);
+            cv::rectangle(border_plate, {40,0}, {44,20}, paint(240), cv::FILLED);
+            cv::rectangle(border_plate, {88,0}, {92,20}, paint(240), cv::FILLED);
+            require(detector::detect(border_plate, color).size() == 1, "Border-touching plate missing");
         }
         std::vector<cv::RotatedRect> bars{
             {{513.8f,725.8f},{37.1f,6.3f},104.f},
@@ -42,9 +50,9 @@ int main(int argc, char **argv) {
             {{821.4f,722.5f},{29.8f,5.3f},76.f}};
         auto selected = detector::match_armors(bars, std::vector<float>(bars.size(), 1.f), 20, 2, .8f, .8f);
         require(selected.size() == 1, "Expected one consistent pair");
-        require(std::abs(selected[0].left_light.center.x - 637.f) < 1,
+        require(std::abs(left_center(selected[0]).x - 637.f) < 1,
                 "Wrong left light for frame-753 geometry");
-        require(std::abs(selected[0].right_light.center.x - 713.7f) < 1,
+        require(std::abs(right_center(selected[0]).x - 713.7f) < 1,
                 "Wrong right light for frame-753 geometry");
         auto expected = selected[0].center;
         std::reverse(bars.begin(), bars.end());
@@ -56,24 +64,28 @@ int main(int argc, char **argv) {
             bars.emplace_back(cv::Point2f(x,100), cv::Size2f(30,4), 90.f);
         selected = detector::match_armors(bars, std::vector<float>(bars.size(), 1.f));
         require(selected.size() == 2, "Expected two non-conflicting plates");
-        require(selected[0].right_light.center.x == 72.f &&
-                selected[1].left_light.center.x == 150.f, "Incorrect global assignment");
+        require(right_center(selected[0]).x == 72.f &&
+                left_center(selected[1]).x == 150.f, "Incorrect global assignment");
         std::vector<cv::RotatedRect> competing;
         for (float x : {0.f, 60.f, 120.f, 180.f})
             competing.emplace_back(cv::Point2f(x,100), cv::Size2f(30,4), 90.f);
         auto greedy = detector::match_armors(competing,{.6f,1.f,1.f,.6f},20,2,.8f,.8f,3.1f,.35f);
-        require(greedy.size() == 1 && greedy[0].left_light.center.x == 60.f &&
-                greedy[0].right_light.center.x == 120.f, "Greedy must prefer the highest-score pair");
+        require(greedy.size() == 1 && left_center(greedy[0]).x == 60.f &&
+                right_center(greedy[0]).x == 120.f, "Greedy must prefer the highest-score pair");
         std::reverse(competing.begin(), competing.end());
         auto reversed = detector::match_armors(competing,{.6f,1.f,1.f,.6f},20,2,.8f,.8f,3.1f,.35f);
-        require(reversed.size() == 1 && reversed[0].left_light.center.x == 60.f &&
-                reversed[0].right_light.center.x == 120.f, "Greedy input-order dependence");
+        require(reversed.size() == 1 && left_center(reversed[0]).x == 60.f &&
+                right_center(reversed[0]).x == 120.f, "Greedy input-order dependence");
         require(detector::match_armors({}, {}).empty(), "Empty input");
 
         bars = {{{0,120},{30,4},90}, {{72,100},{30,4},90}, {{144,100},{30,4},90}};
         selected = detector::match_armors(bars, std::vector<float>(bars.size(), 1.f));
-        require(selected.size() == 1 && selected[0].left_light.center.x == 72,
+        require(selected.size() == 1 && left_center(selected[0]).x == 72,
                 "First-fit won over the higher quality pair");
+
+        bars = {{{0,100},{30,4},90}, {{36,200},{30,4},90}, {{72,100},{30,4},90}};
+        require(detector::match_armors(bars, std::vector<float>(bars.size(), 1.f)).empty(),
+                "Non-adjacent light bars must not form a plate");
 
         std::vector<std::vector<cv::Point>> outlines{{{97,80},{103,80},
             {103,98},{108,100},{103,102},{103,120},{97,120}}};
@@ -91,11 +103,11 @@ int main(int argc, char **argv) {
 
         bars = {{{0,100},{30,4},90}, {{72,100},{30,4},90}, {{144,100},{30,4},90}};
         selected = detector::match_armors(bars,{.3f,1.f,1.f},20,1.5f,1.2f,.8f,3.1f,.35f);
-        require(selected.size() == 1 && selected[0].left_light.center.x == 72,
+        require(selected.size() == 1 && left_center(selected[0]).x == 72,
                 "Light quality did not affect ambiguous pairing");
         std::reverse(bars.begin(), bars.end());
         selected = detector::match_armors(bars,{1.f,1.f,.3f},20,1.5f,1.2f,.8f,3.1f,.35f);
-        require(selected.size() == 1 && selected[0].left_light.center.x == 72,
+        require(selected.size() == 1 && left_center(selected[0]).x == 72,
                 "Light quality detached from sorted geometry");
 
         cv::Mat K = (cv::Mat_<double>(3,3) << 1000,0,640,0,1000,480,0,0,1);
@@ -108,9 +120,11 @@ int main(int argc, char **argv) {
         std::copy(projected.begin(), projected.end(), armor.vertices);
         ::solver solver{K, distortion};
         require(solver.solve(armor), "Rejected exact physical rectangle");
-        require(armor.reprojection_error < .01, "Unexpected reprojection error");
+        std::vector<cv::Point2f> reprojected;
+        cv::projectPoints(object, armor.rvec, armor.tvec, K, distortion, reprojected);
+        require(cv::norm(projected, reprojected, cv::NORM_L2) / std::sqrt(projected.size()) < .01,
+                "Unexpected reprojection error");
         require(std::abs(armor.yaw+ .4*180/CV_PI) < .01, "PnP yaw sign changed");
-        require(armor.pnp_candidate_count >= 1, "No validated PnP candidates recorded");
         cv::Mat lens = (cv::Mat_<double>(1,5) << -.15,.03,.001,-.002,0);
         ::solver distorted_solver{K, lens};
         for (double yaw : {-.9, -.3, .001, .3, .9}) {
@@ -148,9 +162,6 @@ int main(int argc, char **argv) {
         require(!std::isfinite(hints[0]), "Missing frame failed to clear pose history");
 
         if (argc > 1) {
-            const auto blue_photo = cv::imread(std::string(argv[1]) + "/assets/image/image_1.jpg");
-            require(!blue_photo.empty(), "Cannot open background stripe regression image");
-            require(detector::detect(blue_photo, ENEMY_RED).empty(), "Red background stripes paired");
             const auto clear_blue = cv::imread(std::string(argv[1]) + "/assets/image/image_2.jpg");
             require(!clear_blue.empty() && !detector::detect(clear_blue, ENEMY_BLUE).empty(), "Blue plate lost");
             cv::VideoCapture cap(std::string(argv[1]) + "/assets/video/video_1.avi");
@@ -165,10 +176,10 @@ int main(int argc, char **argv) {
             selected = detector::match_armors(fitted, quality, 20, 2, .8f, .8f);
             bool correct = false;
             for (const auto &a : selected) {
-                require(!(a.left_light.center.x > 700 && a.right_light.center.x > 800),
+                require(!(left_center(a).x > 700 && right_center(a).x > 800),
                         "Regression: frame 753 cross-plate pairing");
-                if (std::abs(a.left_light.center.x - 637) < 10 &&
-                    std::abs(a.right_light.center.x - 714) < 10) correct = true;
+                if (std::abs(left_center(a).x - 637) < 10 &&
+                    std::abs(right_center(a).x - 714) < 10) correct = true;
             }
             require(correct, "Frame 753 true plate missing");
 

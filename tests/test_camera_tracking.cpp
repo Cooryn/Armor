@@ -1,4 +1,5 @@
-#include "output.hpp"
+#include "log_output.hpp"
+#include "video_output.hpp"
 #include "predictor_single.hpp"
 #include "predictor_armor.hpp"
 #include <algorithm>
@@ -42,19 +43,23 @@ int main(int argc, char **argv)
             camera.fps = 60;
             camera.image = cv::Mat(120, 160, CV_8UC3);
             ::solver solver;
-            ::output output;
+            ::log_output output;
             const auto directory = root / ("timeline-" + std::to_string(scenario));
-            output.open(directory, camera, PREDICTOR_SINGLE_PLATE, false, 50, false);
-            for (std::size_t i = 0; i < timestamps.size(); ++i)
+            output.open(directory, camera, PREDICTOR_SINGLE_PLATE, 50, false);
+            video_output recording(log_output::result_directory(directory, camera, PREDICTOR_SINGLE_PLATE, false), camera);
+            for (int i = 0; i < static_cast<int>(timestamps.size()); ++i)
             {
                 camera.frame_id = static_cast<std::int64_t>(i);
                 camera.timestamp_ms = timestamps[i];
                 camera.image.setTo(cv::Scalar::all(i % 2 ? 180 : 40));
-                check(output.write(camera, solver, {}, {}, {}, std::chrono::steady_clock::now()), "timestamp output");
+                check(output.write(camera, {}, {}, {}), "timestamp output");
+                recording.record(camera, camera.image);
             }
+            recording.finish();
+            recording.finish();
             output.finish();
             output.finish();
-            cv::VideoCapture recorded((output::result_directory(directory, camera, PREDICTOR_SINGLE_PLATE, false) /
+            cv::VideoCapture recorded((log_output::result_directory(directory, camera, PREDICTOR_SINGLE_PLATE, false) /
                                        "timeline.avi").string());
             check(recorded.isOpened(), "timestamp recording opens");
             const double span = (timestamps.back() - timestamps.front()) / 1000;
@@ -136,9 +141,10 @@ int main(int argc, char **argv)
             ::solver solver(intrinsics, distortion);
             ::predictor_single single_plate;
             ::predictor_armor armor;
-            ::output output;
+            ::log_output output;
             const auto directory = root / std::to_string(type);
-            output.open(directory, camera, type, false, 50);
+            output.open(directory, camera, type, 50);
+            video_output video(log_output::result_directory(directory, camera, type, true), camera);
             int count = 0;
             do
             {
@@ -174,14 +180,15 @@ int main(int argc, char **argv)
                     check(view.status == "prediction_only" && control.valid(), "missing image observation must continue predicted tracking");
                 if (type == PREDICTOR_SINGLE_PLATE && count > 1)
                     check((view.current.plates[0].head<3>() - world).norm() < .01, "EKF tracked camera motion instead of fixed coordinates");
-                check(output.write(camera, solver, camera_poses, view, control,
-                                   std::chrono::steady_clock::now(), &fixed, &poses), "headless output aborted");
+                check(output.write(camera, camera_poses, view, control, &fixed, &poses), "headless output aborted");
+                check(video.write(camera, solver, camera_poses, std::chrono::steady_clock::now(), &view, type, &control, &poses), "prediction drawing and recording");
                 ++count;
             } while (camera.next());
             check(count == 12 && camera.frame_id == 11, "video frame clock or EOF mismatch");
+            video.finish();
             output.finish();
             output.finish();
-            const auto results_directory = output::result_directory(directory, camera, type, true);
+            const auto results_directory = log_output::result_directory(directory, camera, type, true);
             std::ifstream metadata(results_directory / "camera_pose_fixture.csv");
             std::string line;
             int rows = 0;
@@ -204,9 +211,9 @@ int main(int argc, char **argv)
             ::solver solver(intrinsics, distortion);
             ::predictor_single single_plate;
             ::predictor_armor armor;
-            ::output output;
+            ::log_output output;
             const auto directory = root / ((source == VIDEO ? "video-" : "camera-offline-") + std::to_string(type));
-            output.open(directory, camera, type, false, 50, false);
+            output.open(directory, camera, type, 50, false);
             int count = 0;
             do
             {
@@ -225,7 +232,7 @@ int main(int argc, char **argv)
                     replay_prediction = single_plate.update_frame(camera.timestamp_ms, camera_poses.observations);
                 else
                     replay_prediction = armor.update_frame(camera.timestamp_ms, camera_poses.observations);
-                check(output.write(camera, solver, camera_poses, replay_prediction, gimbal::simulate(replay_prediction), std::chrono::steady_clock::now()),
+                check(output.write(camera, camera_poses, replay_prediction, gimbal::simulate(replay_prediction)),
                       "camera-coordinate output works without a pose or control object");
                 if (type == PREDICTOR_SINGLE_PLATE)
                     check((replay_prediction.current.plates[0].head<3>() - Eigen::Vector3d(.2, .1, 3)).norm() < .003,
@@ -239,13 +246,13 @@ int main(int argc, char **argv)
             } while (true);
             output.finish();
             check(count == 12, "camera-coordinate processing keeps all input frames");
-            const auto results_directory = output::result_directory(directory, camera, type, false);
+            const auto results_directory = log_output::result_directory(directory, camera, type, false);
             const std::array<const char *, 2> model_names = {"single", "armor"};
             check(results_directory == directory / "results" / (source == VIDEO ? "video" : "camera") /
                   model_names[type] / (source == VIDEO ? "fixture" : "offline"),
                   "outputs must be grouped by source, model and input or camera mode");
             if (source == CAMERA)
-                check(output::result_directory(directory, camera, type, true) ==
+                check(log_output::result_directory(directory, camera, type, true) ==
                       directory / "results/camera" / model_names[type] / "mcu",
                       "MCU and offline camera outputs must have separate directories");
             check(!std::filesystem::exists(results_directory / ("pose_base_" + suffix + ".csv")) &&
@@ -263,9 +270,12 @@ int main(int argc, char **argv)
             std::ifstream raw(results_directory / ("pose_raw_" + suffix + ".csv"));
             std::string line;
             std::getline(raw, line);
+            check(line == "frame_id,timestamp,x,y,z,target_yaw,target_pitch,distance,armor_orientation_yaw,rvec_x,rvec_y,rvec_z,coordinate_frame",
+                  "camera pose CSV must contain only pose data");
             int rows = 0;
             while (std::getline(raw, line))
             {
+                check(std::count(line.begin(), line.end(), ',') == 12, "camera pose CSV column count");
                 check(line.substr(line.size() - 7) == ",camera", "offline observations stay in camera coordinates");
                 ++rows;
             }

@@ -72,8 +72,7 @@ std::vector<cv::RotatedRect> detector::get_valid_light_rects(
         float h = rect.size.height;
 
         // 几何条件筛选旋转矩形
-        if (w < 1.f || h < 1.f || std::max(w, h) / std::min(w, h) < minAspectRatio ||
-            area / (w * h) < .30)
+        if (w < 1.f || h < 1.f || std::max(w, h) / std::min(w, h) < minAspectRatio || area / (w * h) < .30)
             continue;
         float angle = std::abs(rect.angle);
         float longEdgeAngle = (w >= h) ? angle : (90.0f - angle);
@@ -99,8 +98,10 @@ std::vector<cv::RotatedRect> detector::get_valid_light_rects(
             const float old_angle = rect.angle + (w < h ? 90.f : 0.f);
             const float axis_change = std::abs(std::remainder(fitted_angle - old_angle, 180.f));
 
+            // 角度变化过大直接舍弃
             if (axis_change > 10.f)
                 continue;
+
             fitted_angle = old_angle + .5f * std::remainder(fitted_angle - old_angle, 180.f); // 取平均值
 
             // 重新构造单位方向向量
@@ -137,7 +138,7 @@ std::vector<cv::RotatedRect> detector::get_valid_light_rects(
     return rects;
 }
 
-// 重定义灯条信息
+// 重定义灯条集合信息
 struct LightGeometry
 {
     float length, width;
@@ -148,7 +149,7 @@ struct LightGeometry
 // 定义候选装甲板
 struct Candidate
 {
-    size_t left, right;
+    int left, right;
     double score;
 };
 
@@ -162,32 +163,21 @@ std::vector<::armor> detector::match_armors(const std::vector<cv::RotatedRect> &
                                             float max_aspect_ratio,
                                             float min_detection_score)
 {
-    std::vector<::armor> armors;
-
     // 按照灯条中心位置从左往右、从上到下排序，将顺序存入order
-    std::vector<cv::RotatedRect> bars;
-    bars.reserve(light_bars.size());
-    std::vector<size_t> order(light_bars.size());
-    for (size_t i = 0; i < order.size(); ++i)
+    std::vector<int> order(light_bars.size());
+    for (int i = 0; i < static_cast<int>(order.size()); ++i)
         order[i] = i;
-    std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
+    std::sort(order.begin(), order.end(), [&](int a, int b)
               {
         if (light_bars[a].center.x != light_bars[b].center.x)
             return light_bars[a].center.x < light_bars[b].center.x;
         return light_bars[a].center.y < light_bars[b].center.y; });
 
-    // 将light_quality按照排序后的顺序存入qualities
-    std::vector<float> qualities;
-    for (size_t i = 0; i < order.size(); ++i)
-    {
-        bars.push_back(light_bars[order[i]]);
-        qualities.push_back(light_quality[order[i]]);
-    }
-
     // 初始化LightGeometry对象
     std::vector<LightGeometry> lights;
-    for (const auto &bar : bars)
+    for (const auto index : order)
     {
+        const auto &bar = light_bars[index];
         const float angle = (bar.angle + (bar.size.width < bar.size.height ? 90.f : 0.f)) * static_cast<float>(CV_PI / 180.0);
         cv::Point2f axis(std::cos(angle), std::sin(angle));
         if (axis.y < 0)
@@ -196,49 +186,41 @@ std::vector<::armor> detector::match_armors(const std::vector<cv::RotatedRect> &
         lights.push_back({length, std::min(bar.size.width, bar.size.height), axis,
                           bar.center - axis * (length / 2), bar.center + axis * (length / 2)});
     }
-    std::vector<Candidate> candidates;
 
-    // 枚举所有灯条组合
-    for (size_t i = 0; i < bars.size(); ++i)
+    std::vector<Candidate> candidates; // 初始化候选装甲板集合
+
+    // 只配对相邻的灯条
+    for (int i = 0; i + 1 < static_cast<int>(order.size()); ++i)
     {
-        for (size_t j = i + 1; j < bars.size(); ++j)
-        {
-            const auto &l = lights[i];
-            const auto &r = lights[j];
-            const float avg_length = (l.length + r.length) / 2;
-            const float angle_diff = std::acos(std::clamp(std::abs(l.axis.dot(r.axis)), 0.f, 1.f)) * static_cast<float>(180.0 / CV_PI);
-            const float length_ratio = std::max(l.length, r.length) / std::min(l.length, r.length);
-            cv::Point2f vertical = l.axis + r.axis;
-            const float axis_norm = static_cast<float>(cv::norm(vertical)); // 求vertical的模
-            vertical *= 1.f / axis_norm;                                    // 将vertical单位化
-            const cv::Point2f horizontal(vertical.y, -vertical.x);          // 装甲板水平向量
-            const cv::Point2f delta = bars[j].center - bars[i].center;      // 灯条中心的位移
-            // 均在装甲板的局部坐标系中测量
-            const float width = std::abs(delta.dot(horizontal)) / avg_length;
-            const float y_offset = std::abs(delta.dot(vertical)) / avg_length;
-            if (angle_diff > max_angle_diff || length_ratio > max_length_ratio ||
-                y_offset > max_y_diff_ratio || width < min_aspect_ratio || width > max_aspect_ratio) // 硬阈值过滤
-                continue;
+        const int j = i + 1;
+        const auto &l = lights[i];
+        const auto &r = lights[j];
+        const float avg_length = (l.length + r.length) / 2;
+        const float angle_diff = std::acos(std::clamp(std::abs(l.axis.dot(r.axis)), 0.f, 1.f)) * static_cast<float>(180.0 / CV_PI);
+        const float length_ratio = std::max(l.length, r.length) / std::min(l.length, r.length);
 
-            int intervening = 0; // 检查两根灯条中间有无其他灯条
-            for (size_t k = i + 1; k < j; ++k)
-            {
-                const float offset = std::abs((bars[k].center - bars[i].center).dot(vertical));
-                if (offset < avg_length * .5f && lights[k].length > avg_length * .5f)
-                    ++intervening;
-            }
-            // 允许width缩短，但过宽的配对和偏斜的端点会增加惩罚
-            const double wide_penalty = std::max(0.f, width - 2.5f) / .6;                          // 宽度惩罚
-            const double shape_penalty = .5 * (l.width / l.length + r.width / r.length);           // 形状惩罚
-            const double cost = .35 * std::pow(angle_diff / max_angle_diff, 2)                     // 角度差惩罚
-                                + .8 * std::pow(std::log(length_ratio), 2)                         // 长度一致性惩罚
-                                + 2.0 * std::pow(y_offset, 2)                                      // 上下错位惩罚
-                                + wide_penalty * wide_penalty + shape_penalty + 1.5 * intervening; // 总惩罚
-            const double score = std::exp(-cost) * std::sqrt(qualities[i] * qualities[j]);         // 装甲板得分
-            if (score < min_detection_score)
-                continue;
-            candidates.push_back({i, j, score});
-        }
+        cv::Point2f vertical = l.axis + r.axis;                         // 装甲板竖直轴
+        const float axis_norm = static_cast<float>(cv::norm(vertical)); // 求vertical的模
+        vertical *= 1.f / axis_norm;                                    // 将vertical单位化
+        const cv::Point2f horizontal(vertical.y, -vertical.x);          // 装甲板水平向量
+        const cv::Point2f delta = light_bars[order[j]].center - light_bars[order[i]].center; // 灯条中心的位移
+        const float width = std::abs(delta.dot(horizontal)) / avg_length; // 标准化装甲板宽度
+        const float y_offset = std::abs(delta.dot(vertical)) / avg_length; // 标准化装甲板上下错位
+
+        if (angle_diff > max_angle_diff || length_ratio > max_length_ratio || y_offset > max_y_diff_ratio || width < min_aspect_ratio || width > max_aspect_ratio) // 硬阈值过滤
+            continue;
+
+        const double wide_penalty = std::max(0.f, width - 2.5f) / .6;                          // 过宽惩罚
+        const double shape_penalty = .5 * (l.width / l.length + r.width / r.length);           // 形状惩罚
+        const double cost = .35 * std::pow(angle_diff / max_angle_diff, 2)                     // 角度差惩罚
+                            + .8 * std::pow(std::log(length_ratio), 2)                         // 长度一致性惩罚
+                            + 2.0 * std::pow(y_offset, 2)                                      // 上下错位惩罚
+                            + wide_penalty * wide_penalty + shape_penalty;
+        const double score = std::exp(-cost) * std::sqrt(light_quality[order[i]] * light_quality[order[j]]); // 装甲板得分
+
+        if (score < min_detection_score) // 硬阈值过滤
+            continue;
+        candidates.push_back({i, j, score});
     }
 
     // 贪心算法，根据分数进行排序
@@ -252,21 +234,20 @@ std::vector<::armor> detector::match_armors(const std::vector<cv::RotatedRect> &
                   return a.right < b.right;
               });
 
+    std::vector<::armor> armors;
+
     // 去重，一根灯条只能匹配一个装甲板
-    std::vector<bool> used(bars.size(), false);
+    std::vector<bool> used(order.size(), false);
     for (const auto &c : candidates)
     {
         if (used[c.left] || used[c.right])
             continue;
         auto &armor = armors.emplace_back();
-        armor.left_light = bars[c.left];
-        armor.right_light = bars[c.right];
-        armor.center = (bars[c.left].center + bars[c.right].center) / 2.f;
+        armor.center = (light_bars[order[c.left]].center + light_bars[order[c.right]].center) / 2.f;
         armor.vertices[0] = lights[c.left].top;
         armor.vertices[1] = lights[c.left].bottom;
         armor.vertices[2] = lights[c.right].bottom;
         armor.vertices[3] = lights[c.right].top;
-        armor.detection_score = c.score;
         used[c.left] = used[c.right] = true;
     }
 
@@ -276,6 +257,8 @@ std::vector<::armor> detector::match_armors(const std::vector<cv::RotatedRect> &
     return armors;
 }
 
+
+// 绘制装甲板矩形
 void detector::draw_armors(cv::Mat &image, const std::vector<::armor> &armors)
 {
     for (const auto &armor : armors)
@@ -287,12 +270,13 @@ void detector::draw_armors(cv::Mat &image, const std::vector<::armor> &armors)
     }
 }
 
+// 绘制图形化UI
 void detector::draw_video_info(cv::Mat &image, const std::vector<::armor> &armors, const std::string &status)
 {
     std::vector<std::string> lines{status, "Camera XYZ (m): X right, Y down, Z forward"};
     if (armors.empty())
         lines.push_back("No armor detected");
-    for (std::size_t i = 0; i < armors.size(); ++i)
+    for (int i = 0; i < static_cast<int>(armors.size()); ++i)
     {
         const auto &armor = armors[i];
         const auto label = "#" + std::to_string(i + 1);
@@ -303,7 +287,7 @@ void detector::draw_video_info(cv::Mat &image, const std::vector<::armor> &armor
         cv::putText(image, label, armor.center, cv::FONT_HERSHEY_SIMPLEX, .6, {0, 0, 0}, 4, cv::LINE_AA);
         cv::putText(image, label, armor.center, cv::FONT_HERSHEY_SIMPLEX, .6, {0, 255, 255}, 2, cv::LINE_AA);
     }
-    for (std::size_t i = 0; i < lines.size(); ++i)
+    for (int i = 0; i < static_cast<int>(lines.size()); ++i)
     {
         const cv::Point position(20, 30 + static_cast<int>(i) * 28);
         cv::putText(image, lines[i], position, cv::FONT_HERSHEY_SIMPLEX, .6, {0, 0, 0}, 4, cv::LINE_AA);
@@ -313,19 +297,13 @@ void detector::draw_video_info(cv::Mat &image, const std::vector<::armor> &armor
 
 std::vector<::armor> detector::detect(const cv::Mat &image, EnemyColor color)
 {
-    // 先保留高亮灯条的紧致轮廓；无匹配时再降低阈值，避免光晕影响已有检测。
-    const int thresholds[][2] = {{high_color_threshold, high_gray_threshold},
-                                 {low_color_threshold, low_gray_threshold}};
+    // 先用高阈值检测，无匹配时再降低阈值
+    const int thresholds[][2] = {{70, 170}, {40, 100}};
     for (const auto &threshold : thresholds)
     {
         const auto mask = detector::extract_color(image, color, threshold[0], threshold[1]);
         std::vector<std::vector<cv::Point>> contours;
         cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
-        // 边缘截断的灯条缺少真实端点，既容易误配，也会使 PnP 长度失真。
-        contours.erase(std::remove_if(contours.begin(), contours.end(), [&](const auto &contour) {
-            const auto box = cv::boundingRect(contour);
-            return box.x <= 0 || box.y <= 0 || box.br().x >= image.cols || box.br().y >= image.rows;
-        }), contours.end());
         std::vector<float> quality;
         const auto lights = detector::get_valid_light_rects(contours, quality);
         auto armors = detector::match_armors(lights, quality);

@@ -23,9 +23,10 @@ def video_segments(data):
                           | (np.abs(yaw_step) > .035) | (np.abs(orientation) > .6)])
 
 
-def replay(data, q, angle_sd, range_sd, segments=False):
+def replay(data, q, angle_sd, range_sd, segments=False, q_yaw=100.):
     model = SinglePlateEKF()
     model.process_noise = q
+    model.yaw_process_noise = q_yaw
     model.R = np.diag([angle_sd**2, angle_sd**2, range_sd**2, .0576])
     states = []
     previous = None
