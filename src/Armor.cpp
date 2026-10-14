@@ -14,15 +14,15 @@
 #include <stdexcept>
 #include <thread>
 
-CameraSource camera_source = CAMERA;
+CameraSource camera_source = VIDEO;
 const int camera_device = 1;
 const double camera_recording_fps = 30;
-const int video_camera_profile = 1;
-const char *const video_file = "assets/video/video_1.avi";
+const int video_camera_profile = 2;
+const char *const video_file = "assets/video/video_2.avi";
 
 const EnemyColor target_color = ENEMY_RED;
 
-PredictorType predictor_type = PREDICTOR_SINGLE_PLATE;
+PredictorType predictor_type = PREDICTOR_ARMOR;
 
 const bool connect_mcu = false;      // 仅摄像头模式：true 使用下位机姿态和基座系，false 直接使用相机系
 const bool auto_aim_enabled = false; // 仅摄像头连接下位机时生效
@@ -34,7 +34,7 @@ const cv::Mat live_camera_matrix = (cv::Mat_<double>(3, 3) << 724.1270087027805,
                                     0, 724.7744702772803, 361.56645765182736,
                                     0, 0, 1);
 const cv::Mat live_distortion = (cv::Mat_<double>(1, 5) << 0.19096982316205274, -0.5174000457589348,
-                                -0.0016604452786579244, -0.0009416271376343901, 0.5296904922932862);
+                                 -0.0016604452786579244, -0.0009416271376343901, 0.5296904922932862);
 
 // 相机安装位移和朝向尚未标定，以下用于临时近似
 const CameraCalibration camera_calibration = []
@@ -65,7 +65,7 @@ void run_video(const std::filesystem::path &root)
     do
     {
         const auto frame_start = std::chrono::steady_clock::now();
-        auto detections = detector::detect(camera.image, target_color); // 检测
+        auto detections = detector::detect(camera.image, target_color);                           // 检测
         const auto camera_poses = solver.solve_frame(std::move(detections), camera.timestamp_ms); // PnP
 
         // EKF
@@ -74,7 +74,7 @@ void run_video(const std::filesystem::path &root)
             prediction = single_plate.update_frame(camera.timestamp_ms, camera_poses.observations, prediction_horizon_ms);
         else
             prediction = armor.update_frame(camera.timestamp_ms, camera_poses.observations, prediction_horizon_ms);
-        
+
         const auto control = gimbal::simulate(prediction, gimbal_config); // 控制
         output.write(camera, camera_poses, prediction, control);
         const bool running = recording.write(camera, solver, camera_poses, frame_start, &prediction, predictor_type, &control);
@@ -101,7 +101,7 @@ void run_camera(const std::filesystem::path &root)
         do
         {
             const auto frame_start = std::chrono::steady_clock::now();
-            auto detections = detector::detect(camera.image, target_color);// 检测
+            auto detections = detector::detect(camera.image, target_color);                           // 检测
             const auto camera_poses = solver.solve_frame(std::move(detections), camera.timestamp_ms); // PnP
 
             // EKF

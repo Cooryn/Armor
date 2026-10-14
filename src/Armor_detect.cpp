@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <utility>
 
-CameraSource camera_source = CAMERA;
+CameraSource camera_source = VIDEO;
 const int camera_device = 1;
 const double camera_recording_fps = 30;
 const int video_camera_profile = 2;
